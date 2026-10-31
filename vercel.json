@@ -7,6 +7,9 @@
       "includeFiles": "node_modules/@libsql/**"
     }
   },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/[...path]" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
