@@ -204,14 +204,15 @@ const rateMsg = (prefix, resetAt) => {
   const m = rateMins(resetAt)
   return `${prefix}. Try again in ${m} minute${m === 1 ? '' : 's'}.`
 }
-// Sliding counter inside a fixed window: the first hit starts the window, later hits add to it.
+// Fixed-window counter: the first hit starts the window, later hits add to it. The increment is one
+// atomic upsert; RETURNING is avoided because remote libSQL treats writes as row-less statements.
 const rateHit = (key, max, windowMs, prefix = 'Too many attempts') => {
   const t = Date.now()
-  const row = stripMeta(db.prepare(`INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?)
+  run(`INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?)
     ON CONFLICT(key) DO UPDATE SET
       count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END,
-      reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END
-    RETURNING count, reset_at`).get(key, t + windowMs, t, t, t + windowMs))
+      reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END`, key, t + windowMs, t, t, t + windowMs)
+  const row = one('SELECT count, reset_at FROM rate_limits WHERE key=?', key) || { count: 1, reset_at: t + windowMs }
   if (row.count > max) throw err(429, rateMsg(prefix, row.reset_at))
   return row
 }
