@@ -25,7 +25,7 @@ function Login() {
     run(async () => {
       const r = await api('/login', { body })
       if (r.need_code) return setNeedCode(true)
-      localStorage.token = r.token; location.reload()
+      localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
     })
   }
   return (
@@ -46,6 +46,26 @@ function Login() {
           <button disabled={busy}>Continue</button>
         </form>
       </div>
+    </div>
+  )
+}
+
+// Plays the mark once, on the first render after signing in; the flag is consumed so a
+// reload or navigation never repeats it.
+function LogoIntro() {
+  const [show, setShow] = useState(() => sessionStorage.logoIntro === '1')
+  const [gone, setGone] = useState(false)
+  useEffect(() => {
+    if (!show) return
+    sessionStorage.removeItem('logoIntro')
+    const t = setTimeout(() => setGone(true), 1600)
+    return () => clearTimeout(t)
+  }, [show])
+  if (!show || gone) return null
+  return (
+    <div className="logo-intro" aria-hidden="true">
+      <span className="ring" />
+      <span className="tile"><img src={markImg} alt="" /></span>
     </div>
   )
 }
@@ -247,6 +267,7 @@ export default function App() {
   return (
     <Meta.Provider value={{ ...meta, can: p => meta.perms.includes(p), reloadMeta }}>
       <div className="shell">
+        <LogoIntro />
         <nav>
           <a className="logo" href="#/" aria-label="Prop Central home"><img src={markImg} alt="ARK" /></a>
           {NAV.filter(n => !n[3] || meta.perms.includes(n[3])).map(([href, label, icon]) => (
