@@ -243,8 +243,8 @@ export default function Dashboard() {
   const sla = k.leads ? k.within_sla / k.leads : null, prevSla = p.leads ? p.within_sla / p.leads : null
   const strip = [
     ['Total leads', k.leads, null, <Delta cur={k.leads} prev={p.leads} />],
-    ['Within SLA', sla == null ? '—' : Math.round(sla * 100), '%', <Delta cur={sla} prev={prevSla} rate />],
-    ['Avg first response', k.avg_response == null ? '—' : Math.round(k.avg_response), ' min', <Delta cur={k.avg_response} prev={p.avg_response} lowerIsBetter />],
+    ['Within SLA', sla == null ? '—' : Math.round(sla * 100), sla == null ? '' : '%', <Delta cur={sla} prev={prevSla} rate />],
+    ['Avg first response', k.avg_response == null ? '—' : Math.round(k.avg_response), k.avg_response == null ? '' : ' min', <Delta cur={k.avg_response} prev={p.avg_response} lowerIsBetter />],
     ['Visits verified', d.visits.total ? Math.round((100 * (d.visits.verified || 0)) / d.visits.total) : '—', d.visits.total ? '%' : '', <span className="delta flat">{d.visits.verified || 0} of {d.visits.total}</span>],
     ['Booked', k.booked, null, <Delta cur={k.booked} prev={p.booked} />],
   ]
@@ -253,8 +253,8 @@ export default function Dashboard() {
     <section className="dash">
       {head}
       <div className="kpis glass">
-        {strip.map(([label, value, unit, delta]) => (
-          <div key={label}><small>{label}</small><b>{value ?? 0}{unit && <span>{unit}</span>}</b>{delta}</div>
+        {strip.map(([label, value, unit, delta], i) => (
+          <div key={label} className={'kpi' + (i === strip.length - 1 ? ' wide' : '')}><small>{label}</small><b>{value ?? 0}{unit && <span>{unit}</span>}</b>{delta}</div>
         ))}
       </div>
 

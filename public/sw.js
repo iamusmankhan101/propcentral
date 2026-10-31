@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prop-central-crm-v2'
+const CACHE_NAME = 'estate-centric-crm-v3'
 const APP_SHELL = [
   '/',
   '/index.html',

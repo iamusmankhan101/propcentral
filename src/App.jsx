@@ -47,14 +47,14 @@ function Login() {
   return (
     <div className="login-page">
       <aside className="login-bg">
-        <img className="login-logo" src={logoImg} alt="Prop Central" />
+        <img className="login-logo" src={logoImg} alt="Estate Centric" />
         <p>Elevate your portfolio, one asset at a time.<br />Close more deals, faster.</p>
-        <small>Prop Central — real estate, in one place.</small>
+        <small>Estate Centric — real estate, in one place.</small>
       </aside>
       <div className="login-side">
         <form className="login" onSubmit={submit}>
           <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Prop Central dashboard.'}</p>
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
           {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
           {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
           <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
@@ -247,7 +247,7 @@ function MobileAccount({ me, onLogout }) {
   return (
     <div className="mobile-head">
       <div className="head-id">
-        <a className="app-mark" href="#/" aria-label="Prop Central home"><img src={markImg} alt="" /></a>
+        <a className="app-mark" href="#/" aria-label="Estate Centric home"><img src={markImg} alt="" /></a>
         <div className="greet"><small>Good {part}</small><b>{me.name.split(' ')[0]}</b></div>
       </div>
       <div className="acct" ref={box}>
@@ -370,7 +370,7 @@ export default function App() {
       <div className="shell">
         <LogoIntro />
         <nav>
-          <a className="logo" href="#/" aria-label="Prop Central home"><img src={markImg} alt="ARK" /></a>
+          <a className="logo" href="#/" aria-label="Estate Centric home"><img src={markImg} alt="" /></a>
           {NAV.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] !== 'more').map(([href, label, icon, , group]) => (
             <a key={href} href={'#' + href} className={[(href === '/' ? home : path.startsWith(href)) ? 'active' : '', group === 'wide' ? 'nav-wide' : ''].filter(Boolean).join(' ')}><Icon name={icon} size={20} /><span>{label}</span></a>
           ))}

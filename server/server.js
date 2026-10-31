@@ -2667,6 +2667,6 @@ if (!serverless && isMain) {
     slaTick()
   }
   const port = process.env.PORT || 3001
-  app.listen(port, () => console.log(`Prop Central API on http://localhost:${port}`))
+  app.listen(port, () => console.log(`Estate Centric API on http://localhost:${port}`))
 }
 export default app

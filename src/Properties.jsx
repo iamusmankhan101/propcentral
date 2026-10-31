@@ -570,7 +570,7 @@ export function RentReceipt({ id }) {
       <article className="card letter">
         {r.voided_at && <div className="stamp">Void</div>}
         <header className="row between">
-          <img src={logoImg} alt="Prop Central" />
+          <img src={logoImg} alt="Estate Centric" />
           <div className="right"><small>Receipt No.</small><b>{r.receipt_no}</b><small>Date: {r.paid_on}</small></div>
         </header>
         <h1>{r.kind === 'deposit_refund' ? 'Deposit Refund Voucher' : r.kind === 'deposit' ? 'Security Deposit Receipt' : 'Rent Receipt'}</h1>
@@ -581,8 +581,8 @@ export function RentReceipt({ id }) {
           <tr><th>Property</th><td>{propLabel(r.property)}{r.property.address && `, ${r.property.address}`}</td></tr>
           {r.note && <tr><th>Note</th><td>{r.note}</td></tr>}
         </tbody></table>
-        <div className="signs"><div><span />Tenant</div><div><span />Received by<br /><small>Prop Central</small></div></div>
-        <footer><small>Recorded by {r.created_by_name || 'Prop Central'} on {fmt(r.created_at)}</small></footer>
+        <div className="signs"><div><span />Tenant</div><div><span />Received by<br /><small>Estate Centric</small></div></div>
+        <footer><small>Recorded by {r.created_by_name || 'Estate Centric'} on {fmt(r.created_at)}</small></footer>
       </article>
     </section>
   )

@@ -1,4 +1,4 @@
-# Prop Central
+# Estate Centric
 
 Real estate CRM, Phase 1 of the PRD (lead control and accountability). React + Vite frontend, Express API on a libSQL/SQLite database (local file or Turso).
 

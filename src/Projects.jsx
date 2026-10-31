@@ -308,7 +308,7 @@ export function PublicMap({ token }) {
   const u = data.units.find(x => x.id === sel)
   return (
     <div className="public-map">
-      <img className="public-logo" src={logoImg} alt="Prop Central" />
+      <img className="public-logo" src={logoImg} alt="Estate Centric" />
       <PlotMap client p={data} map={map} units={data.units} shown={data.units.filter(x => !status || x.status === status)} unitId={sel}
         counts={counts} statuses={data.statuses} status={status} onStatus={s => setStatus(status === s ? '' : s)}
         onPick={(_, x) => setSel(x?.id ?? null)} onClose={() => setSel(null)}
@@ -1109,7 +1109,7 @@ export function AllotmentLetter({ id }) {
       <article className="card letter">
         {a.status === 'cancelled' && <div className="stamp">Cancelled</div>}
         <header className="row between">
-          <img src={logoImg} alt="Prop Central" />
+          <img src={logoImg} alt="Estate Centric" />
           <div className="right"><small>Allotment No.</small><b>{a.allotment_no}</b><small>Date: {a.sale_date}</small></div>
         </header>
         <h1>{a.sale_status === 'Booked' ? 'Booking Confirmation' : 'Allotment Letter'}</h1>
@@ -1131,9 +1131,9 @@ export function AllotmentLetter({ id }) {
         {a.note && <p><small>Note: {a.note}</small></p>}
         <div className="signs">
           <div><span />Allottee</div>
-          <div><span />Authorised Signatory<br /><small>Prop Central</small></div>
+          <div><span />Authorised Signatory<br /><small>Estate Centric</small></div>
         </div>
-        <footer><small>Issued by {a.created_by_name || 'Prop Central'} · This letter is valid only with the company stamp and an authorised signature.</small></footer>
+        <footer><small>Issued by {a.created_by_name || 'Estate Centric'} · This letter is valid only with the company stamp and an authorised signature.</small></footer>
       </article>
     </section>
   )

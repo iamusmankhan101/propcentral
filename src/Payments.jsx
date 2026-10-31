@@ -219,7 +219,7 @@ export function Receipt({ id, path, back }) {
       <article className="card letter">
         {p.voided_at && <div className="stamp">Void</div>}
         <header className="row between">
-          <img src={logoImg} alt="Prop Central" />
+          <img src={logoImg} alt="Estate Centric" />
           <div className="right"><small>Receipt No.</small><b>{p.receipt_no}</b><small>Date: {p.paid_on}</small></div>
         </header>
         <h1>{title}</h1>
@@ -234,9 +234,9 @@ export function Receipt({ id, path, back }) {
         {p.voided_at && <p className="error"><small>Voided {fmt(p.voided_at)}: {p.void_note}</small></p>}
         <div className="signs">
           <div><span />{p.kind === 'refund' ? 'Received by' : 'Customer'}</div>
-          <div><span />Accounts<br /><small>Prop Central</small></div>
+          <div><span />Accounts<br /><small>Estate Centric</small></div>
         </div>
-        <footer><small>Recorded by {p.created_by_name || 'Prop Central'} on {fmt(p.created_at)} · Valid only with the company stamp.</small></footer>
+        <footer><small>Recorded by {p.created_by_name || 'Estate Centric'} on {fmt(p.created_at)} · Valid only with the company stamp.</small></footer>
       </article>
     </section>
   )
