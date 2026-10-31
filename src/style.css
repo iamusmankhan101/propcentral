@@ -135,7 +135,7 @@ td code { font-size: 11px; word-break: break-all; color: var(--muted); }
 /* ---------- dashboard hero ---------- */
 .hero { color: #fff; padding: 26px 0 0; }
 .hero-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-right: 460px; min-height: 52px; }
-.period { position: relative; display: inline-flex; align-items: center; gap: 10px; font-size: 32px; line-height: 1.2; letter-spacing: -.02em; color: #fff; border-bottom: 2px solid rgba(255,255,255,.55); padding: 0 2px 2px; cursor: pointer; }
+.period { position: relative; display: inline-flex; flex-direction: row; align-items: center; gap: 10px; font-size: 32px; font-weight: 800; line-height: 1.2; letter-spacing: -.02em; color: #fff; border-bottom: 2px solid rgba(255,255,255,.55); padding: 0 2px 2px; cursor: pointer; }
 .period::after { content: ''; width: 18px; height: 18px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / 18px no-repeat; }
 .period select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; font-size: 14px; }
 .period:hover, .period:focus-within { border-bottom-color: #fff; }
