@@ -203,6 +203,7 @@ option { color: var(--text); font-size: 14px; }
 .composition .ring { fill: none; stroke: var(--field); stroke-width: 26; }
 .donut-total { font-size: 28px; font-weight: 800; fill: var(--text); }
 .donut-label { font-size: 11px; fill: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.donut-pct { font-size: 11px; font-weight: 700; fill: var(--muted); }
 
 .trend { margin-top: 18px; }
 .trend .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }

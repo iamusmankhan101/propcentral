@@ -139,6 +139,7 @@ function Composition({ funnel }) {
   const rows = funnel.filter(f => f.n > 0).sort((a, b) => rank(a.status) - rank(b.status)).map(f => ({ name: f.status, n: f.n, color: color(f.status) }))
   const total = rows.reduce((s, r) => s + r.n, 0)
   const pcts = shares(rows, total)
+  const focus = rows[hover]
   const r = 70, C = 2 * Math.PI * r, gap = rows.length > 1 ? 3 : 0
   let off = 0
   return (
@@ -147,7 +148,8 @@ function Composition({ funnel }) {
       <div className="composition">
         <ul>
           {rows.map((x, i) => (
-            <li key={x.name} className={hover === i ? 'on' : ''} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}>
+            <li key={x.name} className={hover === i ? 'on' : ''}
+              onPointerEnter={() => setHover(i)} onPointerLeave={e => e.pointerType !== 'touch' && setHover(null)}>
               <small><i className="swatch" style={{ background: x.color }} />{x.name}</small>
               <div><b>{x.n.toLocaleString()}</b> <span className="muted">{pcts[i]}%</span></div>
             </li>
@@ -161,11 +163,12 @@ function Composition({ funnel }) {
             return (
               <circle key={x.name} cx="90" cy="90" r={r} fill="none" stroke={x.color} strokeWidth={hover === i ? 30 : 26}
                 strokeDasharray={`${Math.max(0.1, len - gap)} ${C}`} strokeDashoffset={-o} transform="rotate(-90 90 90)"
-                onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} />
+                onPointerEnter={() => setHover(i)} onPointerLeave={e => e.pointerType !== 'touch' && setHover(null)} />
             )
           })}
-          <text x="90" y="86" textAnchor="middle" className="donut-total">{total}</text>
-          <text x="90" y="106" textAnchor="middle" className="donut-label">{rows[hover]?.name || 'leads'}</text>
+          <text x="90" y="86" textAnchor="middle" className="donut-total">{focus ? focus.n.toLocaleString() : total}</text>
+          <text x="90" y="106" textAnchor="middle" className="donut-label">{focus ? focus.name : 'leads'}</text>
+          {focus && <text x="90" y="122" textAnchor="middle" className="donut-pct">{pcts[hover]}%</text>}
         </svg>
       </div>
       {!rows.length && <p className="muted">No leads in this period.</p>}
