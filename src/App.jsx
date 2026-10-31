@@ -216,10 +216,44 @@ function MobileAccount({ me, onLogout }) {
   )
 }
 
+// [path, label, icon, permission, placement]: "all" sits in the bar everywhere, "wide" only on
+// desktop, "more" lives behind the overflow button so the bar stays short
 const NAV = [
-  ['/', 'Dashboard', 'dashboard'], ['/leads', 'Leads', 'leads'], ['/projects', 'Projects', 'building'], ['/properties', 'Properties', 'map'], ['/visits', 'Visits', 'visits'], ['/collections', 'Collections', 'wallet', 'payments'], ['/commissions', 'Sales', 'percent'], ['/reports', 'Reports', 'calendar'], ['/listings', 'Listings', 'key'], ['/import', 'Import', 'import', 'import'],
-  ['/users', 'Users', 'users', 'manage_users'], ['/settings', 'Settings', 'settings'], ['/audit', 'Audit', 'audit', 'audit'],
+  ['/', 'Dashboard', 'dashboard', null, 'all'], ['/leads', 'Leads', 'leads', null, 'all'], ['/projects', 'Projects', 'building', null, 'all'], ['/visits', 'Visits', 'visits', null, 'all'],
+  ['/properties', 'Properties', 'map', null, 'wide'], ['/collections', 'Collections', 'wallet', 'payments', 'wide'], ['/reports', 'Reports', 'calendar', null, 'wide'],
+  ['/commissions', 'Sales', 'percent', null, 'more'], ['/listings', 'Listings', 'key', null, 'more'], ['/import', 'Import', 'import', 'import', 'more'],
+  ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more'],
 ]
+
+function MoreMenu({ items, path, home }) {
+  const [open, setOpen] = useState(false)
+  const box = useRef()
+  const isActive = ([href]) => (href === '/' ? home : path.startsWith(href))
+  useEffect(() => {
+    if (!open) return
+    const out = e => box.current.contains(e.target) || setOpen(false)
+    const esc = e => e.key === 'Escape' && setOpen(false)
+    const close = () => setOpen(false)
+    addEventListener('pointerdown', out); addEventListener('keydown', esc); addEventListener('hashchange', close)
+    return () => { removeEventListener('pointerdown', out); removeEventListener('keydown', esc); removeEventListener('hashchange', close) }
+  }, [open])
+  return (
+    <div className="more" ref={box}>
+      <button className={'more-btn' + (items.some(isActive) ? ' active' : '')} aria-label="More pages" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name="more" size={20} /><span>More</span>
+      </button>
+      {open && (
+        <div className="more-menu" role="menu">
+          {items.map(([href, label, icon]) => (
+            <a key={href} href={'#' + href} role="menuitem" className={isActive([href]) ? 'active' : ''} onClick={() => setOpen(false)}>
+              <Icon name={icon} size={18} /><span>{label}</span>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function App() {
   const [route, setRoute] = useState(location.hash.slice(1) || '/')
@@ -288,9 +322,10 @@ export default function App() {
         <LogoIntro />
         <nav>
           <a className="logo" href="#/" aria-label="Prop Central home"><img src={markImg} alt="ARK" /></a>
-          {NAV.filter(n => !n[3] || meta.perms.includes(n[3])).map(([href, label, icon]) => (
-            <a key={href} href={'#' + href} className={(href === '/' ? home : path.startsWith(href)) ? 'active' : ''}><Icon name={icon} size={20} /><span>{label}</span></a>
+          {NAV.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] !== 'more').map(([href, label, icon, , group]) => (
+            <a key={href} href={'#' + href} className={[(href === '/' ? home : path.startsWith(href)) ? 'active' : '', group === 'wide' ? 'nav-wide' : ''].filter(Boolean).join(' ')}><Icon name={icon} size={20} /><span>{label}</span></a>
           ))}
+          <MoreMenu items={NAV.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')} path={path} home={home} />
           <div className="spacer" />
           <a className="nav-logout" href="#" onClick={e => { e.preventDefault(); logout() }}><Icon name="logout" size={20} /><span>Log out</span></a>
           <a className="avatar" href="#/settings?tab=profile" title={`${meta.me.name} · ${meta.me.role.replace('_', ' ')} · Profile & settings`}>{meta.me.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</a>
