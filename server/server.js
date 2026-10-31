@@ -367,6 +367,8 @@ app.post('/api/login', (req, res) => {
   if (f?.count >= 5 && Date.now() - f.at < 15 * 60e3) throw err(429, 'Too many attempts. Try again in 15 minutes.')
   const u = one('SELECT * FROM users WHERE email=? AND active=1', email)
   if (!u || !checkPw(String(req.body.password || ''), u.pass)) {
+    const pending = one('SELECT * FROM users WHERE email=? AND active=0', email)
+    if (pending && checkPw(String(req.body.password || ''), pending.pass)) throw err(403, 'Your account is waiting for an admin to activate it')
     fails.set(email, { count: (f?.count || 0) + 1, at: Date.now() })
     audit(u?.id, 'login_failed', 'user', u?.id, { email }, req.ip)
     throw err(401, 'Wrong email or password')
@@ -384,6 +386,31 @@ app.post('/api/login', (req, res) => {
   run('INSERT INTO sessions VALUES(?,?,?)', token, u.id, now())
   audit(u.id, 'login', 'user', u.id, null, req.ip)
   res.json({ token })
+})
+
+// Self-service sign-up: creates an inactive agent account that an admin activates under Users.
+// ponytail: the throttle lives in memory like the login lockout; move it to Redis with multiple instances.
+const signups = new Map()
+app.post('/api/register', (req, res) => {
+  const ip = req.ip || 'local'
+  const s = signups.get(ip)
+  if (s && s.count >= 5 && Date.now() - s.at < 3600e3) throw err(429, 'Too many sign-ups from this address. Try again later.')
+  const name = String(req.body.name || '').trim()
+  const email = String(req.body.email || '').trim().toLowerCase()
+  const pass = String(req.body.password || '')
+  const phone = String(req.body.phone || '').trim() ? L.normalizePhone(String(req.body.phone)) : null
+  if (!name) throw err(400, 'Name is required')
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email address')
+  if (pass.length < 8) throw err(400, 'Password must be at least 8 characters')
+  if (req.body.phone && !phone) throw err(400, 'Enter a valid phone number')
+  if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
+  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass) VALUES(?,?,?,?,0,1,?)',
+    name, email, phone, 'agent', hash(pass)).lastInsertRowid
+  signups.set(ip, { count: (s && Date.now() - s.at < 3600e3 ? s.count : 0) + 1, at: Date.now() })
+  for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
+    notify(u.id, `New sign-up: ${name} (${email}) is waiting for approval`, null)
+  audit(null, 'register', 'user', id, { email }, req.ip)
+  res.json({ ok: true })
 })
 
 // Vercel Cron entry point; replaces the 60s in-process timers when deployed serverless

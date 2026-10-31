@@ -18,11 +18,22 @@ import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
 
 function Login() {
-  const { run, error, busy } = useAction()
+  const { run, error, busy, setError } = useAction()
+  const [mode, setMode] = useState('signin')
   const [needCode, setNeedCode] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [email, setEmail] = useState('')
+  const signup = mode === 'signup'
+  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false) }
   const submit = e => {
     const body = formData(e)
     run(async () => {
+      if (signup) {
+        await api('/register', { body })
+        setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
+        setNotice('Account created. An admin has to activate it before you can sign in.')
+        return
+      }
       const r = await api('/login', { body })
       if (r.need_code) return setNeedCode(true)
       localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
@@ -37,13 +48,20 @@ function Login() {
       </aside>
       <div className="login-side">
         <form className="login" onSubmit={submit}>
-          <h1>Welcome back</h1>
-          <p className="muted">Enter your credentials to access your Prop Central dashboard.</p>
-          <label>Email<span className="field"><Icon name="mail" size={16} /><input name="email" type="email" placeholder="mail@example.com" required autoFocus /></span></label>
-          <label>Password<span className="field"><Icon name="lock" size={16} /><input name="password" type="password" placeholder="Your password" required /></span></label>
+          <h1>{signup ? 'Create an account' : 'Welcome back'}</h1>
+          <p className="muted">{signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Prop Central dashboard.'}</p>
+          {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" required autoFocus /></span></label>}
+          <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" defaultValue={email} required autoFocus={!signup} /></span></label>
+          {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" /></span></label>}
+          <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? 'At least 8 characters' : 'Your password'} minLength={signup ? 8 : undefined} required autoFocus={signup} /></span></label>
           {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
+          {notice && <p className="ok">{notice}</p>}
           {error && <p className="error">{error}</p>}
-          <button disabled={busy}>Continue</button>
+          <button disabled={busy}>{signup ? 'Create account' : 'Continue'}</button>
+          <p className="auth-switch muted">
+            {signup ? 'Already have an account? ' : 'New here? '}
+            <a href="#" onClick={e => { e.preventDefault(); switchTo(signup ? 'signin' : 'signup') }}>{signup ? 'Sign in' : 'Create an account'}</a>
+          </p>
         </form>
       </div>
     </div>

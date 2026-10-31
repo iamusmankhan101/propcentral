@@ -256,6 +256,9 @@ option { color: var(--text); font-size: 14px; }
 .login .field svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); }
 .login .field input { width: 100%; padding-left: 38px; background: #fff; border-color: #e3e4e8; }
 .login button { margin-top: 8px; padding: 12px; }
+.auth-switch { margin: 2px 0 0; text-align: center; }
+.auth-switch a { color: var(--s1); font-weight: 700; text-decoration: none; }
+.auth-switch a:hover { text-decoration: underline; }
 @media (max-width: 800px) {
   .login-page { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .login-bg { padding: 0; min-height: 90px; }
