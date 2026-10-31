@@ -8,7 +8,7 @@ import { newSecret, checkTotp } from './totp.js'
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
 const remote = /^(libsql|https?):/i.test(dbUrl)
-const SCHEMA_VERSION = '4'
+const SCHEMA_VERSION = '5'
 
 // A failed database init must not take the whole function down: /api/health reports the cause
 // and every other route answers 503 instead of a boot crash nobody can read.
@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS owner_payouts(id INTEGER PRIMARY KEY, property_id INT
 CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL, data TEXT NOT NULL, created_by INTEGER, created_at TEXT);
 `)
 
+  // Auth throttle counters must exist on databases created before this table was added
+  db.exec('CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)')
+
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
   if (schemaVersion !== SCHEMA_VERSION) {
@@ -192,6 +195,31 @@ const stripMeta = r => { if (r) delete r._metadata; return r }
 const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...p))
 const all = (sql, ...p) => db.prepare(sql).all(...p).map(stripMeta)
 const run = (sql, ...p) => db.prepare(sql).run(...p)
+
+// ---------- auth throttling ----------
+// Counters live in the DB so limits hold across serverless instances; Turso serialises the upsert.
+const rateKey = (kind, value) => `${kind}:${value}`
+const rateMins = resetAt => Math.max(1, Math.ceil((resetAt - Date.now()) / 60000))
+const rateMsg = (prefix, resetAt) => {
+  const m = rateMins(resetAt)
+  return `${prefix}. Try again in ${m} minute${m === 1 ? '' : 's'}.`
+}
+// Sliding counter inside a fixed window: the first hit starts the window, later hits add to it.
+const rateHit = (key, max, windowMs, prefix = 'Too many attempts') => {
+  const t = Date.now()
+  const row = stripMeta(db.prepare(`INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?)
+    ON CONFLICT(key) DO UPDATE SET
+      count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END,
+      reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END
+    RETURNING count, reset_at`).get(key, t + windowMs, t, t, t + windowMs))
+  if (row.count > max) throw err(429, rateMsg(prefix, row.reset_at))
+  return row
+}
+const rateLocked = key => {
+  const row = one('SELECT count, reset_at FROM rate_limits WHERE key=?', key)
+  return row && row.reset_at > Date.now() ? row : null
+}
+const rateClear = key => run('DELETE FROM rate_limits WHERE key=?', key)
 
 // libsql has no nested transactions: the outer call uses the driver's transaction, inner calls join it
 let txDepth = 0
@@ -360,28 +388,32 @@ app.use('/api', (req, res, next) => {
   res.status(503).json({ error: 'Database unavailable', detail: String(dbError?.message || 'init failed').slice(0, 300) })
 })
 
-const fails = new Map() // ponytail: in-memory login lockout, move to Redis if running multiple instances
+// Login is throttled per IP (all attempts) and per account (failed attempts), so neither a single
+// address nor a single account can be hammered; a successful sign-in clears that account's failures.
 app.post('/api/login', (req, res) => {
   const email = String(req.body.email || '').toLowerCase()
-  const f = fails.get(email)
-  if (f?.count >= 5 && Date.now() - f.at < 15 * 60e3) throw err(429, 'Too many attempts. Try again in 15 minutes.')
+  const ip = req.ip || 'local'
+  rateHit(rateKey('login-ip', ip), 60, 15 * 60e3)
+  const userKey = rateKey('login-user', email)
+  const locked = rateLocked(userKey)
+  if (locked?.count >= 5) throw err(429, rateMsg('Too many attempts', locked.reset_at))
   const u = one('SELECT * FROM users WHERE email=? AND active=1', email)
   if (!u || !checkPw(String(req.body.password || ''), u.pass)) {
     const pending = one('SELECT * FROM users WHERE email=? AND active=0', email)
     if (pending && checkPw(String(req.body.password || ''), pending.pass)) throw err(403, 'Your account is waiting for an admin to activate it')
-    fails.set(email, { count: (f?.count || 0) + 1, at: Date.now() })
+    rateHit(userKey, 5, 15 * 60e3)
     audit(u?.id, 'login_failed', 'user', u?.id, { email }, req.ip)
     throw err(401, 'Wrong email or password')
   }
   if (u.totp_on) {
     if (!req.body.code) return res.json({ need_code: true }) // password was right; ask for the authenticator code
     if (!checkTotp(u.totp_secret, req.body.code)) {
-      fails.set(email, { count: (f?.count || 0) + 1, at: Date.now() })
+      rateHit(userKey, 5, 15 * 60e3)
       audit(u.id, 'login_failed', 'user', u.id, { email, reason: '2fa' }, req.ip)
       throw err(401, 'Wrong authenticator code')
     }
   }
-  fails.delete(email)
+  rateClear(userKey)
   const token = crypto.randomBytes(32).toString('hex')
   run('INSERT INTO sessions VALUES(?,?,?)', token, u.id, now())
   audit(u.id, 'login', 'user', u.id, null, req.ip)
@@ -389,12 +421,9 @@ app.post('/api/login', (req, res) => {
 })
 
 // Self-service sign-up: creates an inactive agent account that an admin activates under Users.
-// ponytail: the throttle lives in memory like the login lockout; move it to Redis with multiple instances.
-const signups = new Map()
 app.post('/api/register', (req, res) => {
   const ip = req.ip || 'local'
-  const s = signups.get(ip)
-  if (s && s.count >= 5 && Date.now() - s.at < 3600e3) throw err(429, 'Too many sign-ups from this address. Try again later.')
+  rateHit(rateKey('register-ip', ip), 5, 3600e3, 'Too many sign-ups from this address')
   const name = String(req.body.name || '').trim()
   const email = String(req.body.email || '').trim().toLowerCase()
   const pass = String(req.body.password || '')
@@ -406,7 +435,6 @@ app.post('/api/register', (req, res) => {
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass) VALUES(?,?,?,?,0,1,?)',
     name, email, phone, 'agent', hash(pass)).lastInsertRowid
-  signups.set(ip, { count: (s && Date.now() - s.at < 3600e3 ? s.count : 0) + 1, at: Date.now() })
   for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
     notify(u.id, `New sign-up: ${name} (${email}) is waiting for approval`, null)
   audit(null, 'register', 'user', id, { email }, req.ip)
@@ -420,6 +448,7 @@ app.get('/api/cron/tick', (req, res) => {
   leaseTick()
   slaTick()
   reportTick()
+  run('DELETE FROM rate_limits WHERE reset_at < ?', Date.now())
   res.json({ ok: true })
 })
 
