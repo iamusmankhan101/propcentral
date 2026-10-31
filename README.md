@@ -35,8 +35,9 @@ The API runs as one serverless function (`api/[...path].js`) and the Vite build 
 1. Create the database with the [Turso CLI](https://docs.turso.tech/cli/introduction): `turso db create propcentral`, then copy `turso db show propcentral --url` and `turso db tokens create propcentral`.
 2. In the Vercel project, add `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `CRON_SECRET` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
 3. Deploy. Tables, migrations and the demo seed run automatically on the first request.
-4. `vercel.json` registers a daily Vercel Cron for `/api/cron/tick`. Vercel sends `Authorization: Bearer $CRON_SECRET` for you. On the free plan the schedule cannot be more frequent than daily; for minute-level SLA checks either upgrade (cron `*/5 * * * *`) or point an external scheduler such as cron-job.org at `https://<app>/api/cron/tick` with the same bearer header.
-5. Keep local `.env` values out of Git; only add them in Vercel.
+4. Check `https://<app>/api/health` after deploying. It reports `ok`, whether the database is Turso or a local file, and the exact init error when the database cannot be reached (the rest of the API answers 503 in that case).
+5. `vercel.json` registers a daily Vercel Cron for `/api/cron/tick`. Vercel sends `Authorization: Bearer $CRON_SECRET` for you. On the free plan the schedule cannot be more frequent than daily; for minute-level SLA checks either upgrade (cron `*/5 * * * *`) or point an external scheduler such as cron-job.org at `https://<app>/api/cron/tick` with the same bearer header.
+6. Keep local `.env` values out of Git; only add them in Vercel.
 
 Limits to know: serverless functions cap request/response bodies at ~4.5 MB (large society-map SVGs or photo payloads may exceed it; media itself is stored in the database), and every database call is a network round trip, so heavy pages take longer than a local file.
 

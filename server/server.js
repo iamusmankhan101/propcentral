@@ -1,5 +1,4 @@
 import express from 'express'
-import Database from 'libsql'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,10 +8,18 @@ import { newSecret, checkTotp } from './totp.js'
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
 const remote = /^(libsql|https?):/i.test(dbUrl)
-const db = new Database(dbUrl, process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : undefined)
-if (!remote) db.pragma('journal_mode = WAL')
-const tablesReady = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'`).get()
-if (!tablesReady) db.exec(`
+const SCHEMA_VERSION = '4'
+
+// A failed database init must not take the whole function down: /api/health reports the cause
+// and every other route answers 503 instead of a boot crash nobody can read.
+let db = null
+let dbError = null
+try {
+  const { default: Database } = await import('libsql')
+  db = new Database(dbUrl, process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : undefined)
+  if (!remote) db.pragma('journal_mode = WAL')
+  const tablesReady = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'`).get()
+  if (!tablesReady) db.exec(`
 CREATE TABLE IF NOT EXISTS branches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT);
 CREATE TABLE IF NOT EXISTS teams(id INTEGER PRIMARY KEY, name TEXT NOT NULL, branch_id INTEGER REFERENCES branches(id));
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, phone TEXT, pass TEXT NOT NULL,
@@ -94,30 +101,34 @@ CREATE TABLE IF NOT EXISTS owner_payouts(id INTEGER PRIMARY KEY, property_id INT
 CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL, data TEXT NOT NULL, created_by INTEGER, created_at TEXT);
 `)
 
-// columns added after first release: run the migration once per schema version, not on every cold start
-const SCHEMA_VERSION = '4'
-const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
-if (schemaVersion !== SCHEMA_VERSION) {
-  const addColumn = (table, col, type) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col) || db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
-  addColumn('price_lists', 'size', 'REAL')
-  addColumn('price_lists', 'uom', 'TEXT')
-  addColumn('units', 'down_payment', 'INTEGER')
-  addColumn('units', 'map_ref', 'TEXT') // id of the plot's path in the project map SVG
-  addColumn('projects', 'map_svg', 'TEXT')
-  addColumn('projects', 'share_token', 'TEXT') // client map link: /#/map/<token>
-  addColumn('activities', 'amount', 'INTEGER') // offer amount
-  addColumn('leads', 'dealer_id', 'INTEGER') // external dealer who brought the client
-  addColumn('allotments', 'agent_id', 'INTEGER') // who gets credit for the sale (lead owner at the time)
-  addColumn('allotments', 'dealer_id', 'INTEGER')
-  addColumn('allotments', 'form', 'TEXT') // booking application form: father name, address, nominee…
-  addColumn('commissions', 'note', 'TEXT') // reason for a manual adjustment or cancellation
-  addColumn('users', 'totp_secret', 'TEXT')
-  addColumn('users', 'commission_rate', 'REAL')
-  addColumn('overlays', 'clear_white', 'INTEGER DEFAULT 1') // show the plan's white background as see-through // agent's own commission %, empty = the default in settings
-  addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
-  addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
-  db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
+  // columns added after first release: run the migration once per schema version, not on every cold start
+  const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
+  if (schemaVersion !== SCHEMA_VERSION) {
+    const addColumn = (table, col, type) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col) || db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
+    addColumn('price_lists', 'size', 'REAL')
+    addColumn('price_lists', 'uom', 'TEXT')
+    addColumn('units', 'down_payment', 'INTEGER')
+    addColumn('units', 'map_ref', 'TEXT') // id of the plot's path in the project map SVG
+    addColumn('projects', 'map_svg', 'TEXT')
+    addColumn('projects', 'share_token', 'TEXT') // client map link: /#/map/<token>
+    addColumn('activities', 'amount', 'INTEGER') // offer amount
+    addColumn('leads', 'dealer_id', 'INTEGER') // external dealer who brought the client
+    addColumn('allotments', 'agent_id', 'INTEGER') // who gets credit for the sale (lead owner at the time)
+    addColumn('allotments', 'dealer_id', 'INTEGER')
+    addColumn('allotments', 'form', 'TEXT') // booking application form: father name, address, nominee…
+    addColumn('commissions', 'note', 'TEXT') // reason for a manual adjustment or cancellation
+    addColumn('users', 'totp_secret', 'TEXT')
+    addColumn('users', 'commission_rate', 'REAL')
+    addColumn('overlays', 'clear_white', 'INTEGER DEFAULT 1') // show the plan's white background as see-through // agent's own commission %, empty = the default in settings
+    addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
+    addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
+    db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
+  }
+} catch (e) {
+  console.error('Database init failed:', e)
+  db = null
+  dbError = e
 }
 
 // ---------- settings (M22: everything configurable from admin) ----------
@@ -336,6 +347,18 @@ const maskRow = (u, r) => (can(u, 'view_phone') ? r : { ...r, phone: L.maskPhone
 const app = express()
 app.set('trust proxy', 1)
 app.use(express.json({ limit: '25mb', verify: (req, _res, buf) => { req.rawBody = buf } }))
+
+app.get('/api/health', (req, res) => {
+  const mode = remote ? 'turso' : 'file'
+  if (!db) return res.status(503).json({ ok: false, db: mode, error: String(dbError?.message || 'Database unavailable').slice(0, 300) })
+  res.json({ ok: true, db: mode, schema: SCHEMA_VERSION })
+})
+
+// Without this, a failed database init becomes an opaque FUNCTION_INVOCATION_FAILED on every route
+app.use('/api', (req, res, next) => {
+  if (db) return next()
+  res.status(503).json({ error: 'Database unavailable', detail: String(dbError?.message || 'init failed').slice(0, 300) })
+})
 
 const fails = new Map() // ponytail: in-memory login lockout, move to Redis if running multiple instances
 app.post('/api/login', (req, res) => {
@@ -2396,14 +2419,14 @@ function slaTick() {
 }
 
 // Project names used to live in a settings list; move them into the projects table once
-const legacyProjects = one(`SELECT value FROM settings WHERE key='projects'`)
+const legacyProjects = db && one(`SELECT value FROM settings WHERE key='projects'`)
 if (legacyProjects) {
   for (const n of JSON.parse(legacyProjects.value)) run('INSERT OR IGNORE INTO projects(name, created_at) VALUES(?,?)', n, now())
   run(`DELETE FROM settings WHERE key='projects'`)
 }
 
 // ---------- first-run seed ----------
-if (!one('SELECT 1 FROM users')) {
+if (db && !one('SELECT 1 FROM users')) {
   const b = run(`INSERT INTO branches(name,city) VALUES('Lahore HQ','Lahore')`).lastInsertRowid
   const tm = run(`INSERT INTO teams(name,branch_id) VALUES('Sales Team A',?)`, b).lastInsertRowid
   const add = (name, email, role, phone, team = null) =>
@@ -2431,11 +2454,13 @@ if (!one('SELECT 1 FROM users')) {
 const serverless = !!process.env.VERCEL
 const isMain = !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 if (!serverless && isMain) {
-  setInterval(slaTick, 60e3)
-  setInterval(reportTick, 60e3)
-  setInterval(leaseTick, 60e3)
-  leaseTick()
-  slaTick()
+  if (db) {
+    setInterval(slaTick, 60e3)
+    setInterval(reportTick, 60e3)
+    setInterval(leaseTick, 60e3)
+    leaseTick()
+    slaTick()
+  }
   const port = process.env.PORT || 3001
   app.listen(port, () => console.log(`Prop Central API on http://localhost:${port}`))
 }
