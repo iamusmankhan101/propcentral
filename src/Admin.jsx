@@ -9,6 +9,7 @@ export function Users() {
   const [users, reload] = useApi('/users')
   const { run, error, busy, setError } = useAction()
   const [msg, setMsg] = useState('')
+  const [resetLink, setResetLink] = useState('')
   const teams = m.teams.map(t => [t.id, t.name]), branches = m.branches.map(b => [b.id, b.name])
   const done = text => { setMsg(text); reload(); m.reloadMeta() }
 
@@ -22,10 +23,12 @@ export function Users() {
     const r = await api(`/users/${u.id}/deactivate`, { body: {} })
     done(`${u.name} deactivated. ${r.reassigned} of ${r.open} open leads reassigned.`)
   })
-  const resetPw = u => {
-    const password = prompt(`New password for ${u.name} (min 8 chars)`)
-    if (password) patch(u, { password })
-  }
+  // Hand out a one-time link instead of choosing the password for them
+  const resetPw = u => run(async () => {
+    const r = await api(`/users/${u.id}/reset-password`, { body: {} })
+    setResetLink(location.origin + '/#/reset?token=' + r.token)
+    setMsg(`Reset link for ${u.name}. Send it to them directly; it expires in 30 minutes and works once.`)
+  })
   const addOrg = (path, body) => run(async () => { await api(path, { body }); done('Added') })
 
   return (
@@ -33,6 +36,11 @@ export function Users() {
       <h2>Users</h2>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error" onClick={() => setError('')}>{error}</p>}
+      {resetLink && <div className="card row between reset-link">
+        <input readOnly value={resetLink} onFocus={e => e.target.select()} aria-label="Password reset link" />
+        <button onClick={() => { navigator.clipboard?.writeText(resetLink); setMsg('Reset link copied') }}>Copy</button>
+        <button className="ghost" onClick={() => setResetLink('')}>Dismiss</button>
+      </div>}
       <div className="card scroll">
         <table>
           <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
@@ -48,7 +56,7 @@ export function Users() {
                 onBlur={e => e.target.value !== String(u.commission_rate ?? '') && patch(u, { commission_rate: e.target.value })} aria-label={`Commission % for ${u.name}`} /></td>
               <td><input type="checkbox" checked={!!u.available} onChange={e => patch(u, { available: e.target.checked ? 1 : 0 })} /></td>
               <td className="row">
-                <button className="ghost" onClick={() => resetPw(u)}>Password</button>
+                <button className="ghost" onClick={() => resetPw(u)}>Reset link</button>
                 {u.totp_on ? <button className="ghost" onClick={() => confirm(`Turn off two-factor login for ${u.name}? (e.g. lost phone)`) && run(async () => { await api(`/users/${u.id}/reset-2fa`, { body: {} }); done('2FA reset') })}>Reset 2FA</button> : null}
                 {u.active
                   ? <button className="ghost danger" disabled={busy} onClick={() => confirm(`Deactivate ${u.name}? Their sessions end and open leads are reassigned.`) && deactivate(u)}>Offboard</button>
@@ -67,7 +75,7 @@ export function Users() {
         <label>Role<Select name="role" options={m.roles.map(r => [r.key, r.label])} defaultValue="agent" blank={null} /></label>
         <label>Team<Select name="team_id" options={teams} blank="—" /></label>
         <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
-        <label>Password<input name="password" type="password" minLength="8" required /></label>
+        <label>Password<input name="password" type="password" minLength="10" maxLength="200" placeholder="10+ characters, letters and numbers" required /></label>
         <div className="wide"><button disabled={busy}>Add user</button></div>
       </form>
 

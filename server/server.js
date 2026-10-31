@@ -8,7 +8,7 @@ import { newSecret, checkTotp } from './totp.js'
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
 const remote = /^(libsql|https?):/i.test(dbUrl)
-const SCHEMA_VERSION = '5'
+const SCHEMA_VERSION = '6'
 
 // A failed database init must not take the whole function down: /api/health reports the cause
 // and every other route answers 503 instead of a boot crash nobody can read.
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS teams(id INTEGER PRIMARY KEY, name TEXT NOT NULL, bra
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, phone TEXT, pass TEXT NOT NULL,
   role TEXT NOT NULL, team_id INTEGER, branch_id INTEGER, active INTEGER DEFAULT 1, available INTEGER DEFAULT 1, max_open INTEGER DEFAULT 300, last_assigned_at TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS password_resets(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at TEXT);
+CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id);
 CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY, name TEXT, phone TEXT UNIQUE NOT NULL, alt_phones TEXT, email TEXT, cnic TEXT, created_at TEXT);
 CREATE INDEX IF NOT EXISTS contacts_email ON contacts(email);
 CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id), ext_id TEXT UNIQUE,
@@ -103,6 +105,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
 
   // Auth throttle counters must exist on databases created before this table was added
   db.exec('CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)')
+  db.exec('CREATE TABLE IF NOT EXISTS password_resets(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at TEXT)')
 
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
@@ -241,7 +244,7 @@ const overLimit = (key, max, windowMs) => {
 const API_PER_MIN = +(process.env.API_RATE_LIMIT || 1200)
 const PUBLIC_PER_MIN = +(process.env.PUBLIC_RATE_LIMIT || 120)
 // Unauthenticated surfaces: sign-in, sign-up, share links and integration hooks
-const PUBLIC_PATHS = /^\/api\/(login|register|inbound|portal|public|files|overlay-images|webhooks)(\/|$)/
+const PUBLIC_PATHS = /^\/api\/(login|register|forgot-password|reset-password|inbound|portal|public|files|overlay-images|webhooks)(\/|$)/
 const CSP = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
   "script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; " +
   "img-src 'self' data: blob: https://*.maptiler.com; connect-src 'self' https://*.maptiler.com; " +
@@ -270,6 +273,18 @@ const safeEqual = (a, b) => {
 // Uploaded SVGs are served as documents, so a sandbox CSP stops a shared link from running script on our origin
 const sendSvg = (res, svg) => res.type('image/svg+xml')
   .set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'").send(svg)
+
+// ---------- password resets ----------
+// Only the SHA-256 of a reset token is stored; links expire in 30 minutes, work once,
+// and issuing a new one cancels the previous unused link for that account.
+const RESET_TTL_MS = 30 * 60e3
+const hashToken = t => crypto.createHash('sha256').update(String(t)).digest('hex')
+const issueReset = userId => {
+  run('DELETE FROM password_resets WHERE user_id=? AND used_at IS NULL', userId)
+  const token = crypto.randomBytes(32).toString('hex')
+  run('INSERT INTO password_resets(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)', hashToken(token), userId, now(), Date.now() + RESET_TTL_MS)
+  return token
+}
 
 function audit(userId, action, entity, entityId, data, ip) {
   run('INSERT INTO audit(user_id,action,entity,entity_id,data,ip,created_at) VALUES(?,?,?,?,?,?,?)',
@@ -507,8 +522,8 @@ app.post('/api/register', (req, res) => {
   if (!name) throw err(400, 'Name is required')
   if (name.length > 80) throw err(400, 'Name is too long')
   if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email address')
-  if (pass.length < 8) throw err(400, 'Password must be at least 8 characters')
-  if (pass.length > 200) throw err(400, 'Password is too long')
+  const pwProblem = L.passwordProblem(pass)
+  if (pwProblem) throw err(400, pwProblem)
   if (rawPhone.length > 30 || (rawPhone && !phone)) throw err(400, 'Enter a valid phone number')
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass) VALUES(?,?,?,?,0,1,?)',
@@ -516,6 +531,39 @@ app.post('/api/register', (req, res) => {
   for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
     notify(u.id, `New sign-up: ${name} (${email}) is waiting for approval`, null)
   audit(null, 'register', 'user', id, { email }, req.ip)
+  res.json({ ok: true })
+})
+
+// "Forgot password": the answer never reveals whether the email exists, and no reset secret is emailed
+// or logged. Admins are notified and hand the user a one-time link from Users.
+app.post('/api/forgot-password', (req, res) => {
+  const ip = req.ip || 'local'
+  rateHit(rateKey('forgot-ip', ip), 5, 3600e3, 'Too many reset requests from this address')
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : ''
+  if (email) rateHit(rateKey('forgot-user', email), 3, 3600e3, 'Too many reset requests for this account')
+  const u = email && one('SELECT * FROM users WHERE email=? AND active=1', email)
+  if (u) {
+    for (const a of all('SELECT * FROM users WHERE active=1').filter(a => can(a, 'manage_users')))
+      notify(a.id, `Password reset requested for ${u.name} (${u.email}). Open Users and copy their reset link.`, null)
+    audit(null, 'password_reset_requested', 'user', u.id, { email }, ip)
+  }
+  res.json({ ok: true })
+})
+
+app.post('/api/reset-password', (req, res) => {
+  rateHit(rateKey('reset-ip', req.ip || 'local'), 10, 15 * 60e3, 'Too many reset attempts')
+  const token = typeof req.body.token === 'string' ? req.body.token.trim() : ''
+  const pass = typeof req.body.password === 'string' ? req.body.password : ''
+  const problem = L.passwordProblem(pass)
+  if (problem) throw err(400, problem)
+  const row = /^[a-f0-9]{64}$/.test(token) && one('SELECT * FROM password_resets WHERE token_hash=?', hashToken(token))
+  if (!row || row.used_at || row.expires_at <= Date.now()) throw err(400, 'This reset link has expired. Ask an admin for a new one.')
+  const u = one('SELECT * FROM users WHERE id=? AND active=1', row.user_id)
+  if (!u) throw err(400, 'This reset link is no longer usable. Ask an admin for a new one.')
+  run('UPDATE users SET pass=? WHERE id=?', hash(pass), u.id)
+  run('UPDATE password_resets SET used_at=? WHERE token_hash=?', now(), row.token_hash)
+  run('DELETE FROM sessions WHERE user_id=?', u.id) // a reset signs the account out everywhere
+  audit(u.id, 'password_reset', 'user', u.id, null, req.ip)
   res.json({ ok: true })
 })
 
@@ -527,6 +575,7 @@ app.get('/api/cron/tick', (req, res) => {
   slaTick()
   reportTick()
   run('DELETE FROM rate_limits WHERE reset_at < ?', Date.now())
+  run('DELETE FROM password_resets WHERE used_at IS NOT NULL OR expires_at < ?', Date.now())
   res.json({ ok: true })
 })
 
@@ -651,9 +700,12 @@ app.patch('/api/me', (req, res) => {
   res.json({ ok: true })
 })
 app.post('/api/me/password', (req, res) => {
-  if (!checkPw(String(req.body.current || ''), req.user.pass)) throw err(400, 'Current password is wrong')
-  if (String(req.body.password || '').length < 8) throw err(400, 'New password must be at least 8 characters')
-  run('UPDATE users SET pass=? WHERE id=?', hash(req.body.password), req.user.id)
+  const current = typeof req.body.current === 'string' ? req.body.current : ''
+  const pass = typeof req.body.password === 'string' ? req.body.password : ''
+  if (current.length > 200 || !checkPw(current, req.user.pass)) throw err(400, 'Current password is wrong')
+  const problem = L.passwordProblem(pass)
+  if (problem) throw err(400, problem)
+  run('UPDATE users SET pass=? WHERE id=?', hash(pass), req.user.id)
   run('DELETE FROM sessions WHERE user_id=? AND token<>?', req.user.id, req.token) // log out other devices
   log(req, 'change_password', 'user', req.user.id)
   res.json({ ok: true })
@@ -684,6 +736,15 @@ app.post('/api/users/:id/reset-2fa', guard('manage_users'), (req, res) => { // l
   run('DELETE FROM sessions WHERE user_id=?', req.params.id)
   log(req, '2fa_reset', 'user', +req.params.id)
   res.json({ ok: true })
+})
+// Admin hands out a one-time link instead of choosing a password (so the admin never knows it)
+app.post('/api/users/:id/reset-password', guard('manage_users'), (req, res) => {
+  const u = one('SELECT * FROM users WHERE id=? AND active=1', req.params.id)
+  if (!u) throw err(404, 'User not found')
+  const token = issueReset(u.id)
+  notify(u.id, 'An admin created a password reset link for you', null)
+  log(req, 'password_reset_link', 'user', u.id)
+  res.json({ token, expires_at: new Date(Date.now() + RESET_TTL_MS).toISOString() })
 })
 
 app.get('/api/meta', (req, res) => {
@@ -1048,11 +1109,13 @@ app.get('/api/users', guard('manage_users'), (_req, res) => res.json(all(`SELECT
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f)
-  if (!f.name || !f.email || !f.role || !req.body.password) throw err(400, 'Name, email, role and password are required')
-  if (req.body.password.length < 8) throw err(400, 'Password must be at least 8 characters')
+  const pass = typeof req.body.password === 'string' ? req.body.password : ''
+  if (!f.name || !f.email || !f.role || !pass) throw err(400, 'Name, email, role and password are required')
+  const problem = L.passwordProblem(pass)
+  if (problem) throw err(400, problem)
   f.email = f.email.toLowerCase()
   const cols = [...Object.keys(f), 'pass']
-  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(req.body.password)).lastInsertRowid
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass)).lastInsertRowid
   log(req, 'create', 'user', id, { ...f })
   res.json({ id })
 })
@@ -1060,8 +1123,10 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f)
   if (req.body.password) {
-    if (req.body.password.length < 8) throw err(400, 'Password must be at least 8 characters')
-    f.pass = hash(req.body.password)
+    const pass = typeof req.body.password === 'string' ? req.body.password : ''
+    const problem = L.passwordProblem(pass)
+    if (problem) throw err(400, problem)
+    f.pass = hash(pass)
     run('DELETE FROM sessions WHERE user_id=?', req.params.id)
   }
   if (Object.keys(f).length) run(`UPDATE users SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), req.params.id)

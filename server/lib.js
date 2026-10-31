@@ -1,5 +1,19 @@
 // Pure business logic, no DB. Covered by lib.test.js.
 
+// Shared rule for every place a password is set (sign-up, reset, admin create/change, self-service)
+const COMMON_PASSWORDS = new Set([
+  'password123', 'password1234', '1234567890', 'qwertyuiop', 'admin12345', 'propcentral',
+  'letmein123', 'welcome123', 'changeme123', 'password!1', 'iloveyou123',
+])
+export function passwordProblem(pw) {
+  const p = String(pw ?? '')
+  if (p.length < 10) return 'Password must be at least 10 characters'
+  if (p.length > 200) return 'Password is too long'
+  if (!/[A-Za-z]/.test(p) || !/\d/.test(p)) return 'Password must include a letter and a number'
+  if (COMMON_PASSWORDS.has(p.toLowerCase())) return 'Pick a password that is harder to guess'
+  return null
+}
+
 // M1.2: 03xx / +923xx / 923xx / 00923xx -> 923xxxxxxxxx. Non-PK numbers keep their digits.
 export function normalizePhone(raw) {
   let d = String(raw ?? '').replace(/\D/g, '')

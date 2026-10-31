@@ -10,6 +10,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const portA = 46000 + (process.pid % 2000)
 const portB = 47000 + (process.pid % 2000)
+const portC = 48000 + (process.pid % 2000)
 
 async function boot(t, port, env = {}) {
   const dbPath = path.join(os.tmpdir(), `prop-central-sec-${port}.db`)
@@ -62,8 +63,8 @@ test('API refuses abusive requests and replies with security headers', async t =
   assert.equal((await post(base, '/login', { email: botEmail, password: 'password123' })).status, 401, 'honeypot sign-up creates no account')
 
   const realEmail = `real-${Date.now()}@example.com`
-  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'password123' })).status, 200)
-  assert.equal((await post(base, '/login', { email: realEmail, password: 'password123' })).status, 403, 'real sign-up still reaches the approval queue')
+  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x' })).status, 200)
+  assert.equal((await post(base, '/login', { email: realEmail, password: 'CrmPass2026x' })).status, 403, 'real sign-up still reaches the approval queue')
 
   const token = (await (await post(base, '/login', { email: 'admin@propcentral.local', password: 'password123' })).json()).token
   const auth = { authorization: 'Bearer ' + token }
@@ -88,4 +89,46 @@ test('requests per address are capped with Retry-After', async t => {
   assert.deepEqual(statuses, [200, 200, 200, 429, 429])
   assert.ok(Number(last.headers.get('retry-after')) > 0, 'tells the client when to come back')
   assert.match((await last.json()).error, /Too many requests/)
+})
+
+test('password reset, role checks, account isolation and SQL-injection shapes', async t => {
+  const base = await boot(t, portC)
+  const tokenOf = async (email, password = 'password123') => (await (await post(base, '/login', { email, password })).json()).token
+  const get = (path, token) => fetch(base + path, { headers: { authorization: 'Bearer ' + token } })
+
+  const weak = await post(base, '/reset-password', { token: 'a'.repeat(64), password: 'short' })
+  assert.equal(weak.status, 400)
+  assert.match((await weak.json()).error, /at least 10/, 'weak passwords are rejected before the token is even looked up')
+
+  const admin = await tokenOf('admin@propcentral.local')
+  const a1 = await tokenOf('agent1@propcentral.local')
+  const a2 = await tokenOf('agent2@propcentral.local')
+
+  assert.equal((await get('/users', a1)).status, 403, 'agents cannot list users')
+  assert.equal((await fetch(`${base}/settings/statuses`, { method: 'PUT', headers: { authorization: 'Bearer ' + a1, 'content-type': 'application/json' }, body: '{}' })).status, 403, 'agents cannot change settings')
+
+  const users = await (await get('/users', admin)).json()
+  const agent2 = users.find(u => u.email === 'agent2@propcentral.local')
+  const others = await (await get(`/leads?agent_id=${agent2.id}&size=50`, admin)).json()
+  const lead = others.rows[0]
+  assert.ok(lead, 'admin sees the seeded leads')
+  assert.equal((await get(`/leads/${lead.id}`, a1)).status, 404, 'an agent cannot open another agent’s lead')
+  assert.equal((await get(`/leads/${lead.id}`, a2)).status, 200, 'the owning agent still can')
+
+  assert.equal((await post(base, '/login', { email: "' OR 1=1 --", password: 'x' })).status, 401, 'injection-shaped email is just a failed login')
+  const inj = await get(`/leads?q=${encodeURIComponent("' OR ''='")}`, admin)
+  assert.equal(inj.status, 200)
+  assert.equal((await inj.json()).rows.length, 0, 'search input is bound, not concatenated')
+
+  const issued = await (await post(base, `/users/${agent2.id}/reset-password`, {}, { authorization: 'Bearer ' + admin })).json()
+  assert.match(issued.token, /^[a-f0-9]{64}$/)
+  assert.equal((await post(base, '/reset-password', { token: issued.token, password: 'NewPass2026x' })).status, 200)
+  assert.equal((await get('/meta', a2)).status, 401, 'a reset signs the account out everywhere')
+  assert.equal((await post(base, '/login', { email: 'agent2@propcentral.local', password: 'password123' })).status, 401)
+  assert.equal((await post(base, '/login', { email: 'agent2@propcentral.local', password: 'NewPass2026x' })).status, 200)
+  assert.equal((await post(base, '/reset-password', { token: issued.token, password: 'Another2026x' })).status, 400, 'a reset link works once')
+
+  const forgot = await post(base, '/forgot-password', { email: 'nobody@example.com' })
+  assert.equal(forgot.status, 200)
+  assert.deepEqual(await forgot.json(), { ok: true }, 'unknown emails get the same answer')
 })

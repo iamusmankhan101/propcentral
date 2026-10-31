@@ -23,11 +23,16 @@ function Login() {
   const [needCode, setNeedCode] = useState(false)
   const [notice, setNotice] = useState('')
   const [email, setEmail] = useState('')
-  const signup = mode === 'signup'
+  const signup = mode === 'signup', forgot = mode === 'forgot'
   const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false) }
   const submit = e => {
     const body = formData(e)
     run(async () => {
+      if (forgot) {
+        await api('/forgot-password', { body: { email: body.email } })
+        setNotice('If that email has an account, an admin has been notified. They will send you a one-time reset link.')
+        return
+      }
       if (signup) {
         await api('/register', { body })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
@@ -48,23 +53,61 @@ function Login() {
       </aside>
       <div className="login-side">
         <form className="login" onSubmit={submit}>
-          <h1>{signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Prop Central dashboard.'}</p>
+          <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Prop Central dashboard.'}</p>
           {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
           {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
           <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
           {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" maxLength={30} /></span></label>}
-          <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? 'At least 8 characters' : 'Your password'} minLength={signup ? 8 : undefined} maxLength={200} required autoFocus={signup} /></span></label>
+          {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
           {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
           {notice && <p className="ok">{notice}</p>}
           {error && <p className="error">{error}</p>}
-          <button disabled={busy}>{signup ? 'Create account' : 'Continue'}</button>
-          <p className="auth-switch muted">
-            {signup ? 'Already have an account? ' : 'New here? '}
-            <a href="#" onClick={e => { e.preventDefault(); switchTo(signup ? 'signin' : 'signup') }}>{signup ? 'Sign in' : 'Create an account'}</a>
-          </p>
+          <button disabled={busy}>{forgot ? 'Request reset link' : signup ? 'Create account' : 'Continue'}</button>
+          {!signup && !forgot && <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('forgot') }}>Forgot password?</a></p>}
+          {forgot ? <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('signin') }}>Back to sign in</a></p> : (
+            <p className="auth-switch muted">
+              {signup ? 'Already have an account? ' : 'New here? '}
+              <a href="#" onClick={e => { e.preventDefault(); switchTo(signup ? 'signin' : 'signup') }}>{signup ? 'Sign in' : 'Create an account'}</a>
+            </p>
+          )}
         </form>
       </div>
+    </div>
+  )
+}
+
+function ResetPassword({ token }) {
+  const { run, error, busy, setError } = useAction()
+  const [done, setDone] = useState(false)
+  if (!token) return (
+    <div className="reset-page"><div className="login">
+      <h1>Reset link</h1>
+      <p className="error">This reset link is not valid. Ask an admin for a new one.</p>
+      <a className="button" href="#/">Back to sign in</a>
+    </div></div>
+  )
+  const submit = e => {
+    const { password, confirm } = formData(e)
+    if (password !== confirm) return setError('The two passwords do not match')
+    run(async () => { await api('/reset-password', { body: { token, password } }); setDone(true) })
+  }
+  return (
+    <div className="reset-page">
+      <form className="login" onSubmit={submit}>
+        <h1>Choose a new password</h1>
+        {done ? <>
+          <p className="ok">Password changed. Every device was signed out.</p>
+          <a className="button" href="#/">Sign in</a>
+        </> : <>
+          <p className="muted">Use at least 10 characters with a letter and a number. This link works once and expires in 30 minutes.</p>
+          <label>New password<span className="field"><Icon name="lock" size={16} /><input name="password" type="password" placeholder="10+ characters, letters and numbers" minLength={10} maxLength={200} required autoFocus /></span></label>
+          <label>Confirm password<span className="field"><Icon name="lock" size={16} /><input name="confirm" type="password" placeholder="Repeat the new password" minLength={10} maxLength={200} required /></span></label>
+          {error && <p className="error">{error}</p>}
+          <button disabled={busy}>Change password</button>
+          <p className="auth-switch muted"><a href="#/">Back to sign in</a></p>
+        </>}
+      </form>
     </div>
   )
 }
@@ -286,6 +329,8 @@ export default function App() {
 
   const [meta, reloadMeta, metaError] = useApi(localStorage.token ? '/meta' : null)
 
+  const resetToken = route.match(/^\/reset(?:\?token=([a-f0-9]{64}))?$/)?.[1]
+  if (route.startsWith('/reset')) return <ResetPassword token={resetToken || ''} key={route} />
   const shared = route.match(/^\/map\/([\w-]+)$/)?.[1]
   if (shared) return <PublicMap token={shared} /> // client link: no login
   const portal = route.match(/^\/portal\/([a-f0-9]+)(?:\/receipts\/(\d+))?$/)

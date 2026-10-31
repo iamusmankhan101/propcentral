@@ -1,12 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { base32, totp, checkTotp } from './totp.js'
-import { normalizePhone, pickAgent, ruleMatches, workingMinutes, slaLevel, distanceM, parseCsv, addMonths, buildSchedule, allocate, rentSchedule, daysLeft, inPolygon, areasAt, fitTransform, fitCorners } from './lib.js'
+import { normalizePhone, pickAgent, ruleMatches, workingMinutes, slaLevel, distanceM, parseCsv, addMonths, buildSchedule, allocate, rentSchedule, daysLeft, inPolygon, areasAt, fitTransform, fitCorners, passwordProblem } from './lib.js'
 
 test('phone normalization', () => {
   for (const p of ['0300-1234567', '+92 300 1234567', '923001234567', '00923001234567', '3001234567'])
     assert.equal(normalizePhone(p), '923001234567')
   assert.equal(normalizePhone('123'), null)
+})
+
+test('password policy', () => {
+  assert.match(passwordProblem('short1'), /at least 10/)
+  assert.match(passwordProblem('alllettershere'), /letter and a number/)
+  assert.match(passwordProblem('1234567890123'), /letter and a number/)
+  assert.match(passwordProblem('password123'), /harder to guess/)
+  assert.equal(passwordProblem('CrmPass2026x'), null)
+  assert.match(passwordProblem('x'.repeat(201)), /too long/)
 })
 
 test('assignment', () => {
