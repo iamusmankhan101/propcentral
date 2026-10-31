@@ -265,6 +265,8 @@ option { color: var(--text); font-size: 14px; }
 .login .field { position: relative; display: flex; }
 .login .field svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); }
 .login .field input { width: 100%; padding-left: 38px; background: #fff; border-color: #e3e4e8; }
+/* Honeypot: off-screen, never focusable, so only a script filling every input touches it */
+.login .hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .login button { margin-top: 8px; padding: 12px; }
 .auth-switch { margin: 2px 0 0; text-align: center; }
 .auth-switch a { color: var(--s1); font-weight: 700; text-decoration: none; }

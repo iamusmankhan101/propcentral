@@ -213,7 +213,11 @@ const rateHit = (key, max, windowMs, prefix = 'Too many attempts') => {
       count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END,
       reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END`, key, t + windowMs, t, t, t + windowMs)
   const row = one('SELECT count, reset_at FROM rate_limits WHERE key=?', key) || { count: 1, reset_at: t + windowMs }
-  if (row.count > max) throw err(429, rateMsg(prefix, row.reset_at))
+  if (row.count > max) {
+    const e = err(429, rateMsg(prefix, row.reset_at))
+    e.retryAfter = Math.ceil((row.reset_at - Date.now()) / 1000)
+    throw e
+  }
   return row
 }
 const rateLocked = key => {
@@ -221,6 +225,27 @@ const rateLocked = key => {
   return row && row.reset_at > Date.now() ? row : null
 }
 const rateClear = key => run('DELETE FROM rate_limits WHERE key=?', key)
+
+// ---------- abuse guards ----------
+// Per-instance fixed windows cheaply absorb bursts before they reach the database; the DB-backed
+// limits above still hold for auth when a request lands on a different serverless instance.
+const windows = new Map()
+const overLimit = (key, max, windowMs) => {
+  const t = Date.now()
+  let w = windows.get(key)
+  if (!w || w.reset <= t) windows.set(key, (w = { count: 0, reset: t + windowMs }))
+  w.count++
+  if (windows.size > 5000) for (const [k, v] of windows) if (v.reset <= t) windows.delete(k)
+  return w.count > max ? Math.ceil((w.reset - t) / 1000) : 0
+}
+const API_PER_MIN = +(process.env.API_RATE_LIMIT || 1200)
+const PUBLIC_PER_MIN = +(process.env.PUBLIC_RATE_LIMIT || 120)
+// Unauthenticated surfaces: sign-in, sign-up, share links and integration hooks
+const PUBLIC_PATHS = /^\/api\/(login|register|inbound|portal|public|files|overlay-images|webhooks)(\/|$)/
+const CSP = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+  "script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; " +
+  "img-src 'self' data: blob: https://*.maptiler.com; connect-src 'self' https://*.maptiler.com; " +
+  "worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'"
 
 // libsql has no nested transactions: the outer call uses the driver's transaction, inner calls join it
 let txDepth = 0
@@ -238,6 +263,13 @@ const checkPw = (pw, stored) => {
   const [salt, h] = stored.split(':')
   return crypto.timingSafeEqual(Buffer.from(h, 'hex'), crypto.scryptSync(pw, salt, 32))
 }
+const safeEqual = (a, b) => {
+  const x = Buffer.from(String(a ?? '')), y = Buffer.from(String(b ?? ''))
+  return x.length === y.length && crypto.timingSafeEqual(x, y)
+}
+// Uploaded SVGs are served as documents, so a sandbox CSP stops a shared link from running script on our origin
+const sendSvg = (res, svg) => res.type('image/svg+xml')
+  .set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'").send(svg)
 
 function audit(userId, action, entity, entityId, data, ip) {
   run('INSERT INTO audit(user_id,action,entity,entity_id,data,ip,created_at) VALUES(?,?,?,?,?,?,?)',
@@ -374,8 +406,43 @@ const maskRow = (u, r) => (can(u, 'view_phone') ? r : { ...r, phone: L.maskPhone
 
 // ---------- app ----------
 const app = express()
+app.disable('x-powered-by')
 app.set('trust proxy', 1)
-app.use(express.json({ limit: '25mb', verify: (req, _res, buf) => { req.rawBody = buf } }))
+
+app.use((_req, res, next) => {
+  res.set({
+    'Content-Security-Policy': CSP,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()',
+    'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
+  })
+  next()
+})
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api') || req.method === 'OPTIONS') return next()
+  const ip = req.ip || 'local'
+  const wait = overLimit('api:' + ip, API_PER_MIN, 60e3) ||
+    (PUBLIC_PATHS.test(req.path) ? overLimit('public:' + ip, PUBLIC_PER_MIN, 60e3) : 0)
+  if (!wait) return next()
+  res.set('Retry-After', String(wait))
+  next(err(429, `Too many requests. Try again in ${wait} second${wait === 1 ? '' : 's'}.`))
+})
+
+// Only endpoints that carry base64 files may send a large body; everything else stays small so a
+// giant payload cannot be used to burn memory or CPU on the API.
+const jsonParser = limit => express.json({ limit, verify: (req, _res, buf) => { req.rawBody = buf } })
+const smallJson = jsonParser('2mb'), bigJson = jsonParser('24mb')
+const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\//
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) return next()
+  const parse = BIG_BODY.test(req.path) ? bigJson : smallJson
+  parse(req, res, next)
+})
+// body-parser leaves req.body undefined when a request carries no JSON; route handlers expect an object
+app.use((req, _res, next) => { if (req.body == null) req.body = {}; next() })
 
 app.get('/api/health', (req, res) => {
   const mode = remote ? 'turso' : 'file'
@@ -392,16 +459,19 @@ app.use('/api', (req, res, next) => {
 // Login is throttled per IP (all attempts) and per account (failed attempts), so neither a single
 // address nor a single account can be hammered; a successful sign-in clears that account's failures.
 app.post('/api/login', (req, res) => {
-  const email = String(req.body.email || '').toLowerCase()
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
+  const password = typeof req.body.password === 'string' ? req.body.password : ''
+  // scrypt cost scales with input, so refuse oversized credentials before hashing anything
+  if (email.length > 254 || password.length > 200) throw err(400, 'Enter a valid email and password')
   const ip = req.ip || 'local'
   rateHit(rateKey('login-ip', ip), 60, 15 * 60e3)
   const userKey = rateKey('login-user', email)
   const locked = rateLocked(userKey)
   if (locked?.count >= 5) throw err(429, rateMsg('Too many attempts', locked.reset_at))
   const u = one('SELECT * FROM users WHERE email=? AND active=1', email)
-  if (!u || !checkPw(String(req.body.password || ''), u.pass)) {
+  if (!u || !checkPw(password, u.pass)) {
     const pending = one('SELECT * FROM users WHERE email=? AND active=0', email)
-    if (pending && checkPw(String(req.body.password || ''), pending.pass)) throw err(403, 'Your account is waiting for an admin to activate it')
+    if (pending && checkPw(password, pending.pass)) throw err(403, 'Your account is waiting for an admin to activate it')
     rateHit(userKey, 5, 15 * 60e3)
     audit(u?.id, 'login_failed', 'user', u?.id, { email }, req.ip)
     throw err(401, 'Wrong email or password')
@@ -425,14 +495,21 @@ app.post('/api/login', (req, res) => {
 app.post('/api/register', (req, res) => {
   const ip = req.ip || 'local'
   rateHit(rateKey('register-ip', ip), 5, 3600e3, 'Too many sign-ups from this address')
-  const name = String(req.body.name || '').trim()
-  const email = String(req.body.email || '').trim().toLowerCase()
-  const pass = String(req.body.password || '')
-  const phone = String(req.body.phone || '').trim() ? L.normalizePhone(String(req.body.phone)) : null
+  // A global ceiling stops a botnet rotating addresses from flooding the approval queue and audit log
+  rateHit('register-all', 50, 3600e3, 'Sign-ups are paused for a while')
+  // Honeypot: real people never see or fill the off-screen field; bots fill everything. Pretend success.
+  if (typeof req.body.website === 'string' && req.body.website.trim()) return res.json({ ok: true })
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : ''
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
+  const pass = typeof req.body.password === 'string' ? req.body.password : ''
+  const rawPhone = typeof req.body.phone === 'string' ? req.body.phone.trim() : ''
+  const phone = rawPhone ? L.normalizePhone(rawPhone) : null
   if (!name) throw err(400, 'Name is required')
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email address')
+  if (name.length > 80) throw err(400, 'Name is too long')
+  if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email address')
   if (pass.length < 8) throw err(400, 'Password must be at least 8 characters')
-  if (req.body.phone && !phone) throw err(400, 'Enter a valid phone number')
+  if (pass.length > 200) throw err(400, 'Password is too long')
+  if (rawPhone.length > 30 || (rawPhone && !phone)) throw err(400, 'Enter a valid phone number')
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass) VALUES(?,?,?,?,0,1,?)',
     name, email, phone, 'agent', hash(pass)).lastInsertRowid
@@ -445,7 +522,7 @@ app.post('/api/register', (req, res) => {
 // Vercel Cron entry point; replaces the 60s in-process timers when deployed serverless
 app.get('/api/cron/tick', (req, res) => {
   const secret = process.env.CRON_SECRET
-  if (!secret || req.headers.authorization !== `Bearer ${secret}`) throw err(401, 'Unauthorized')
+  if (!secret || !safeEqual(req.headers.authorization, `Bearer ${secret}`)) throw err(401, 'Unauthorized')
   leaseTick()
   slaTick()
   reportTick()
@@ -472,8 +549,7 @@ app.post('/api/webhooks/facebook', (req, res) => {
   const secret = fbConf().app_secret
   if (!secret) throw err(503, 'Facebook is not connected (Settings › Facebook)')
   const sig = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || '').digest('hex')
-  const got = String(req.headers['x-hub-signature-256'] || '')
-  if (got.length !== sig.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(sig))) return res.sendStatus(401)
+  if (!safeEqual(req.headers['x-hub-signature-256'], sig)) return res.sendStatus(401)
   res.sendStatus(200)
   for (const e of req.body.entry || []) for (const c of e.changes || [])
     if (c.field === 'leadgen') importFbLead(c.value.leadgen_id).catch(e => console.error('FB lead import failed', c.value.leadgen_id, e.message))
@@ -493,8 +569,10 @@ const inboundKey = () => S('inbound_key') || process.env.INBOUND_API_KEY
 app.post('/api/inbound', (req, res) => {
   const key = inboundKey()
   if (!key) throw err(503, 'Website forms are not set up (Settings › Website forms)')
-  const got = String(req.headers['x-api-key'] || '')
-  if (got.length !== key.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(key))) throw err(401, 'Bad API key')
+  if (!safeEqual(req.headers['x-api-key'], key)) throw err(401, 'Bad API key')
+  // A leaked key must not be able to flood the pipeline; hash it so the raw secret never lands in the DB
+  const keyHash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)
+  rateHit(rateKey('inbound', keyHash), 600, 3600e3, 'Website form limit reached')
   res.json(createLead({ ...req.body, source: req.body.source || 'Website' }))
 })
 
@@ -509,7 +587,7 @@ app.get('/api/public/map/:token', (req, res) => {
   res.json({ ...p, statuses: S('unit_statuses'), units: all(`SELECT id, map_ref, phase, block, street, unit_no, unit_type, category, size, uom, facing, dimensions, status
     FROM units WHERE project_id=? AND map_ref IS NOT NULL`, p.id) })
 })
-app.get('/api/public/map/:token/svg', (req, res) => res.type('image/svg+xml').send(sharedProject(req.params.token).map_svg))
+app.get('/api/public/map/:token/svg', (req, res) => sendSvg(res, sharedProject(req.params.token).map_svg))
 
 // Customer portal: the buyer's own allotments, schedule and receipts, behind an unguessable per-contact link
 const portalContact = token => {
@@ -550,7 +628,8 @@ app.get('/api/overlay-images/:token', (req, res) => {
 
 // ---- everything below needs a session ----
 app.use('/api', (req, _res, next) => {
-  const token = String(req.headers.authorization || '').replace('Bearer ', '')
+  const token = String(req.headers.authorization || '').replace(/^Bearer /, '')
+  if (!/^[a-f0-9]{64}$/.test(token)) throw err(401, 'Please log in') // keep junk out of the session lookup
   const u = one(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.active=1 AND s.created_at>?`,
     token, new Date(Date.now() - 7 * 864e5).toISOString())
   if (!u) throw err(401, 'Please log in')
@@ -1113,11 +1192,12 @@ app.get('/api/projects/:id', (req, res) => {
 app.get('/api/projects/:id/map', (req, res) => {
   const m = one('SELECT map_svg FROM projects WHERE id=?', req.params.id)?.map_svg
   if (!m) throw err(404, 'No map for this project')
-  res.type('image/svg+xml').send(m)
+  sendSvg(res, m)
 })
 app.put('/api/projects/:id/map', guard('manage_inventory'), (req, res) => {
   const p = projectRow(req.params.id), svg = req.body.svg
   if (typeof svg !== 'string' || !/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/.test(svg) || !svg.includes('id="plots"')) throw err(400, 'Upload an SVG with a <g id="plots"> group')
+  if (svg.length > 8e6) throw err(400, 'Map SVG is too large (max 8 MB)')
   tx(() => {
     run('UPDATE projects SET map_svg=? WHERE id=?', svg, p.id)
     run('UPDATE units SET map_ref=NULL WHERE project_id=?', p.id) // plot ids belong to the old map
@@ -2435,7 +2515,10 @@ app.use(express.static(dist))
 app.use((req, res, next) => (req.path.startsWith('/api') ? next(err(404, 'Not found')) : res.sendFile(path.join(dist, 'index.html'))))
 app.use((e, _req, res, _next) => {
   if (!e.status) console.error(e)
-  res.status(e.status || 500).json({ error: e.status ? e.message : 'Server error' })
+  if (e.status === 429 && e.retryAfter) res.set('Retry-After', String(e.retryAfter))
+  const status = e.status || 500
+  const message = e.type === 'entity.too.large' ? 'Request is too large' : e.type === 'entity.parse.failed' ? 'Malformed JSON body' : e.status ? e.message : 'Server error'
+  res.status(status).json({ error: message })
 })
 
 // ---------- background jobs (M4 SLA + stale + unassigned retry) ----------

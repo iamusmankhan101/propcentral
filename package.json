@@ -7,7 +7,7 @@
     "server": "node --env-file-if-exists=.env server/server.js",
     "build": "vite build",
     "start": "NODE_ENV=production node --env-file-if-exists=.env server/server.js",
-    "test": "node --test server/lib.test.js server/auth.test.js"
+    "test": "node --test server/lib.test.js server/auth.test.js server/security.test.js"
   },
   "dependencies": {
     "express": "^5.3.0",

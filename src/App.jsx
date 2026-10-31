@@ -50,10 +50,11 @@ function Login() {
         <form className="login" onSubmit={submit}>
           <h1>{signup ? 'Create an account' : 'Welcome back'}</h1>
           <p className="muted">{signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Prop Central dashboard.'}</p>
-          {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" required autoFocus /></span></label>}
-          <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" defaultValue={email} required autoFocus={!signup} /></span></label>
-          {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" /></span></label>}
-          <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? 'At least 8 characters' : 'Your password'} minLength={signup ? 8 : undefined} required autoFocus={signup} /></span></label>
+          {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
+          {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
+          <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
+          {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" maxLength={30} /></span></label>}
+          <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? 'At least 8 characters' : 'Your password'} minLength={signup ? 8 : undefined} maxLength={200} required autoFocus={signup} /></span></label>
           {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
           {notice && <p className="ok">{notice}</p>}
           {error && <p className="error">{error}</p>}
