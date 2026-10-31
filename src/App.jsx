@@ -202,7 +202,10 @@ function MobileAccount({ me, onLogout }) {
   const initials = me.name.split(' ').map(w => w[0]).join('').slice(0, 2)
   return (
     <div className="mobile-head">
-      <div className="greet"><small>Good {part}</small><b>{me.name.split(' ')[0]}</b></div>
+      <div className="head-id">
+        <a className="app-mark" href="#/" aria-label="Prop Central home"><img src={markImg} alt="" /></a>
+        <div className="greet"><small>Good {part}</small><b>{me.name.split(' ')[0]}</b></div>
+      </div>
       <div className="acct" ref={box}>
         <button className="avatar" onClick={() => setOpen(!open)} aria-label="Account menu" aria-expanded={open}>{initials}</button>
         {open && (
