@@ -1,5 +1,5 @@
 import express from 'express'
-import Database from 'better-sqlite3'
+import Database from 'libsql'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,9 +7,12 @@ import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const db = new Database(process.env.DB_PATH || path.join(root, 'crm.db'))
-db.pragma('journal_mode = WAL')
-db.exec(`
+const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
+const remote = /^(libsql|https?):/i.test(dbUrl)
+const db = new Database(dbUrl, process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : undefined)
+if (!remote) db.pragma('journal_mode = WAL')
+const tablesReady = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'`).get()
+if (!tablesReady) db.exec(`
 CREATE TABLE IF NOT EXISTS branches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT);
 CREATE TABLE IF NOT EXISTS teams(id INTEGER PRIMARY KEY, name TEXT NOT NULL, branch_id INTEGER REFERENCES branches(id));
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, phone TEXT, pass TEXT NOT NULL,
@@ -91,26 +94,31 @@ CREATE TABLE IF NOT EXISTS owner_payouts(id INTEGER PRIMARY KEY, property_id INT
 CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL, data TEXT NOT NULL, created_by INTEGER, created_at TEXT);
 `)
 
-// columns added after first release: create them on databases that predate them
-const addColumn = (table, col, type) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col) || db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
-addColumn('price_lists', 'size', 'REAL')
-addColumn('price_lists', 'uom', 'TEXT')
-addColumn('units', 'down_payment', 'INTEGER')
-addColumn('units', 'map_ref', 'TEXT') // id of the plot's path in the project map SVG
-addColumn('projects', 'map_svg', 'TEXT')
-addColumn('projects', 'share_token', 'TEXT') // client map link: /#/map/<token>
-addColumn('activities', 'amount', 'INTEGER') // offer amount
-addColumn('leads', 'dealer_id', 'INTEGER') // external dealer who brought the client
-addColumn('allotments', 'agent_id', 'INTEGER') // who gets credit for the sale (lead owner at the time)
-addColumn('allotments', 'dealer_id', 'INTEGER')
-addColumn('allotments', 'form', 'TEXT') // booking application form: father name, address, nominee…
-addColumn('commissions', 'note', 'TEXT') // reason for a manual adjustment or cancellation
-addColumn('users', 'totp_secret', 'TEXT')
-addColumn('users', 'commission_rate', 'REAL')
-addColumn('overlays', 'clear_white', 'INTEGER DEFAULT 1') // show the plan's white background as see-through // agent's own commission %, empty = the default in settings
-addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
-addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
-db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
+// columns added after first release: run the migration once per schema version, not on every cold start
+const SCHEMA_VERSION = '4'
+const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
+if (schemaVersion !== SCHEMA_VERSION) {
+  const addColumn = (table, col, type) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col) || db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
+  addColumn('price_lists', 'size', 'REAL')
+  addColumn('price_lists', 'uom', 'TEXT')
+  addColumn('units', 'down_payment', 'INTEGER')
+  addColumn('units', 'map_ref', 'TEXT') // id of the plot's path in the project map SVG
+  addColumn('projects', 'map_svg', 'TEXT')
+  addColumn('projects', 'share_token', 'TEXT') // client map link: /#/map/<token>
+  addColumn('activities', 'amount', 'INTEGER') // offer amount
+  addColumn('leads', 'dealer_id', 'INTEGER') // external dealer who brought the client
+  addColumn('allotments', 'agent_id', 'INTEGER') // who gets credit for the sale (lead owner at the time)
+  addColumn('allotments', 'dealer_id', 'INTEGER')
+  addColumn('allotments', 'form', 'TEXT') // booking application form: father name, address, nominee…
+  addColumn('commissions', 'note', 'TEXT') // reason for a manual adjustment or cancellation
+  addColumn('users', 'totp_secret', 'TEXT')
+  addColumn('users', 'commission_rate', 'REAL')
+  addColumn('overlays', 'clear_white', 'INTEGER DEFAULT 1') // show the plan's white background as see-through // agent's own commission %, empty = the default in settings
+  addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
+  addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
+  db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
+}
 
 // ---------- settings (M22: everything configurable from admin) ----------
 const MGMT = ['team_lead', 'branch_manager', 'sales_head', 'admin']
@@ -168,9 +176,22 @@ const OPEN = `l.deleted=0 AND l.status NOT IN (SELECT value FROM json_each(?))`
 // ---------- helpers ----------
 const now = () => new Date().toISOString()
 const err = (status, message) => Object.assign(new Error(message), { status })
-const one = (sql, ...p) => db.prepare(sql).get(...p)
-const all = (sql, ...p) => db.prepare(sql).all(...p)
+// libsql attaches query timing metadata to rows; strip it so API responses stay clean
+const stripMeta = r => { if (r) delete r._metadata; return r }
+const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...p))
+const all = (sql, ...p) => db.prepare(sql).all(...p).map(stripMeta)
 const run = (sql, ...p) => db.prepare(sql).run(...p)
+
+// libsql has no nested transactions: the outer call uses the driver's transaction, inner calls join it
+let txDepth = 0
+const tx = fn => (...args) => {
+  if (txDepth > 0) {
+    txDepth++
+    try { return fn(...args) } finally { txDepth-- }
+  }
+  txDepth++
+  try { return db.transaction(fn)(...args) } finally { txDepth-- }
+}
 
 const hash = (pw, salt = crypto.randomBytes(16).toString('hex')) => salt + ':' + crypto.scryptSync(pw, salt, 32).toString('hex')
 const checkPw = (pw, stored) => {
@@ -266,7 +287,7 @@ function checkLeadInput(input) {
 }
 const findContact = (phone, email) => one('SELECT * FROM contacts WHERE phone=? OR (? IS NOT NULL AND email=?)', phone, email, email)
 
-const createLead = db.transaction((input, actorId = null, agentId = null) => {
+const createLead = tx((input, actorId = null, agentId = null) => {
   const { phone, email } = checkLeadInput(input)
   if (input.ext_id && one('SELECT 1 FROM leads WHERE ext_id=?', input.ext_id)) return { duplicate: true }
   let contact = findContact(phone, email)
@@ -340,6 +361,16 @@ app.post('/api/login', (req, res) => {
   run('INSERT INTO sessions VALUES(?,?,?)', token, u.id, now())
   audit(u.id, 'login', 'user', u.id, null, req.ip)
   res.json({ token })
+})
+
+// Vercel Cron entry point; replaces the 60s in-process timers when deployed serverless
+app.get('/api/cron/tick', (req, res) => {
+  const secret = process.env.CRON_SECRET
+  if (!secret || req.headers.authorization !== `Bearer ${secret}`) throw err(401, 'Unauthorized')
+  leaseTick()
+  slaTick()
+  reportTick()
+  res.json({ ok: true })
 })
 
 // ---- public integration endpoints (M2) ----
@@ -985,7 +1016,7 @@ app.delete('/api/projects/:id', guard('manage_inventory'), (req, res) => {
   if (req.body?.confirm !== p.name) throw err(400, 'Type the project name to confirm')
   const units = all('SELECT * FROM units WHERE project_id=?', p.id)
   const snapshot = { project: p, units, prices: all('SELECT * FROM price_lists WHERE project_id=?', p.id), allotments: all('SELECT * FROM allotments WHERE project_id=?', p.id) }
-  db.transaction(() => {
+  tx(() => {
     run('DELETE FROM unit_history WHERE unit_id IN (SELECT id FROM units WHERE project_id=?)', p.id)
     for (const t of ['allotments', 'price_lists', 'units']) run(`DELETE FROM ${t} WHERE project_id=?`, p.id)
     run('DELETE FROM projects WHERE id=?', p.id)
@@ -1007,7 +1038,7 @@ app.get('/api/projects/:id/map', (req, res) => {
 app.put('/api/projects/:id/map', guard('manage_inventory'), (req, res) => {
   const p = projectRow(req.params.id), svg = req.body.svg
   if (typeof svg !== 'string' || !/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/.test(svg) || !svg.includes('id="plots"')) throw err(400, 'Upload an SVG with a <g id="plots"> group')
-  db.transaction(() => {
+  tx(() => {
     run('UPDATE projects SET map_svg=? WHERE id=?', svg, p.id)
     run('UPDATE units SET map_ref=NULL WHERE project_id=?', p.id) // plot ids belong to the old map
   })()
@@ -1059,7 +1090,7 @@ app.post('/api/projects/:id/units', guard('manage_inventory'), (req, res) => {
   const p = projectRow(req.params.id)
   const rows = req.body.units || []
   if (!rows.length || rows.length > 2000) throw err(400, 'Send 1 to 2000 units')
-  const added = db.transaction(() => rows.reduce((n, r) => {
+  const added = tx(() => rows.reduce((n, r) => {
     const f = pick(r, UNIT_FIELDS)
     if (!String(f.unit_no ?? '').trim()) throw err(400, 'Every unit needs a number')
     if (f.uom && !UOMS.includes(f.uom)) throw err(400, 'Unknown unit of measure ' + f.uom)
@@ -1134,7 +1165,7 @@ app.patch('/api/units/:id', guard('manage_inventory'), (req, res) => {
 })
 
 // M10.7-M10.8: holds and status changes are conditional UPDATEs; SQLite serializes writers, so two agents can never hold the same unit
-const holdUnit = db.transaction((user, un, lead) => {
+const holdUnit = tx((user, un, lead) => {
   const p = projectRow(un.project_id)
   if (one(`SELECT count(*) n FROM units WHERE hold_by=? AND status='On Hold'`, user.id).n >= S('max_holds_per_agent'))
     throw err(400, `You already have ${S('max_holds_per_agent')} units on hold. Release one first.`)
@@ -1208,7 +1239,7 @@ app.post('/api/projects/:id/categories', guard('manage_inventory'), (req, res) =
   if (!Number.isInteger(count) || count < 0 || count > 5000) throw err(400, 'Number of plots must be 0 to 5000')
   if (!count && !price) throw err(400, 'Give a price, plots, or both')
   if (price && !can(req.user, 'edit_pricing')) throw err(403, 'Only pricing managers can set prices')
-  const result = db.transaction(() => {
+  const result = tx(() => {
     if (price) addPrice(p, { unit_type, rate: price, per: 'plot', size, uom, effective_from: req.body.effective_from || now().slice(0, 10), note: req.body.note }, req.user.id)
     const taken = takenIn(p.id, block)
     let nos = listed.filter(n => !taken.has(n))
@@ -1239,7 +1270,7 @@ app.post('/api/projects/:id/number', guard('manage_inventory'), (req, res) => {
   if (nos.length > pending.length) throw err(400, `Only ${pending.length} un-numbered plots of this size are left. Add more plots first, or enter fewer numbers.`)
   const clash = nos.filter(n => takenIn(p.id, block).has(n))
   if (clash.length) throw err(409, `Block ${block} already has plot ${clash.slice(0, 10).join(', ')}${clash.length > 10 ? '…' : ''}`)
-  db.transaction(() => nos.forEach((no, i) => {
+  tx(() => nos.forEach((no, i) => {
     run(`UPDATE units SET block=?, unit_no=?, updated_at=? WHERE id=?`, block, no, now(), pending[i].id)
     unitHistory(pending[i].id, req.user.id, null, null, null, `Numbered ${pending[i].unit_no} → Block ${block} #${no}`)
   }))()
@@ -1249,7 +1280,7 @@ app.post('/api/projects/:id/number', guard('manage_inventory'), (req, res) => {
 
 // ---- deleting plots: only Available plots with no client and no allotment ever; everything else is kept for the record
 const DELETABLE = `units.status='Available' AND units.lead_id IS NULL AND NOT EXISTS (SELECT 1 FROM allotments a WHERE a.unit_id=units.id)`
-const removeUnits = db.transaction(ids => ids.forEach(id => { run('DELETE FROM unit_history WHERE unit_id=?', id); run('DELETE FROM units WHERE id=?', id) }))
+const removeUnits = tx(ids => ids.forEach(id => { run('DELETE FROM unit_history WHERE unit_id=?', id); run('DELETE FROM units WHERE id=?', id) }))
 
 app.delete('/api/units/:id', guard('manage_inventory'), (req, res) => {
   const un = unitFor(req.params.id)
@@ -1286,7 +1317,7 @@ app.post('/api/units/:id/allot', guard('unit_status'), (req, res) => {
   if (expected !== un.status) throw err(409, `Unit changed to "${un.status}" meanwhile. Reload and check.`)
   if (!ALLOTTABLE.includes(un.status)) throw err(400, `A ${un.status} unit cannot be assigned`)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(req.body.sale_date || '')) throw err(400, 'Sale date is required')
-  const out = db.transaction(() => {
+  const out = tx(() => {
     let leadId = +req.body.lead_id || null
     if (!leadId) { // buyer not in the CRM yet
       const c = req.body.client || {}
@@ -1339,7 +1370,7 @@ app.post('/api/allotments/:id/cancel', guard('unit_status'), (req, res) => {
   const a = one(`SELECT * FROM allotments WHERE id=? AND status='active'`, req.params.id)
   if (!a) throw err(404, 'Active allotment not found')
   if (!req.body.note?.trim()) throw err(400, 'A reason is required')
-  db.transaction(() => {
+  tx(() => {
     run(`UPDATE allotments SET status='cancelled', cancelled_at=?, cancel_note=? WHERE id=?`, now(), req.body.note.trim(), a.id)
     run(`UPDATE commissions SET status='cancelled' WHERE allotment_id=? AND status='pending'`, a.id) // paid ones stay, flagged for recovery
     const un = unitFor(a.unit_id)
@@ -1393,7 +1424,7 @@ app.get('/api/allotments/:id/ledger', (req, res) => {
 app.put('/api/allotments/:id/plan', guard('payments'), (req, res) => {
   const a = allotmentRow(req.params.id)
   if (a.status !== 'active') throw err(400, 'This allotment is cancelled')
-  db.transaction(() => setPlan(a, req.body))()
+  tx(() => setPlan(a, req.body))()
   log(req, 'payment_plan', 'allotment', a.id, req.body)
   res.json({ ok: true })
 })
@@ -1410,7 +1441,7 @@ app.post('/api/allotments/:id/payments', guard('payments'), (req, res) => {
   if (!(amount > 0)) throw err(400, 'Amount is required')
   if (!isDate(b.paid_on) || b.paid_on > today()) throw err(400, 'Payment date is required and cannot be in the future')
   if (!PAYMENT_METHODS.includes(b.method)) throw err(400, 'Pick a payment method')
-  const id = db.transaction(() => {
+  const id = tx(() => {
     const paid = paidFor(a.id)
     if (b.kind === 'payment' && a.status !== 'active') throw err(400, 'This allotment is cancelled. Only refunds can be recorded')
     if (b.kind === 'payment' && paid + amount > a.price) throw err(400, `That is more than the balance (PKR ${(a.price - paid).toLocaleString('en-PK')})`)
@@ -1454,7 +1485,7 @@ app.post('/api/allotments/:id/transfer', guard('payments'), (req, res) => {
   if (fee < 0) throw err(400, 'Fee cannot be negative')
   if (fee > 0 && !PAYMENT_METHODS.includes(b.method)) throw err(400, 'Pick how the fee was paid')
   if (!isDate(b.paid_on) || b.paid_on > today()) throw err(400, 'Transfer date is required and cannot be in the future')
-  const out = db.transaction(() => {
+  const out = tx(() => {
     const p = projectRow(a.project_id), un = unitFor(a.unit_id)
     const leadId = +b.lead_id || createLead({ ...b.client, source: 'Walk-in', project: p.name, remarks: `Transfer of ${a.allotment_no}` }, req.user.id).lead_id
     if (leadId === a.lead_id) throw err(400, 'Pick a different client')
@@ -1570,7 +1601,7 @@ app.get('/api/listings/:id', (req, res) => {
 app.post('/api/listings', (req, res) => {
   const f = listingFields(req.body)
   if (!f.purpose || !f.property_type || !f.price) throw err(400, 'Purpose, property type and price are required')
-  const id = db.transaction(() => {
+  const id = tx(() => {
     let ownerId = +req.body.owner_lead_id || null
     if (!ownerId && req.body.owner?.phone) ownerId = createLead({ ...req.body.owner, source: 'Walk-in', lead_type: f.purpose === 'Rent' ? 'landlord' : 'seller', remarks: 'Listed a property' }, req.user.id, req.user.role === 'agent' ? req.user.id : null).lead_id
     const cols = [...Object.keys(f), 'owner_lead_id', 'agent_id', 'created_by', 'created_at', 'updated_at'].filter((k, i, a) => a.indexOf(k) === i)
@@ -1777,7 +1808,7 @@ app.post('/api/roles', adminOnly, (req, res) => {
   if (!key) throw err(400, 'Role name is required')
   if (roles().some(r => r.key === key || r.label.toLowerCase() === label.toLowerCase())) throw err(400, `A role called ${label} already exists`)
   if (!ACCESS.includes(access)) throw err(400, 'Pick which leads this role can see')
-  db.transaction(() => {
+  tx(() => {
     putSetting('custom_roles', [...(S('custom_roles') || []), { key, label, access }])
     if (copy_from) putSetting('permissions', Object.fromEntries(Object.entries(allPerms()).map(([p, list]) => [p, list.includes(copy_from) ? [...list, key] : list])))
   })()
@@ -1794,7 +1825,7 @@ app.patch('/api/roles/:key', adminOnly, (req, res) => {
 app.delete('/api/roles/:key', adminOnly, (req, res) => {
   const r = customRole(req.params.key), n = one('SELECT count(*) n FROM users WHERE role=?', r.key).n
   if (n) throw err(400, `${n} user(s) still have the ${r.label} role. Give them another role first.`)
-  db.transaction(() => {
+  tx(() => {
     putSetting('custom_roles', S('custom_roles').filter(x => x.key !== r.key))
     putSetting('permissions', Object.fromEntries(Object.entries(allPerms()).map(([p, list]) => [p, list.filter(x => x !== r.key)])))
   })()
@@ -1954,7 +1985,7 @@ app.post('/api/properties', (req, res) => {
   if (!can(req.user, 'properties') && !can(req.user, 'manage_inventory') && req.user.role !== 'agent') throw err(403, 'You do not have permission for this')
   const f = propertyFields(req.body)
   if (!f.number && !f.title) throw err(400, 'Give the house / plot number or a title')
-  const id = db.transaction(() => {
+  const id = tx(() => {
     const owner = req.body.owner?.phone ? contactFor(req.body.owner) : null
     const vals = { kind: 'House', city: 'Lahore', ...f, agent_id: f.agent_id || req.user.id, owner_contact_id: owner, created_by: req.user.id, created_at: now(), updated_at: now() }
     return run(`INSERT INTO properties(${Object.keys(vals)}) VALUES(${Object.keys(vals).map(() => '?')})`, ...Object.values(vals)).lastInsertRowid
@@ -1966,7 +1997,7 @@ app.patch('/api/properties/:id', (req, res) => {
   const p = propertyFor(req.params.id)
   if (!canEditProperty(req.user, p)) throw err(403, 'Only the property agent or a property manager can change this')
   const f = propertyFields(req.body, p)
-  db.transaction(() => {
+  tx(() => {
     if (req.body.owner?.phone) f.owner_contact_id = contactFor(req.body.owner)
     if (Object.keys(f).length) run(`UPDATE properties SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), p.id)
   })()
@@ -1992,7 +2023,7 @@ app.post('/api/properties/:id/leases', (req, res) => {
   const f = leaseFields(req.body)
   if (!f.start_date || !f.end_date || !f.rent) throw err(400, 'Tenant, start, end and monthly rent are required')
   if (f.end_date <= f.start_date) throw err(400, 'End date must be after the start date')
-  const id = db.transaction(() => {
+  const id = tx(() => {
     if (one(`SELECT 1 FROM leases WHERE property_id=? AND status='active'`, p.id)) throw err(400, 'This property already has an active lease. End or renew it first.')
     const tenant = +req.body.tenant_contact_id || contactFor(req.body.tenant)
     const vals = { ...f, property_id: p.id, tenant_contact_id: tenant, created_by: req.user.id, created_at: now() }
@@ -2016,7 +2047,7 @@ app.post('/api/leases/:id/renew', (req, res) => {
   if (l.status !== 'active') throw err(400, 'Only an active lease can be renewed')
   const f = leaseFields({ ...l, start_date: l.end_date, notes: null, ...pick(req.body, ['end_date', 'rent', 'increase_pct', 'deposit', 'agreement_no', 'police_reg_no']) })
   if (f.end_date <= f.start_date) throw err(400, 'New end date must be after ' + f.start_date)
-  const id = db.transaction(() => {
+  const id = tx(() => {
     run(`UPDATE leases SET status='renewed', ended_on=? WHERE id=?`, l.end_date, l.id)
     const vals = { ...f, property_id: p.id, tenant_contact_id: l.tenant_contact_id, created_by: req.user.id, created_at: now() }
     return run(`INSERT INTO leases(${Object.keys(vals)}) VALUES(${Object.keys(vals).map(() => '?')})`, ...Object.values(vals)).lastInsertRowid
@@ -2107,7 +2138,7 @@ app.post('/api/areas', (req, res) => {
   const name = String(req.body.name || '').trim(), { kind } = req.body
   if (!name || !AREA_KINDS.includes(kind)) throw err(400, 'Give the area a name and say whether it is a society, phase or block')
   const outline = JSON.stringify(parseRing(req.body.outline))
-  const id = db.transaction(() => {
+  const id = tx(() => {
     const id = run('INSERT INTO areas(name,kind,outline,created_by,created_at) VALUES(?,?,?,?,?)', name, kind, outline, req.user.id, now()).lastInsertRowid
     retagArea({ name, kind, outline })
     return id
@@ -2121,7 +2152,7 @@ app.patch('/api/areas/:id', (req, res) => {
   if (!a) throw err(404, 'Area not found')
   const f = { name: String(req.body.name ?? a.name).trim(), kind: req.body.kind ?? a.kind, outline: req.body.outline ? JSON.stringify(parseRing(req.body.outline)) : a.outline }
   if (!f.name || !AREA_KINDS.includes(f.kind)) throw err(400, 'Name and type are required')
-  db.transaction(() => {
+  tx(() => {
     run('UPDATE areas SET name=?, kind=?, outline=? WHERE id=?', f.name, f.kind, f.outline, a.id)
     if (f.name !== a.name || f.kind !== a.kind) { // take the old label off properties inside the old outline only (another society may have a "Phase 6" too)
       const col = L.AREA_FIELD[a.kind], ring = JSON.parse(a.outline)
@@ -2396,10 +2427,16 @@ if (!one('SELECT 1 FROM users')) {
   console.log('Seeded demo users (password: password123): admin@propcentral.local, head@propcentral.local, lead@propcentral.local, agent1@propcentral.local, agent2@propcentral.local')
 }
 
-setInterval(slaTick, 60e3)
-setInterval(reportTick, 60e3)
-setInterval(leaseTick, 60e3)
-leaseTick()
-slaTick()
-const port = process.env.PORT || 3001
-app.listen(port, () => console.log(`Prop Central API on http://localhost:${port}`))
+// Vercel imports this file as a serverless function: no timers and no listener there; /api/cron/tick replaces them
+const serverless = !!process.env.VERCEL
+const isMain = !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (!serverless && isMain) {
+  setInterval(slaTick, 60e3)
+  setInterval(reportTick, 60e3)
+  setInterval(leaseTick, 60e3)
+  leaseTick()
+  slaTick()
+  const port = process.env.PORT || 3001
+  app.listen(port, () => console.log(`Prop Central API on http://localhost:${port}`))
+}
+export default app

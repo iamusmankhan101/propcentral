@@ -1,6 +1,6 @@
 # Prop Central
 
-Real estate CRM, Phase 1 of the PRD (lead control and accountability). React + Vite frontend, Express + SQLite API.
+Real estate CRM, Phase 1 of the PRD (lead control and accountability). React + Vite frontend, Express API on a libSQL/SQLite database (local file or Turso).
 
 ## Run
 
@@ -10,7 +10,7 @@ npm run dev        # API on :3001, UI on http://localhost:5173
 npm test           # business-logic checks
 ```
 
-Production: `npm run build && npm start` serves the UI and API on `PORT` (default 3001).
+Production: `npm run build && npm start` serves the UI and API on `PORT` (default 3001). Without `TURSO_DATABASE_URL` the API uses the local `./crm.db` file.
 
 The first run seeds demo users (password `password123`): `admin@propcentral.local`, `head@propcentral.local`, `lead@propcentral.local`, `agent1@propcentral.local`, `agent2@propcentral.local`. Change these passwords before going live.
 
@@ -20,11 +20,25 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 
 | Variable | Purpose |
 |---|---|
-| `PORT`, `DB_PATH` | Server port, SQLite file (default `./crm.db`) |
+| `PORT`, `DB_PATH` | Server port, local database file (default `./crm.db`). Ignored when `TURSO_DATABASE_URL` is set |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database URL (`libsql://…`) and token. Required on Vercel |
+| `CRON_SECRET` | Bearer secret for `/api/cron/tick` (SLA, lease and weekly-report jobs) |
 | `FB_VERIFY_TOKEN`, `FB_APP_SECRET`, `FB_PAGE_TOKEN` | Optional fallback. Normally an admin connects Facebook in **Settings › Facebook** (paste app secret + Graph API Explorer token; the CRM makes a permanent Page token, registers the webhook at `/api/webhooks/facebook` and subscribes the Page) |
 | `INBOUND_API_KEY` | `POST /api/inbound` with header `x-api-key`. For website forms, Zapier, portal email parsers and telephony |
 
 Both integration endpoints stay disabled until their variables are set.
+
+## Deploy to Vercel
+
+The API runs as one serverless function (`api/[...path].js`) and the Vite build is served statically. The database lives in Turso, so nothing is written to the function's filesystem.
+
+1. Create the database with the [Turso CLI](https://docs.turso.tech/cli/introduction): `turso db create propcentral`, then copy `turso db show propcentral --url` and `turso db tokens create propcentral`.
+2. In the Vercel project, add `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `CRON_SECRET` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
+3. Deploy. Tables, migrations and the demo seed run automatically on the first request.
+4. `vercel.json` registers a daily Vercel Cron for `/api/cron/tick`. Vercel sends `Authorization: Bearer $CRON_SECRET` for you. On the free plan the schedule cannot be more frequent than daily; for minute-level SLA checks either upgrade (cron `*/5 * * * *`) or point an external scheduler such as cron-job.org at `https://<app>/api/cron/tick` with the same bearer header.
+5. Keep local `.env` values out of Git; only add them in Vercel.
+
+Limits to know: serverless functions cap request/response bodies at ~4.5 MB (large society-map SVGs or photo payloads may exceed it; media itself is stored in the database), and every database call is a network round trip, so heavy pages take longer than a local file.
 
 ## What's built (PRD refs)
 
@@ -58,4 +72,4 @@ Both integration endpoints stay disabled until their variables are set.
   - Meta spend import, so there's no cost per lead yet
   - Email delivery for the weekly report (needs SMTP or an email API)
 - **Still open:** SMS installment reminders (needs the SMS gateway), required 2FA per role.
-- **Scale:** SQLite with WAL handles one server comfortably. Move to Postgres before running multiple API instances, toward the 1,000-user target (A1).
+- **Scale:** the API keeps better-sqlite3's synchronous query style over libSQL. A single process handles one query at a time; Turso adds network latency per query, so move hot paths to batched queries or a Postgres driver before the 1,000-user target (A1).
