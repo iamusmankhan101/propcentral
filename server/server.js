@@ -1045,8 +1045,11 @@ app.post('/api/visits/:id/feedback', (req, res) => {
 // ---- dashboard (M9) ----
 app.get('/api/dashboard', (req, res) => {
   const q = req.query, u = req.user
-  const from = q.from || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
-  const to = (q.to || now().slice(0, 10)) + 'T23:59:59.999Z'
+  // The SPA sends calendar days picked in the business timezone; interpret them there, not as UTC days
+  const TZ = '+05:00', dayStart = d => new Date(`${d}T00:00:00${TZ}`).toISOString(), dayEnd = d => new Date(`${d}T23:59:59.999${TZ}`).toISOString()
+  const fromDay = q.from || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  const toDay = (q.to || now().slice(0, 10))
+  const from = dayStart(fromDay), to = dayEnd(toDay)
   const [w, p] = scope(u)
   const where = [`l.deleted=0`, w, `l.created_at BETWEEN ? AND ?`], params = [...p, from, to]
   for (const [k, col] of [['source', 'l.source'], ['project', 'l.project'], ['agent_id', 'l.agent_id'], ['branch_id', 'l.branch_id'], ['team_id', 'u.team_id']])
@@ -1057,7 +1060,7 @@ app.get('/api/dashboard', (req, res) => {
 
   const RESP = `avg((julianday(l.first_contact_at)-julianday(l.assigned_at))*1440) avg_response`
   // same-length window just before `from`, for period-over-period deltas
-  const start = Date.parse(from + 'T00:00:00Z'), prevParams = [...params]
+  const start = Date.parse(from), prevParams = [...params]
   prevParams.splice(p.length, 2, new Date(start - (Date.parse(to) - start) - 1).toISOString(), new Date(start - 1).toISOString())
   const prev = one(`SELECT count(*) leads, sum(l.status='Booked') booked, sum(l.first_contact_at IS NOT NULL) contacted,
       sum(NOT EXISTS(SELECT 1 FROM sla_breaches b WHERE b.lead_id=l.id)) within_sla, ${RESP} ${W}`, ...prevParams)
@@ -1080,7 +1083,7 @@ app.get('/api/dashboard', (req, res) => {
       (SELECT count(*) FROM visits v WHERE v.agent_id=u.id AND v.status<>'verified' AND v.scheduled_at BETWEEN ? AND ? AND v.scheduled_at < ?) visits_unverified
     ${W} AND l.agent_id IS NOT NULL GROUP BY u.id ORDER BY booked DESC, contacted DESC`,
     closed, now(), from, to, from, to, from, to, from, to, from, to, now(), ...params)
-  const daily = all(`SELECT substr(l.created_at,1,10) d, count(*) leads, sum(l.first_contact_at IS NOT NULL) contacted ${W} GROUP BY d ORDER BY d`, ...params)
+  const daily = all(`SELECT date(l.created_at, '+5 hours') d, count(*) leads, sum(l.first_contact_at IS NOT NULL) contacted ${W} GROUP BY d ORDER BY d`, ...params)
   const resp = all(`SELECT l.agent_id, (julianday(l.first_contact_at)-julianday(l.assigned_at))*1440 m ${W} AND l.first_contact_at IS NOT NULL`, ...params)
   for (const a of agents) {
     const m = resp.filter(r => r.agent_id === a.id).map(r => r.m).sort((x, y) => x - y)
@@ -1091,7 +1094,7 @@ app.get('/api/dashboard', (req, res) => {
       LEFT JOIN activities a ON a.id=(SELECT max(id) FROM activities WHERE lead_id=l.id AND next_action_at IS NOT NULL)
     WHERE l.agent_id=? AND ${OPEN} AND (l.next_action_at < ? OR l.status='New') ORDER BY l.next_action_at LIMIT 30`,
     u.id, closed, new Date(Date.now() + 864e5).toISOString())
-  res.json({ from, to: to.slice(0, 10), kpi, prev, visits, funnel, sources, lost, agents, mine, daily })
+  res.json({ from: fromDay, to: toDay, kpi, prev, visits, funnel, sources, lost, agents, mine, daily })
 })
 
 // ---- notifications ----
