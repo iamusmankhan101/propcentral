@@ -115,14 +115,31 @@ function Trend({ daily, from, to }) {
   )
 }
 
-// Pipeline composition: four fixed groups with fixed colors, so a filter never repaints a group
-const GROUPS = [['New', '#e4572e', ['New']], ['In progress', '#2f6fdb', null], ['Booked', '#1f9e94', ['Booked']], ['Lost / junk', '#8b55d6', ['Lost', 'Junk']]]
+// Pipeline composition: one slice per status, coloured by the status's place in settings so a
+// filter or period change never repaints a status
+const PALETTE = ['#e4572e', '#2f6fdb', '#8b55d6', '#0f9d76', '#d99a1b', '#1f9e94', '#b23a8a', '#0f7f46', '#6b7280', '#9ca3af', '#5a6b8c', '#a15c00']
+
+// Whole percentages that add up to 100 (largest remainder), so 2/2/2 never reads as 99%
+function shares(rows, total) {
+  if (!total) return rows.map(() => 0)
+  const exact = rows.map(x => (100 * x.n) / total)
+  const out = exact.map(Math.floor)
+  let left = 100 - out.reduce((s, n) => s + n, 0)
+  exact.map((v, i) => [v - out[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1])
+    .forEach(([, i]) => { if (left > 0) { out[i]++; left-- } })
+  return out
+}
+
 function Composition({ funnel }) {
+  const m = useMeta()
   const [hover, setHover] = useState(null)
-  const named = GROUPS.flatMap(g => g[2] || [])
-  const rows = GROUPS.map(([name, color, st]) => ({ name, color, n: funnel.filter(f => (st ? st.includes(f.status) : !named.includes(f.status))).reduce((s, f) => s + f.n, 0) }))
+  const order = m.settings.statuses
+  const rank = s => { const i = order.indexOf(s); return i < 0 ? order.length : i }
+  const color = s => PALETTE[(order.indexOf(s) < 0 ? PALETTE.length - 1 : order.indexOf(s) % PALETTE.length)]
+  const rows = funnel.filter(f => f.n > 0).sort((a, b) => rank(a.status) - rank(b.status)).map(f => ({ name: f.status, n: f.n, color: color(f.status) }))
   const total = rows.reduce((s, r) => s + r.n, 0)
-  const r = 70, C = 2 * Math.PI * r, gap = total && rows.filter(x => x.n).length > 1 ? 3 : 0
+  const pcts = shares(rows, total)
+  const r = 70, C = 2 * Math.PI * r, gap = rows.length > 1 ? 3 : 0
   let off = 0
   return (
     <div className="card">
@@ -130,27 +147,28 @@ function Composition({ funnel }) {
       <div className="composition">
         <ul>
           {rows.map((x, i) => (
-            <li key={x.name} className={hover === i ? 'on' : ''}>
+            <li key={x.name} className={hover === i ? 'on' : ''} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}>
               <small><i className="swatch" style={{ background: x.color }} />{x.name}</small>
-              <div><b>{x.n.toLocaleString()}</b> <span className="muted">{pct(x.n, total)}</span></div>
+              <div><b>{x.n.toLocaleString()}</b> <span className="muted">{pcts[i]}%</span></div>
             </li>
           ))}
         </ul>
         <svg viewBox="0 0 180 180" role="img" aria-label={rows.map(x => `${x.name} ${x.n}`).join(', ')}>
           <circle cx="90" cy="90" r={r} className="ring" />
-          {total > 0 && rows.map((x, i) => {
+          {rows.map((x, i) => {
             const len = (x.n / total) * C, o = off
             off += len
-            return x.n > 0 && (
+            return (
               <circle key={x.name} cx="90" cy="90" r={r} fill="none" stroke={x.color} strokeWidth={hover === i ? 30 : 26}
                 strokeDasharray={`${Math.max(0.1, len - gap)} ${C}`} strokeDashoffset={-o} transform="rotate(-90 90 90)"
                 onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} />
             )
           })}
           <text x="90" y="86" textAnchor="middle" className="donut-total">{total}</text>
-          <text x="90" y="106" textAnchor="middle" className="donut-label">{hover != null ? rows[hover].name : 'leads'}</text>
+          <text x="90" y="106" textAnchor="middle" className="donut-label">{rows[hover]?.name || 'leads'}</text>
         </svg>
       </div>
+      {!rows.length && <p className="muted">No leads in this period.</p>}
     </div>
   )
 }
