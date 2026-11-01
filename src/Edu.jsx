@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt, toIso, go, phone, readFile, shrinkImage } from './api.js'
 import { Select, When, Status } from './Leads.jsx'
 import { StudentApplications } from './EduApplications.jsx'
+import { parseCsv } from '../server/lib.js'
 
 const docLabel = t => (t || '').replace(/_/g, ' ')
 const due = d => d && d < new Date().toISOString()
@@ -28,9 +29,25 @@ export default function Students({ query }) {
   const qs = new URLSearchParams(Object.entries({ ...f, size: board ? 200 : 50 }).filter(([, v]) => v !== '')).toString()
   const [data, reload] = useApi('/edu/students?' + qs)
   const [adding, setAdding] = useState(params.has('new'))
+  const [importing, setImporting] = useState(false)
   const set = k => e => setF({ ...f, [k]: e.target.value, page: 0 })
   const counselors = m.users.filter(u => u.active && ['agent', 'team_lead'].includes(u.role)).map(u => [u.id, u.name])
   const hasFilters = !!(f.q || f.stage || f.counselor_id || f.missing_docs || f.followup)
+
+  const exportCsv = () => {
+    const filterQs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== '')).toString()
+    const url = '/api/edu/students/export' + (filterQs ? '?' + filterQs : '')
+    fetch(url, { headers: { authorization: 'Bearer ' + (localStorage.token || '') } })
+      .then(r => r.blob())
+      .then(b => {
+        const a = Object.assign(document.createElement('a'), {
+          href: URL.createObjectURL(b),
+          download: `students-${new Date().toISOString().slice(0, 10)}.csv`,
+        })
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000)
+      })
+  }
 
   return (
     <section>
@@ -38,9 +55,12 @@ export default function Students({ query }) {
         <h2>Students {data && <span className="count">{data.total}</span>}</h2>
         <div className="row">
           <div className="seg small">{[['board', 'Journey'], ['table', 'Table']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => pick(k)}>{l}</button>)}</div>
+          <button className="ghost" onClick={exportCsv} disabled={!data?.total}>Export CSV</button>
+          <button className="ghost" onClick={() => setImporting(!importing)}>{importing ? 'Close import' : 'Import CSV'}</button>
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ New student'}</button>
         </div>
       </div>
+      {importing && <StudentImport counselors={counselors} onDone={() => { setImporting(false); reload() }} />}
       {adding && <NewStudent counselors={counselors} onDone={() => { setAdding(false); reload() }} />}
       <div className="filters">
         <input placeholder="Search name, phone, email, college, passport…" value={f.q} onChange={set('q')} />
@@ -181,7 +201,7 @@ export function Student({ id }) {
           {!masked && <a className="button ghost" href={'https://wa.me/' + student.phone} target="_blank" rel="noreferrer">WhatsApp</a>}
         </div>
       </div>
-      {lead && <div className="card banner">
+      {lead && (m.me.modules || []).includes('property') && <div className="card banner">
         Came from <a href={'#/leads/' + lead.id}>lead #{lead.id}</a> · {lead.source}{lead.campaign && ` / ${lead.campaign}`} · <Status s={lead.status} />
       </div>}
 
@@ -428,6 +448,96 @@ function StudentPayments({ student, payments = [], reload }) {
             <button type="button" className="ghost" onClick={() => setAdding(false)}>Cancel</button>
           </div>
         </form>
+      )}
+    </div>
+  )
+}
+
+
+const STUDENT_IMPORT_FIELDS = ['name', 'phone', 'email', 'cnic', 'city', 'institution', 'current_level', 'target_level', 'target_countries', 'intake', 'ielts']
+
+function StudentImport({ counselors, onDone }) {
+  const m = useMeta()
+  const [csv, setCsv] = useState()
+  const [map, setMap] = useState({})
+  const [counselorId, setCounselorId] = useState('')
+  const [defaultStage, setDefaultStage] = useState('New Inquiry')
+  const [report, setReport] = useState()
+  const { run, error, busy } = useAction()
+
+  const load = async e => {
+    const file = e.target.files[0]
+    if (!file) return
+    const rows = parseCsv(await file.text())
+    setCsv(rows)
+    setReport()
+    const h = rows[0].map(x => x.trim().toLowerCase())
+    setMap(Object.fromEntries(STUDENT_IMPORT_FIELDS.map(f => [f, h.findIndex(x => x === f || x.replace(/[\s_]/g, '') === f.replace('_', ''))]).filter(([, i]) => i >= 0)))
+  }
+
+  const getRows = () => csv.slice(1).map(r => {
+    const o = Object.fromEntries(Object.entries(map).filter(([, i]) => i >= 0).map(([f, i]) => [f, r[i]?.trim()]))
+    return { ...o, stage: defaultStage, counselor_id: counselorId || m.me.id }
+  })
+
+  const send = commit => run(async () => {
+    const res = await api('/edu/students/import', { body: { rows: getRows(), commit } })
+    setReport({ ...res, commit })
+    if (commit && !res.report.some(r => r.status === 'error')) {
+      setTimeout(onDone, 2000)
+    }
+  })
+
+  const count = st => (report?.report || []).filter(r => r.status === st).length
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3>Import students from CSV</h3>
+      <p className="muted">Upload your student list in CSV format. The first row must be column headers. Duplicate phone numbers will be flagged.</p>
+      <input type="file" accept=".csv,text/csv" onChange={load} />
+
+      {csv && (
+        <div className="grid" style={{ marginTop: 12 }}>
+          {STUDENT_IMPORT_FIELDS.map(f => (
+            <label key={f}>{f.replace(/_/g, ' ')}
+              <Select value={map[f] ?? ''} onChange={e => setMap({ ...map, [f]: e.target.value === '' ? -1 : +e.target.value })} options={csv[0].map((h, i) => [i, h])} blank="— skip —" />
+            </label>
+          ))}
+          <label>Assign to counselor
+            <Select value={counselorId} onChange={e => setCounselorId(e.target.value)} options={counselors} blank="Myself" />
+          </label>
+          <label>Default initial stage
+            <Select value={defaultStage} onChange={e => setDefaultStage(e.target.value)} options={m.settings.edu_stages} blank={null} />
+          </label>
+          <div className="wide row" style={{ marginTop: 8 }}>
+            <span className="muted">{csv.length - 1} records detected</span>
+            <button className="ghost" disabled={busy} onClick={() => send(false)}>Dry run check</button>
+            <button disabled={busy || !report || report.commit} onClick={() => send(true)}>Import {csv.length - 1} students</button>
+            <button type="button" className="ghost" onClick={onDone}>Cancel</button>
+          </div>
+          {error && <p className="error wide">{error}</p>}
+        </div>
+      )}
+
+      {report && (
+        <div style={{ marginTop: 12 }}>
+          <p><b>{report.commit ? 'Import complete' : 'Dry run results'}:</b> <span className="ok">{count('ok')} valid</span> · <span className="warn">{count('duplicate')} duplicates</span> · <span className="error">{count('error')} errors</span></p>
+          {report.report.filter(r => r.status !== 'ok').length > 0 && (
+            <table>
+              <thead><tr><th>Row</th><th>Student</th><th>Status</th><th>Notes</th></tr></thead>
+              <tbody>
+                {report.report.filter(r => r.status !== 'ok').slice(0, 15).map(r => (
+                  <tr key={r.row}>
+                    <td>Row {r.row}</td>
+                    <td><b>{r.name || '—'}</b> {r.phone && <small className="muted">({r.phone})</small>}</td>
+                    <td className={r.status === 'error' ? 'error' : 'warn'}>{r.status}</td>
+                    <td>{r.message || (r.status === 'duplicate' ? 'Already registered as a student' : '')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
     </div>
   )

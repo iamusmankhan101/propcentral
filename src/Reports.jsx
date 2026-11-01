@@ -30,12 +30,13 @@ const COLS = [
 export default function Reports() {
   const m = useMeta()
   const eduOn = (m.me.modules || []).includes('edu') && m.perms.includes('edu')
-  const [tab, setTab] = useState('agents')
+  const propertyOn = (m.me.modules || []).includes('property')
+  const [tab, setTab] = useState(!propertyOn && eduOn ? 'edu' : 'agents')
   const [period, setPeriod] = useState('day')
   const [date, setDate] = useState(today())
   const [agentId, setAgentId] = useState(null)
   const qs = `period=${period}&date=${date}`
-  const [d] = useApi('/reports/agents?' + qs)
+  const [d] = useApi(propertyOn ? '/reports/agents?' + qs : null)
   const rows = d?.rows || []
   const total = Object.fromEntries(COLS.filter(c => c[3] !== false).map(([k]) => [k, rows.reduce((s, r) => s + (r[k] || 0), 0)]))
   const csv = () => {
@@ -48,7 +49,7 @@ export default function Reports() {
 
   return (
     <section>
-      {eduOn && (
+      {propertyOn && eduOn && (
         <div className="row between no-print" style={{ marginBottom: 16 }}>
           <div className="seg">
             <button className={tab === 'agents' ? 'on' : ''} onClick={() => setTab('agents')}>Real Estate Agents</button>
@@ -57,7 +58,7 @@ export default function Reports() {
         </div>
       )}
 
-      {tab === 'edu' ? <EduReports /> : (
+      {tab === 'edu' || (!propertyOn && eduOn) ? <EduReports /> : (
         <>
           <div className="row between no-print">
             <div className="seg">{['day', 'week', 'month'].map(p => <button key={p} className={period === p ? 'on' : ''} onClick={() => setPeriod(p)}>{{ day: 'Daily', week: 'Weekly', month: 'Monthly' }[p]}</button>)}</div>

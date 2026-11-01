@@ -209,6 +209,12 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       type TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT DEFAULT 'PKR', method TEXT, reference TEXT, note TEXT,
       paid_at TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
     db.exec('CREATE INDEX IF NOT EXISTS edu_payments_student ON edu_payments(student_id)')
+    // Edu commissions tracking
+    db.exec(`CREATE TABLE IF NOT EXISTS edu_commissions(id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES edu_students(id),
+      application_id INTEGER REFERENCES edu_applications(id), user_id INTEGER REFERENCES users(id),
+      type TEXT NOT NULL DEFAULT 'counselor', amount INTEGER NOT NULL, currency TEXT DEFAULT 'PKR',
+      status TEXT NOT NULL DEFAULT 'pending', paid_on TEXT, ref TEXT, note TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
+    db.exec('CREATE INDEX IF NOT EXISTS edu_commissions_student ON edu_commissions(student_id)')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
 } catch (e) {
@@ -334,8 +340,9 @@ function notifyPlanBlock(message, where) {
 const MODULE_IDS = MODULES.map(m => m.id)
 const modulesOf = u => {
   const main = u.owner_id ? one('SELECT modules FROM users WHERE id=?', u.owner_id) : u
-  const extra = parseModules(main?.modules).filter(id => MODULE_IDS.includes(id) && id !== 'property')
-  return ['property', ...extra]
+  const list = parseModules(main?.modules).filter(id => MODULE_IDS.includes(id))
+  // If modules were explicitly set (e.g. only ['edu']), return that list. If null/empty (legacy accounts), default to property.
+  return list.length ? list : ['property']
 }
 
 // ---------- auth throttling ----------
@@ -1396,7 +1403,7 @@ app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}. Choose from ${MODULE_IDS.join(', ')}`)
-  const list = ['property', ...req.body.modules.filter(m => m !== 'property')] // the base CRM never switches off
+  const list = req.body.modules.length ? req.body.modules : ['property']
   run('UPDATE users SET modules=? WHERE id=?', JSON.stringify(list), acct.id)
   for (const u of all("SELECT id FROM users WHERE (id=? OR owner_id=?) AND role='admin' AND active=1", acct.id, acct.id))
     notify(u.id, list.includes('edu') ? 'The Student Consultancy module is now enabled for your account.' : 'The Student Consultancy module was disabled for your account.', null)
@@ -2792,6 +2799,120 @@ app.get('/api/edu/reports', eduGuard, (req, res) => {
     GROUP BY ep.type, ep.currency ORDER BY total DESC`, from, to, ...p)
 
   res.json({ from: fromDay, to: toDay, counselors, byCountry, byUniversity, byIntake, stageAvg, daily, payments })
+})
+
+// ---------- Student Import & Export ----------
+app.get('/api/edu/students/export', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  const where = [w], params = [...p]
+  const q = req.query
+  if (q.stage) { where.push('s.stage=?'); params.push(eduStage(q.stage)) }
+  if (q.counselor_id) { where.push('s.counselor_id=?'); params.push(+q.counselor_id) }
+  if (q.branch_id) { where.push('s.branch_id=?'); params.push(+q.branch_id) }
+  if (q.q) { const like = `%${q.q}%`; where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR s.institution LIKE ? OR s.passport LIKE ?)'); params.push(like, like, like, like, like) }
+
+  const from = `${EDU_FROM} WHERE ${where.join(' AND ')}`
+  const rows = all(`SELECT s.id, c.name, c.phone, c.email, c.cnic, s.gender, s.dob, s.city, s.passport, s.passport_expiry,
+    s.current_level, s.institution, s.graduate_year, s.gpa, s.major, s.ielts, s.toefl, s.gre, s.gmat,
+    s.target_level, s.target_countries, s.intake, s.stage, s.stage_at, u.name counselor_name,
+    s.visa_type, s.visa_app_number, s.cas_coe_number, s.visa_outcome, s.created_at
+    ${from} ORDER BY s.id DESC`, ...params)
+
+  audit(req.user.id, 'export', 'edu_students', null, { count: rows.length, query: q }, req.ip)
+  res.type('text/csv').attachment(`students-${Date.now()}.csv`)
+    .send(L.toCsv([[`Exported by ${req.user.name} (${req.user.email}) at ${now()}. Confidential.`], Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
+})
+
+app.post('/api/edu/students/import', eduGuard, (req, res) => {
+  const rows = req.body.rows || []
+  const report = rows.map((row, i) => {
+    try {
+      const name = String(row.name || '').trim()
+      const phone = L.normalizePhone(row.phone || '')
+      if (!name) throw err(400, 'Name is required')
+      if (!phone) throw err(400, 'A valid phone number is required')
+      const email = row.email ? String(row.email).trim().toLowerCase() : null
+      const existingContact = findContact(phone, email)
+      const existingStudent = existingContact ? one('SELECT id FROM edu_students WHERE contact_id=?', existingContact.id) : null
+
+      if (!req.body.commit) {
+        return { row: i + 1, name, phone, status: existingStudent ? 'duplicate' : 'ok' }
+      }
+
+      if (existingStudent) {
+        return { row: i + 1, name, phone, status: 'duplicate', student_id: existingStudent.id }
+      }
+
+      const contact = existingContact ?? { id: run('INSERT INTO contacts(name,phone,email,cnic,created_at) VALUES(?,?,?,?,?)',
+        name, phone, email, row.cnic || null, now()).lastInsertRowid }
+
+      const f = pick(row, EDU_FIELDS)
+      const stage = row.stage && S('edu_stages').includes(row.stage) ? row.stage : S('edu_stages')[0]
+      const counselorId = row.counselor_id && !isNaN(+row.counselor_id) ? +row.counselor_id : req.user.id
+
+      const cols = ['contact_id', 'branch_id', 'counselor_id', 'stage', 'stage_at', ...Object.keys(f), 'created_by', 'created_at']
+      const vals = [contact.id, req.user.branch_id, counselorId, stage, now(), ...Object.values(f), req.user.id, now()]
+      const id = run(`INSERT INTO edu_students(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, ...vals).lastInsertRowid
+
+      eduActivity(id, req.user.id, 'note', `Student imported via CSV`)
+      return { row: i + 1, name, phone, status: 'ok', student_id: id }
+    } catch (e) {
+      return { row: i + 1, status: 'error', message: e.message }
+    }
+  })
+
+  if (req.body.commit) log(req, 'import', 'edu_students', null, { rows: rows.length, ok: report.filter(r => r.status === 'ok').length })
+  res.json({ report })
+})
+
+// ---------- Edu Commissions (Placement commissions) ----------
+app.get('/api/edu/commissions', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  res.json(all(`SELECT ec.*, s.id student_id, c.name student_name, c.phone student_phone, s.stage student_stage,
+    p.name program_name, u.name university_name, u.country university_country,
+    cu.name counselor_name, a.status application_status
+    FROM edu_commissions ec JOIN edu_students s ON s.id=ec.student_id
+    JOIN contacts c ON c.id=s.contact_id
+    LEFT JOIN edu_applications a ON a.id=ec.application_id
+    LEFT JOIN edu_programs p ON p.id=a.program_id
+    LEFT JOIN edu_universities u ON u.id=p.university_id
+    LEFT JOIN users cu ON cu.id=ec.user_id
+    WHERE ${w.replace(/\bs\./g, 's.')} ORDER BY ec.id DESC`, ...p))
+})
+
+app.post('/api/edu/commissions', eduGuard, (req, res) => {
+  const studentId = +req.body.student_id
+  const s = scopedEdu(req.user, studentId)
+  const amount = +req.body.amount
+  if (!amount || amount <= 0) throw err(400, 'Valid commission amount is required')
+
+  const id = run(`INSERT INTO edu_commissions(student_id,application_id,user_id,type,amount,currency,status,note,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`, s.id, req.body.application_id ? +req.body.application_id : null,
+    req.body.user_id ? +req.body.user_id : (s.counselor_id || req.user.id),
+    req.body.type || 'counselor', amount, req.body.currency || 'PKR', 'pending',
+    req.body.note || null, req.user.id, now()).lastInsertRowid
+
+  eduActivity(s.id, req.user.id, 'note', `Placement commission recorded: ${req.body.currency || 'PKR'} ${amount.toLocaleString()}`)
+  log(req, 'create', 'edu_commission', id, { student_id: s.id, amount })
+  res.json({ id })
+})
+
+app.post('/api/edu/commissions/:id/pay', guard('payments'), (req, res) => {
+  if (!isDate(req.body.paid_on) || req.body.paid_on > today()) throw err(400, 'Valid payment date is required')
+  if (!run(`UPDATE edu_commissions SET status='paid', paid_on=?, ref=?, note=COALESCE(?, note) WHERE id=? AND status='pending'`,
+    req.body.paid_on, req.body.ref?.trim() || null, req.body.note?.trim() || null, req.params.id).changes) {
+    throw err(400, 'Commission is not in pending status')
+  }
+  log(req, 'pay_edu_commission', 'edu_commission', +req.params.id, req.body)
+  res.json({ ok: true })
+})
+
+app.post('/api/edu/commissions/:id/cancel', guard('payments'), (req, res) => {
+  const note = req.body.note?.trim()
+  if (!note) throw err(400, 'Cancellation reason is required')
+  run(`UPDATE edu_commissions SET status='cancelled', note=? WHERE id=?`, note, req.params.id)
+  log(req, 'cancel_edu_commission', 'edu_commission', +req.params.id, { note })
+  res.json({ ok: true })
 })
 
 // ---- Settings › Facebook: connect a Page's Lead Ads in one step ----

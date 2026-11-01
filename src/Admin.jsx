@@ -155,9 +155,21 @@ const LABELS = {
 
 export function Settings({ query = '' }) {
   const m = useMeta()
-  const allowed = SECTIONS.filter(([, , , perm]) => !perm || (perm === 'admin' ? m.me.role === 'admin' : m.can(perm)))
+  const propertyOn = (m.me.modules || []).includes('property')
+  const eduOn = (m.me.modules || []).includes('edu')
+
+  // Filter sections based on active company modules
+  const PROPERTY_SECTIONS = ['leads', 'assignment', 'visits', 'inventory', 'properties', 'sales', 'maps']
+  const EDU_SECTIONS = ['edu']
+
+  const allowed = SECTIONS.filter(([k, , , perm]) => {
+    if (!propertyOn && PROPERTY_SECTIONS.includes(k)) return false
+    if (!eduOn && EDU_SECTIONS.includes(k)) return false
+    return !perm || (perm === 'admin' ? m.me.role === 'admin' : m.can(perm))
+  })
+
   const want = new URLSearchParams(query).get('tab')
-  const tab = allowed.find(x => x[0] === want)?.[0] || 'profile'
+  const tab = allowed.find(x => x[0] === want)?.[0] || (!propertyOn && eduOn ? 'edu' : 'profile')
   const [s, reload] = useApi(KEYS[tab] || ['reports', 'sales'].includes(tab) ? '/settings' : null)
   const saved = () => { reload(); m.reloadMeta() }
   const title = SECTIONS.find(x => x[0] === tab)[1]

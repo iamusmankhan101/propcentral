@@ -203,15 +203,20 @@ function Shortcuts() {
 
 export default function Dashboard() {
   const m = useMeta()
-  const [period, setPeriod] = useState('month')
-  const [tab, setTab] = useState('main')
-  const [f, setF] = useState({ source: '', project: '', agent_id: '', branch_id: '' })
-  const filters = { ...f, from: day(PERIODS[period][1]()), to: day(new Date()) }
-  const [d] = useApi('/dashboard?' + new URLSearchParams(Object.entries(filters).filter(([, v]) => v)))
-  const set = k => e => setF({ ...f, [k]: e.target.value })
   const isAgent = m.me.role === 'agent'
   const eduOn = (m.me.modules || []).includes('edu') && m.perms.includes('edu')
-  const tabs = [['main', 'Main'], ...(isAgent ? [] : [['team', 'Team']]), ['marketing', 'Marketing'], ...(eduOn ? [['edu', 'Students']] : [])]
+  const propertyOn = (m.me.modules || []).includes('property')
+  const [period, setPeriod] = useState('month')
+  const [tab, setTab] = useState(!propertyOn && eduOn ? 'edu' : 'main')
+  const [f, setF] = useState({ source: '', project: '', agent_id: '', branch_id: '' })
+  const filters = { ...f, from: day(PERIODS[period][1]()), to: day(new Date()) }
+  const [d] = useApi(propertyOn ? '/dashboard?' + new URLSearchParams(Object.entries(filters).filter(([, v]) => v)) : null)
+  const set = k => e => setF({ ...f, [k]: e.target.value })
+
+  // When company is student consultancy only, do not show real estate tabs
+  const tabs = !propertyOn && eduOn
+    ? [['edu', 'Students']]
+    : [['main', 'Main'], ...(isAgent ? [] : [['team', 'Team']]), ['marketing', 'Marketing'], ...(eduOn ? [['edu', 'Students']] : [])]
 
   const head = (
     <div className="hero">
@@ -229,15 +234,27 @@ export default function Dashboard() {
         <div className="tabs" role="tablist">
           {tabs.map(([k, label]) => <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{label}</button>)}
         </div>
-        <div className="row">
-          <Select value={f.source} onChange={set('source')} options={m.settings.sources} blank="All sources" />
-          {m.settings.projects.length > 0 && <Select value={f.project} onChange={set('project')} options={m.settings.projects} blank="All projects" />}
-          {!isAgent && <Select value={f.agent_id} onChange={set('agent_id')} options={m.users.filter(u => u.role === 'agent').map(u => [u.id, u.name])} blank="All agents" />}
-          {!isAgent && m.branches.length > 1 && <Select value={f.branch_id} onChange={set('branch_id')} options={m.branches.map(b => [b.id, b.name])} blank="All branches" />}
-        </div>
+        {propertyOn && (
+          <div className="row">
+            <Select value={f.source} onChange={set('source')} options={m.settings.sources} blank="All sources" />
+            {m.settings.projects.length > 0 && <Select value={f.project} onChange={set('project')} options={m.settings.projects} blank="All projects" />}
+            {!isAgent && <Select value={f.agent_id} onChange={set('agent_id')} options={m.users.filter(u => u.role === 'agent').map(u => [u.id, u.name])} blank="All agents" />}
+            {!isAgent && m.branches.length > 1 && <Select value={f.branch_id} onChange={set('branch_id')} options={m.branches.map(b => [b.id, b.name])} blank="All branches" />}
+          </div>
+        )}
       </div>
     </div>
   )
+
+  if (!propertyOn && eduOn) {
+    return (
+      <section className="dash">
+        {head}
+        <EduDashboard period={period} filters={filters} />
+      </section>
+    )
+  }
+
   if (!d) return <section className={'dash loading'}>{head}</section>
 
   const k = d.kpi, p = d.prev

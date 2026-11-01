@@ -396,23 +396,63 @@ export default function App() {
   const propertyId = path.match(/^\/properties\/(\d+)/)?.[1]
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
   const eduOn = (meta.me.modules || []).includes('edu') && meta.perms.includes('edu')
+  const propertyOn = (meta.me.modules || []).includes('property')
   const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
   const universityId = eduOn ? path.match(/^\/universities\/(\d+)/)?.[1] : null
-  const nav = isPlatform ? PLATFORM_NAV : eduOn ? [...NAV, ...EDU_NAV] : NAV
+
+  // If company only has edu, show ONLY edu nav items and common admin/settings (no real estate items)
+  const nav = isPlatform ? PLATFORM_NAV
+    : !propertyOn && eduOn
+      ? [
+          ['/', 'Dashboard', 'dashboard', null, 'all'],
+          ['/students', 'Students', 'cap', null, 'all'],
+          ['/applications', 'Applications', 'send', null, 'all'],
+          ['/universities', 'Universities', 'book', null, 'wide'],
+          ['/courses', 'Courses', 'layers', null, 'wide'],
+          ['/reports', 'Reports', 'calendar', null, 'wide'],
+          ['/commissions', 'Commissions', 'percent', null, 'more'],
+          ['/users', 'Users', 'users', 'manage_users', 'more'],
+          ['/settings', 'Settings', 'settings', null, 'more'],
+          ['/audit', 'Audit', 'audit', 'audit', 'more'],
+        ]
+      : eduOn ? [...NAV, ...EDU_NAV] : NAV
+
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
-    : leadId ? <Lead id={leadId} key={leadId} />
+    : leadId && propertyOn ? <Lead id={leadId} key={leadId} />
     : studentId ? <Student id={studentId} key={studentId} />
     : universityId ? <University id={universityId} key={universityId} />
-    : propertyId ? <PropertyPage id={propertyId} key={propertyId} />
-    : rentReceiptId ? <RentReceipt id={rentReceiptId} key={rentReceiptId} />
-    : formId ? <BookingForm id={formId} key={formId} />
-    : ledgerId ? <Ledger id={ledgerId} key={ledgerId} />
-    : receiptId ? <Receipt id={receiptId} key={receiptId} />
-    : projectId ? <Project id={projectId} key={projectId} />
-    : allotmentId ? <AllotmentLetter id={allotmentId} key={allotmentId} />
-    : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/campaigns': <Campaigns />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit />, ...(eduOn ? { '/students': <Students query={query} key={query} />, '/applications': <Applications query={query} key={query} />,
-        '/universities': <Universities query={query} key={query} />, '/courses': <Courses query={query} key={query} /> } : {}) }[path]
+    : propertyId && propertyOn ? <PropertyPage id={propertyId} key={propertyId} />
+    : rentReceiptId && propertyOn ? <RentReceipt id={rentReceiptId} key={rentReceiptId} />
+    : formId && propertyOn ? <BookingForm id={formId} key={formId} />
+    : ledgerId && propertyOn ? <Ledger id={ledgerId} key={ledgerId} />
+    : receiptId && propertyOn ? <Receipt id={receiptId} key={receiptId} />
+    : projectId && propertyOn ? <Project id={projectId} key={projectId} />
+    : allotmentId && propertyOn ? <AllotmentLetter id={allotmentId} key={allotmentId} />
+    : {
+        '/': <Dashboard />,
+        '/reports': <Reports />,
+        '/commissions': <Commissions />,
+        '/users': <Users />,
+        '/settings': <Settings query={query} key={query} />,
+        '/audit': <Audit />,
+        ...(propertyOn ? {
+          '/leads': <Leads query={query} key={query} />,
+          '/visits': <Visits />,
+          '/projects': <Projects />,
+          '/collections': <Collections />,
+          '/listings': <Listings />,
+          '/properties': <Properties />,
+          '/campaigns': <Campaigns />,
+          '/import': <Import />,
+        } : {}),
+        ...(eduOn ? {
+          '/students': <Students query={query} key={query} />,
+          '/applications': <Applications query={query} key={query} />,
+          '/universities': <Universities query={query} key={query} />,
+          '/courses': <Courses query={query} key={query} />,
+        } : {})
+      }[path]
     ?? <p>Not found</p>
   const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
@@ -420,7 +460,11 @@ export default function App() {
 
   const logout = async () => { await api('/logout', { body: {} }).catch(() => {}); delete localStorage.token; go('/'); location.reload() }
   const toggleAvailable = async () => { await api('/me/available', { body: { available: !meta.me.available } }); reloadMeta() }
-  const search = e => { const { q } = formData(e); go('/leads?q=' + encodeURIComponent(q)) }
+  const search = e => {
+    const { q } = formData(e)
+    if (!propertyOn && eduOn) go('/students?q=' + encodeURIComponent(q))
+    else go('/leads?q=' + encodeURIComponent(q))
+  }
 
   return (
     <Meta.Provider value={{ ...meta, can: p => meta.perms.includes(p), reloadMeta }}>
