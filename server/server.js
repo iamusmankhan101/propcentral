@@ -195,6 +195,20 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
     addColumn('users', 'modules', 'TEXT') // JSON array of product modules this company can use; NULL = property only
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
+    // Visa tracking fields on edu_students
+    addColumn('edu_students', 'visa_type', 'TEXT')
+    addColumn('edu_students', 'visa_app_number', 'TEXT')
+    addColumn('edu_students', 'cas_coe_number', 'TEXT')
+    addColumn('edu_students', 'embassy_date', 'TEXT')
+    addColumn('edu_students', 'biometrics_date', 'TEXT')
+    addColumn('edu_students', 'visa_decision_date', 'TEXT')
+    addColumn('edu_students', 'visa_outcome', 'TEXT')
+    addColumn('edu_students', 'visa_expiry', 'TEXT')
+    // Student payment tracking
+    db.exec(`CREATE TABLE IF NOT EXISTS edu_payments(id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES edu_students(id),
+      type TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT DEFAULT 'PKR', method TEXT, reference TEXT, note TEXT,
+      paid_at TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
+    db.exec('CREATE INDEX IF NOT EXISTS edu_payments_student ON edu_payments(student_id)')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
 } catch (e) {
@@ -253,6 +267,8 @@ const DEFAULTS = {
   edu_countries: ['UK', 'USA', 'Canada', 'Australia', 'Ireland', 'Germany', 'Netherlands', 'China', 'Turkey', 'UAE', 'Malaysia', 'Saudi Arabia'],
   // an application has its own lifecycle, separate from the student's stage: one student runs several at once
   edu_application_statuses: ['Ready', 'Submitted', 'Under review', 'Interview', 'Conditional offer', 'Unconditional offer', 'Accepted', 'Rejected', 'Withdrawn'],
+  edu_payment_types: ['tuition_deposit', 'visa_fee', 'ielts_fee', 'service_fee', 'scholarship', 'other'],
+  edu_visa_outcomes: ['Approved', 'Refused', 'Pending', 'Withdrawn'],
 }
 // Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
 const BUILT_IN_ROLES = [
@@ -904,7 +920,8 @@ app.get('/api/meta', (req, res) => {
   const u = req.user
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
   const edu = eduOpen(u) ? { edu_stages: S('edu_stages'), edu_doc_types: S('edu_doc_types'), edu_levels: S('edu_levels'), edu_intakes: S('edu_intakes'),
-    edu_countries: S('edu_countries'), edu_application_statuses: S('edu_application_statuses') } : {}
+    edu_countries: S('edu_countries'), edu_application_statuses: S('edu_application_statuses'),
+    edu_payment_types: S('edu_payment_types'), edu_visa_outcomes: S('edu_visa_outcomes') } : {}
   res.json({
     me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
@@ -2230,7 +2247,8 @@ function eduScope(u) {
 }
 const EDU_FROM = 'FROM edu_students s JOIN contacts c ON c.id=s.contact_id LEFT JOIN users u ON u.id=s.counselor_id'
 const EDU_FIELDS = ['gender', 'dob', 'city', 'passport', 'passport_expiry', 'current_level', 'institution', 'graduate_year',
-  'gpa', 'major', 'ielts', 'toefl', 'gre', 'gmat', 'target_level', 'target_countries', 'intake', 'sponsor_name', 'sponsor_occupation', 'remarks', 'tags']
+  'gpa', 'major', 'ielts', 'toefl', 'gre', 'gmat', 'target_level', 'target_countries', 'intake', 'sponsor_name', 'sponsor_occupation', 'remarks', 'tags',
+  'visa_type', 'visa_app_number', 'cas_coe_number', 'embassy_date', 'biometrics_date', 'visa_decision_date', 'visa_outcome', 'visa_expiry']
 const eduStage = s => {
   const list = S('edu_stages')
   if (s != null && s !== '' && !list.includes(s)) throw err(400, `Unknown stage. Use: ${list.join(', ')}`)
@@ -2310,6 +2328,8 @@ app.get('/api/edu/students/:id', eduGuard, (req, res) => {
     applications: all(`SELECT a.*, p.name program, p.level, p.tuition, p.currency, p.intakes, p.university_id, u.name university, u.country
       FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id JOIN edu_universities u ON u.id=p.university_id
       WHERE a.student_id=? ORDER BY a.id DESC`, s.id),
+    payments: all(`SELECT p.*, u.name created_by_name FROM edu_payments p LEFT JOIN users u ON u.id=p.created_by
+      WHERE p.student_id=? ORDER BY p.paid_at DESC, p.id DESC`, s.id),
   })
 })
 app.patch('/api/edu/students/:id', eduGuard, (req, res) => {
@@ -2608,6 +2628,170 @@ app.delete('/api/edu/applications/:id', eduGuard, (req, res) => {
   eduActivity(a.student_id, req.user.id, 'system', `Application withdrawn from the record: ${a.university} (${a.program}) — ${req.body.reason}`)
   log(req, 'delete', 'application', a.id, { student_id: a.student_id, program_id: a.program_id, reason: req.body.reason })
   res.json({ ok: true })
+})
+
+// ---------- Student payments ----------
+app.get('/api/edu/students/:id/payments', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  res.json(all(`SELECT p.*, u.name created_by_name FROM edu_payments p LEFT JOIN users u ON u.id=p.created_by
+    WHERE p.student_id=? ORDER BY p.paid_at DESC, p.id DESC`, s.id))
+})
+app.post('/api/edu/students/:id/payments', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  const type = String(req.body.type || '')
+  if (!S('edu_payment_types').includes(type)) throw err(400, `Unknown payment type. Use: ${S('edu_payment_types').join(', ')}`)
+  const amount = +req.body.amount
+  if (!amount || amount <= 0) throw err(400, 'Amount must be a positive number')
+  const id = run('INSERT INTO edu_payments(student_id,type,amount,currency,method,reference,note,paid_at,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+    s.id, type, amount, req.body.currency || 'PKR', req.body.method || null, req.body.reference || null,
+    req.body.note || null, req.body.paid_at || now(), req.user.id, now()).lastInsertRowid
+  eduActivity(s.id, req.user.id, 'note', `Payment recorded: ${type.replace(/_/g, ' ')} — ${req.body.currency || 'PKR'} ${amount.toLocaleString()}`)
+  log(req, 'create', 'edu_payment', id, { student_id: s.id, type, amount })
+  res.json({ id })
+})
+app.patch('/api/edu/payments/:id', eduGuard, (req, res) => {
+  const p = one('SELECT * FROM edu_payments WHERE id=?', +req.params.id)
+  if (!p) throw err(404, 'Payment not found')
+  scopedEdu(req.user, p.student_id)
+  const f = pick(req.body, ['type', 'amount', 'currency', 'method', 'reference', 'note', 'paid_at'])
+  if (f.type && !S('edu_payment_types').includes(f.type)) throw err(400, `Unknown payment type`)
+  if (f.amount != null && (+f.amount <= 0 || !Number.isFinite(+f.amount))) throw err(400, 'Amount must be positive')
+  if (f.amount) f.amount = +f.amount
+  if (Object.keys(f).length) run(`UPDATE edu_payments SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), p.id)
+  log(req, 'update', 'edu_payment', p.id, { before: pick(p, Object.keys(f)), after: f })
+  res.json({ ok: true })
+})
+app.delete('/api/edu/payments/:id', eduGuard, (req, res) => {
+  const p = one('SELECT * FROM edu_payments WHERE id=?', +req.params.id)
+  if (!p) throw err(404, 'Payment not found')
+  scopedEdu(req.user, p.student_id)
+  run('DELETE FROM edu_payments WHERE id=?', p.id)
+  log(req, 'delete', 'edu_payment', p.id, { student_id: p.student_id, type: p.type, amount: p.amount })
+  res.json({ ok: true })
+})
+
+// ---------- Edu dashboard & reports ----------
+app.get('/api/edu/dashboard', eduGuard, (req, res) => {
+  const q = req.query
+  const TZ = '+05:00', dayStart = d => new Date(`${d}T00:00:00${TZ}`).toISOString(), dayEnd = d => new Date(`${d}T23:59:59.999${TZ}`).toISOString()
+  const fromDay = q.from || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  const toDay = q.to || now().slice(0, 10)
+  const from = dayStart(fromDay), to = dayEnd(toDay)
+  const [w, p] = eduScope(req.user)
+  const W = `${EDU_FROM} WHERE ${w}`
+
+  // Stage funnel — all current students, not date-filtered
+  const stages = S('edu_stages').map(stage => ({ stage, n: one(`SELECT count(*) n ${EDU_FROM} WHERE s.stage=? AND ${w}`, stage, ...p).n }))
+  const totalStudents = stages.reduce((s, x) => s + x.n, 0)
+
+  // Date-filtered KPIs
+  const kpi = one(`SELECT count(*) new_students ${EDU_FROM} WHERE s.created_at BETWEEN ? AND ? AND ${w}`, from, to, ...p)
+  const apps = one(`SELECT count(*) sent,
+    sum(a.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
+    sum(a.status='Accepted') accepted, sum(a.status='Rejected') rejected
+    FROM edu_applications a JOIN edu_students s ON s.id=a.student_id WHERE a.created_at BETWEEN ? AND ? AND ${w}`, from, to, ...p)
+  const enrolled = one(`SELECT count(*) n ${EDU_FROM} WHERE s.stage='Enrolled' AND s.stage_at BETWEEN ? AND ? AND ${w}`, from, to, ...p).n
+
+  // Follow-ups due
+  const followups = one(`SELECT count(*) n FROM edu_activities ea JOIN edu_students s ON s.id=ea.student_id
+    WHERE ea.next_action_at IS NOT NULL AND ea.next_action_at<=? AND ${w.replace(/\bs\./g, 's.')}`, now(), ...p).n
+  // Documents pending verification
+  const unverified = one(`SELECT count(*) n FROM edu_documents d JOIN edu_students s ON s.id=d.student_id
+    WHERE d.verified=0 AND ${w.replace(/\bs\./g, 's.')}`, ...p).n
+
+  // Counselor performance
+  const counselors = all(`SELECT u.id, u.name,
+    (SELECT count(*) FROM edu_students s2 WHERE s2.counselor_id=u.id AND s2.created_at BETWEEN ? AND ?) new_students,
+    (SELECT count(*) FROM edu_students s2 WHERE s2.counselor_id=u.id) total_students,
+    (SELECT count(*) FROM edu_applications a2 JOIN edu_students s2 ON s2.id=a2.student_id WHERE s2.counselor_id=u.id AND a2.created_at BETWEEN ? AND ?) applications,
+    (SELECT count(*) FROM edu_applications a2 JOIN edu_students s2 ON s2.id=a2.student_id WHERE s2.counselor_id=u.id AND a2.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
+    (SELECT count(*) FROM edu_students s2 WHERE s2.counselor_id=u.id AND s2.stage='Enrolled') enrolled,
+    (SELECT count(*) FROM edu_activities ea WHERE ea.student_id IN (SELECT id FROM edu_students WHERE counselor_id=u.id) AND ea.next_action_at IS NOT NULL AND ea.next_action_at<=?) overdue
+    FROM users u WHERE u.active=1 AND u.id IN (SELECT DISTINCT counselor_id FROM edu_students)
+    ORDER BY enrolled DESC, offers DESC, total_students DESC`, from, to, from, to, now())
+
+  // Country distribution
+  const countries = all(`SELECT json_each.value country, count(*) n FROM edu_students s, json_each('["' || replace(s.target_countries, ', ', '","') || '"]')
+    WHERE ${w} AND s.target_countries IS NOT NULL AND s.target_countries!='' GROUP BY json_each.value ORDER BY n DESC`, ...p)
+
+  // Intake pipeline
+  const intakes = all(`SELECT s.intake, count(*) n, sum(s.stage='Enrolled') enrolled,
+    (SELECT count(*) FROM edu_applications a WHERE a.student_id IN (SELECT id FROM edu_students WHERE intake=s.intake)) applications
+    ${EDU_FROM} WHERE s.intake IS NOT NULL AND s.intake!='' AND ${w} GROUP BY s.intake ORDER BY s.intake`, ...p)
+
+  // My follow-ups (for the logged-in user)
+  const mine = all(`SELECT s.id, c.name, s.stage, ea.next_action, ea.next_action_at
+    FROM edu_activities ea JOIN edu_students s ON s.id=ea.student_id JOIN contacts c ON c.id=s.contact_id
+    WHERE s.counselor_id=? AND ea.next_action_at IS NOT NULL AND ea.next_action_at<=?
+    AND ea.id=(SELECT max(id) FROM edu_activities WHERE student_id=s.id AND next_action_at IS NOT NULL)
+    ORDER BY ea.next_action_at LIMIT 30`, req.user.id, new Date(Date.now() + 864e5).toISOString())
+
+  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, mine })
+})
+
+app.get('/api/edu/reports', eduGuard, (req, res) => {
+  const q = req.query
+  const TZ = '+05:00', dayStart = d => new Date(`${d}T00:00:00${TZ}`).toISOString(), dayEnd = d => new Date(`${d}T23:59:59.999${TZ}`).toISOString()
+  const fromDay = q.from || new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10)
+  const toDay = q.to || now().slice(0, 10)
+  const from = dayStart(fromDay), to = dayEnd(toDay)
+  const [w, p] = eduScope(req.user)
+
+  // Counselor leaderboard
+  const counselors = all(`SELECT u.id, u.name,
+    (SELECT count(*) FROM edu_students s WHERE s.counselor_id=u.id AND s.created_at BETWEEN ? AND ?) new_students,
+    (SELECT count(*) FROM edu_students s WHERE s.counselor_id=u.id) total,
+    (SELECT count(*) FROM edu_applications a JOIN edu_students s ON s.id=a.student_id WHERE s.counselor_id=u.id AND a.created_at BETWEEN ? AND ?) apps_sent,
+    (SELECT count(*) FROM edu_applications a JOIN edu_students s ON s.id=a.student_id WHERE s.counselor_id=u.id AND a.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
+    (SELECT count(*) FROM edu_students s WHERE s.counselor_id=u.id AND s.stage='Enrolled' AND s.stage_at BETWEEN ? AND ?) enrolled,
+    (SELECT count(*) FROM edu_activities ea WHERE ea.user_id=u.id AND ea.type NOT IN ('system') AND ea.created_at BETWEEN ? AND ?) activities
+    FROM users u WHERE u.active=1 AND u.id IN (SELECT DISTINCT counselor_id FROM edu_students)
+    ORDER BY enrolled DESC, offers DESC`, from, to, from, to, from, to, from, to)
+
+  // Country-wise placement stats
+  const byCountry = all(`SELECT u.country, count(DISTINCT a.student_id) students, count(*) applications,
+    sum(a.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
+    sum(a.status='Accepted') accepted, sum(a.status='Rejected') rejected
+    FROM edu_applications a JOIN edu_programs pr ON pr.id=a.program_id JOIN edu_universities u ON u.id=pr.university_id
+    JOIN edu_students s ON s.id=a.student_id WHERE ${w.replace(/\bs\./g, 's.')} AND a.created_at BETWEEN ? AND ?
+    GROUP BY u.country ORDER BY applications DESC`, ...p, from, to)
+
+  // University-wise acceptance rates
+  const byUniversity = all(`SELECT u.name university, u.country, count(*) applications,
+    sum(a.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
+    sum(a.status='Accepted') accepted, sum(a.status='Rejected') rejected,
+    CASE WHEN sum(a.status IN ('Accepted','Rejected'))>0 THEN round(100.0*sum(a.status='Accepted')/sum(a.status IN ('Accepted','Rejected')),1) ELSE null END acceptance_rate
+    FROM edu_applications a JOIN edu_programs pr ON pr.id=a.program_id JOIN edu_universities u ON u.id=pr.university_id
+    JOIN edu_students s ON s.id=a.student_id WHERE ${w.replace(/\bs\./g, 's.')} AND a.created_at BETWEEN ? AND ?
+    GROUP BY u.id ORDER BY applications DESC`, ...p, from, to)
+
+  // Intake pipeline
+  const byIntake = all(`SELECT s.intake, count(*) students,
+    sum(s.stage IN ('University Application','Offer Received','Fee Payment','Visa Processing','Visa Decision','Enrolled')) in_progress,
+    sum(s.stage='Enrolled') enrolled,
+    (SELECT count(*) FROM edu_applications a WHERE a.student_id IN (SELECT id FROM edu_students WHERE intake=s.intake)) applications
+    ${EDU_FROM} WHERE s.intake IS NOT NULL AND s.intake!='' AND ${w} GROUP BY s.intake ORDER BY s.intake`, ...p)
+
+  // Stage conversion: average days in each stage
+  const stageAvg = all(`SELECT ea.notes stage_move, count(*) n,
+    round(avg(julianday(ea.created_at) - julianday(COALESCE(
+      (SELECT max(ea2.created_at) FROM edu_activities ea2 WHERE ea2.student_id=ea.student_id AND ea2.type='system' AND ea2.created_at<ea.created_at),
+      (SELECT s.created_at FROM edu_students s WHERE s.id=ea.student_id)
+    ))),1) avg_days
+    FROM edu_activities ea WHERE ea.type='system' AND ea.notes LIKE '%→%' AND ea.created_at BETWEEN ? AND ?
+    GROUP BY ea.notes ORDER BY ea.notes`, from, to)
+
+  // Daily new students trend
+  const daily = all(`SELECT date(s.created_at, '+5 hours') d, count(*) n ${EDU_FROM}
+    WHERE s.created_at BETWEEN ? AND ? AND ${w} GROUP BY d ORDER BY d`, from, to, ...p)
+
+  // Payments summary
+  const payments = all(`SELECT ep.type, count(*) count, sum(ep.amount) total, ep.currency
+    FROM edu_payments ep JOIN edu_students s ON s.id=ep.student_id
+    WHERE ep.created_at BETWEEN ? AND ? AND ${w.replace(/\bs\./g, 's.')}
+    GROUP BY ep.type, ep.currency ORDER BY total DESC`, from, to, ...p)
+
+  res.json({ from: fromDay, to: toDay, counselors, byCountry, byUniversity, byIntake, stageAvg, daily, payments })
 })
 
 // ---- Settings › Facebook: connect a Page's Lead Ads in one step ----

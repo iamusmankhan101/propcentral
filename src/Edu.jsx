@@ -160,7 +160,7 @@ export function Student({ id }) {
   const [data, reload, loadError] = useApi('/edu/students/' + id)
   if (loadError) return <p className="error">{loadError}</p>
   if (!data) return <p className="muted">Loading…</p>
-  const { student, documents, activities, lead, applications } = data
+  const { student, documents, activities, lead, applications, payments = [] } = data
   const masked = student.phone?.includes('*')
 
   return (
@@ -202,6 +202,7 @@ export function Student({ id }) {
         <div>
           <ChangeStage student={student} reload={reload} />
           <StudentApplications student={student} applications={applications} reload={reload} />
+          <StudentPayments student={student} payments={payments} reload={reload} />
           <Documents student={student} documents={documents} reload={reload} />
           <StudentProfile student={student} reload={reload} />
         </div>
@@ -256,8 +257,10 @@ const GROUPS = [['Identity', ['gender', 'dob', 'city', 'passport', 'passport_exp
   ['Background', ['current_level', 'institution', 'graduate_year', 'gpa', 'major']],
   ['Test scores', ['ielts', 'toefl', 'gre', 'gmat']],
   ['Plan', ['target_level', 'target_countries', 'intake']],
-  ['Sponsor', ['sponsor_name', 'sponsor_occupation']]]
-const inputType = f => ({ dob: 'date', passport_expiry: 'date', graduate_year: 'number', gpa: 'number', toefl: 'number', gre: 'number', gmat: 'number' })[f] || 'text'
+  ['Sponsor', ['sponsor_name', 'sponsor_occupation']],
+  ['Visa', ['visa_type', 'visa_app_number', 'cas_coe_number', 'embassy_date', 'biometrics_date', 'visa_decision_date', 'visa_outcome', 'visa_expiry']]]
+const inputType = f => ({ dob: 'date', passport_expiry: 'date', graduate_year: 'number', gpa: 'number', toefl: 'number', gre: 'number', gmat: 'number',
+  embassy_date: 'date', biometrics_date: 'date', visa_decision_date: 'date', visa_expiry: 'date' })[f] || 'text'
 
 function StudentProfile({ student, reload }) {
   const m = useMeta()
@@ -272,6 +275,7 @@ function StudentProfile({ student, reload }) {
       {['current_level', 'target_level'].includes(f)
         ? <Select name={f} options={m.settings.edu_levels} defaultValue={student[f] ?? ''} />
         : f === 'intake' ? <Select name={f} options={m.settings.edu_intakes} defaultValue={student[f] ?? ''} />
+        : f === 'visa_outcome' ? <Select name={f} options={m.settings.edu_visa_outcomes || ['Approved', 'Refused', 'Pending', 'Withdrawn']} defaultValue={student[f] ?? ''} blank="Pending / Not applied" />
         : <input name={f} type={inputType(f)} step={f === 'gpa' ? '0.01' : undefined} defaultValue={student[f] ?? ''} />}
     </label>
   )
@@ -335,6 +339,96 @@ function Documents({ student, documents, reload }) {
         </div>
       </form>
       {error && <p className="error">{error}</p>}
+    </div>
+  )
+}
+
+
+function StudentPayments({ student, payments = [], reload }) {
+  const m = useMeta()
+  const { run, error, busy } = useAction()
+  const [adding, setAdding] = useState(false)
+  const paymentTypes = m.settings.edu_payment_types || ['tuition_deposit', 'visa_fee', 'ielts_fee', 'service_fee', 'scholarship', 'other']
+
+  const submit = e => {
+    const body = formData(e)
+    run(async () => {
+      await api(`/edu/students/${student.id}/payments`, { body })
+      setAdding(false)
+      reload()
+    })
+  }
+
+  const remove = p => {
+    if (!confirm(`Delete ${p.type.replace(/_/g, ' ')} payment of ${p.currency || 'PKR'} ${Number(p.amount).toLocaleString()}?`)) return
+    run(async () => {
+      await api(`/edu/payments/${p.id}`, { method: 'DELETE' })
+      reload()
+    })
+  }
+
+  const total = payments.reduce((acc, p) => acc + (p.amount || 0), 0)
+
+  return (
+    <div className="card">
+      <div className="row between">
+        <h3>Fees & Payments <small className="muted">({payments.length} record{payments.length === 1 ? '' : 's'})</small></h3>
+        <button className="ghost mini-btn" onClick={() => setAdding(!adding)}>{adding ? 'Close' : '+ Record payment'}</button>
+      </div>
+
+      {payments.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {payments.map(p => (
+            <p key={p.id}>
+              <b>{p.type.replace(/_/g, ' ')}</b> · <span className="ok">{p.currency || 'PKR'} {Number(p.amount).toLocaleString('en-PK')}</span>
+              {p.method && <small className="muted"> via {p.method}</small>}
+              {p.reference && <small className="muted"> (ref: {p.reference})</small>}
+              {p.paid_at && <small className="muted"> · {fmt(p.paid_at)}</small>}
+              {p.note && <small className="muted"><br />{p.note}</small>}
+              {' '}<button className="ghost mini-btn danger" onClick={() => remove(p)} disabled={busy} style={{ float: 'right' }}>Delete</button>
+            </p>
+          ))}
+          <div className="line-item" style={{ marginTop: 8, borderTop: '1px solid var(--border)' }}>
+            <span>Total recorded</span>
+            <b>PKR {total.toLocaleString('en-PK')}</b>
+          </div>
+        </div>
+      )}
+
+      {payments.length === 0 && !adding && (
+        <p className="muted">No payments or fee records logged yet.</p>
+      )}
+
+      {adding && (
+        <form className="grid" onSubmit={submit} style={{ marginTop: 8 }}>
+          <label>Type *
+            <Select name="type" options={paymentTypes.map(t => [t, t.replace(/_/g, ' ')])} blank={null} required />
+          </label>
+          <label>Amount *
+            <input name="amount" type="number" min="1" step="100" required placeholder="50000" />
+          </label>
+          <label>Currency
+            <Select name="currency" options={['PKR', 'GBP', 'USD', 'EUR', 'CAD', 'AUD']} defaultValue="PKR" blank={null} />
+          </label>
+          <label>Payment method
+            <input name="method" placeholder="Bank transfer, Cash, Online" />
+          </label>
+          <label>Reference #
+            <input name="reference" placeholder="Receipt / Cheque / Tx ID" />
+          </label>
+          <label>Date paid
+            <input name="paid_at" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
+          </label>
+          <label className="wide">Note
+            <input name="note" placeholder="Any specific notes regarding this fee" />
+          </label>
+          {error && <p className="error wide">{error}</p>}
+          <div className="wide row">
+            <button disabled={busy}>Save payment</button>
+            <button type="button" className="ghost" onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
     </div>
   )
 }

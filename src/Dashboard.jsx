@@ -210,7 +210,8 @@ export default function Dashboard() {
   const [d] = useApi('/dashboard?' + new URLSearchParams(Object.entries(filters).filter(([, v]) => v)))
   const set = k => e => setF({ ...f, [k]: e.target.value })
   const isAgent = m.me.role === 'agent'
-  const tabs = [['main', 'Main'], ...(isAgent ? [] : [['team', 'Team']]), ['marketing', 'Marketing']]
+  const eduOn = (m.me.modules || []).includes('edu') && m.perms.includes('edu')
+  const tabs = [['main', 'Main'], ...(isAgent ? [] : [['team', 'Team']]), ['marketing', 'Marketing'], ...(eduOn ? [['edu', 'Students']] : [])]
 
   const head = (
     <div className="hero">
@@ -367,6 +368,101 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {tab === 'edu' && <EduDashboard period={period} filters={filters} />}
     </section>
+  )
+}
+
+
+// ---- Student Consultancy dashboard tab ----
+function EduDashboard({ period, filters }) {
+  const m = useMeta()
+  const [ed] = useApi('/edu/dashboard?' + new URLSearchParams(Object.entries(filters).filter(([, v]) => v)))
+  if (!ed) return <p className="muted">Loading education stats…</p>
+
+  const maxStage = Math.max(1, ...ed.stages.map(s => s.n))
+  return (
+    <>
+      <div className="kpis glass">
+        <div className="kpi"><small>Total students</small><b>{ed.totalStudents}</b></div>
+        <div className="kpi"><small>New this period</small><b>{ed.kpi.new_students || 0}</b></div>
+        <div className="kpi"><small>Applications sent</small><b>{ed.apps.sent || 0}</b></div>
+        <div className="kpi"><small>Offers received</small><b>{ed.apps.offers || 0}</b></div>
+        <div className="kpi"><small>Enrolled</small><b>{ed.enrolled || 0}</b></div>
+        <div className="kpi"><small>Follow-ups due</small><b className={ed.followups ? 'warn' : ''}>{ed.followups || 0}</b></div>
+        <div className="kpi"><small>Docs to verify</small><b className={ed.unverified ? 'warn' : ''}>{ed.unverified || 0}</b></div>
+      </div>
+
+      <div className="board">
+        <div>
+          <div className="card">
+            <h3>Admission funnel</h3>
+            {ed.stages.map(s => (
+              <div key={s.stage} className="bar"><span>{s.stage}</span><i style={{ width: (100 * s.n) / maxStage + '%' }} /><b>{s.n}</b></div>
+            ))}
+          </div>
+          <div className="card">
+            <h3>By country</h3>
+            {ed.countries.length ? ed.countries.map(c => (
+              <div key={c.country} className="line-item"><span>{c.country}</span><b>{c.n}</b></div>
+            )) : <p className="muted">No country data yet.</p>}
+          </div>
+        </div>
+
+        <div>
+          <div className="card">
+            <h3>Intake pipeline</h3>
+            {ed.intakes.length ? (
+              <table>
+                <thead><tr><th>Intake</th><th>Students</th><th>Applications</th><th>Enrolled</th></tr></thead>
+                <tbody>{ed.intakes.map(x => (
+                  <tr key={x.intake}><td><b>{x.intake}</b></td><td>{x.n}</td><td>{x.applications}</td><td>{x.enrolled}</td></tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No intake data yet.</p>}
+          </div>
+          {m.me.role !== 'agent' && ed.counselors.length > 0 && (
+            <div className="card">
+              <h3>Counselor performance</h3>
+              {ed.counselors.map(c => (
+                <div key={c.id} className="item">
+                  <span className="tile-av sm">{initials(c.name)}</span>
+                  <div><b>{c.name}</b><small className="muted">{c.total_students} students · {c.applications} apps this period</small></div>
+                  <div className="right">
+                    <b>{c.enrolled} enrolled</b>
+                    <small><span className="muted">{c.offers} offers</span> {c.overdue ? <span className="warn">⚠ {c.overdue} overdue</span> : <span className="ok">✓ on track</span>}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          {ed.mine.length > 0 && (
+            <div className="card">
+              <h3>My student follow-ups <span className="count">{ed.mine.length}</span></h3>
+              {ed.mine.map(s => (
+                <a key={s.id} className="item" href={'#/students/' + s.id}>
+                  <span className="tile-av sm">{initials(s.name)}</span>
+                  <div><b>{s.name}</b><small className={s.next_action_at && s.next_action_at < new Date().toISOString() ? 'error' : 'muted'}>{s.next_action || 'Follow up'} · {fmt(s.next_action_at)}</small></div>
+                  <Status s={s.stage} />
+                </a>
+              ))}
+            </div>
+          )}
+          <a className="card cta" href="#/students?new=1"><span className="sq"><Icon name="plus" size={20} /></span><b>Add a new student</b></a>
+          <a className="card shortcut" href="#/students">
+            <small className="kind"><Icon name="arrow" size={12} />Shortcut</small>
+            <b>Open the student journey board</b>
+          </a>
+          <a className="card shortcut" href="#/applications">
+            <small className="kind"><Icon name="arrow" size={12} />Shortcut</small>
+            <b>Open the application pipeline</b>
+          </a>
+        </div>
+      </div>
+    </>
   )
 }

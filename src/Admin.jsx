@@ -129,13 +129,14 @@ const HELP = {
 const SECTIONS = [
   ['profile', 'Profile', 'users'], ['security', 'Privacy & security', 'key'],
   ['facebook', 'Facebook & Instagram', 'inbox', 'admin'], ['website', 'Website forms & API', 'arrow', 'admin'], ['maps', 'Maps', 'map', 'admin'], ['reports', 'Email reports', 'mail', 'settings'],
-  ['leads', 'Leads & pipeline', 'leads', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
+  ['leads', 'Leads & pipeline', 'leads', 'settings'], ['edu', 'Student consultancy', 'book', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
   ['inventory', 'Inventory & listings', 'building', 'settings'], ['properties', 'Properties & leases', 'key', 'settings'], ['sales', 'Commission', 'percent', 'settings'], ['permissions', 'Roles & permissions', 'audit', 'admin'],
 ]
 const GROUPS = ['Account', 'Integrations', 'Company']
 const groupOf = k => (['profile', 'security'].includes(k) ? 'Account' : ['facebook', 'website', 'maps', 'reports'].includes(k) ? 'Integrations' : 'Company')
 const KEYS = {
   leads: ['statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'stale_days', 'recycle_cooldown_days', 'scoring'],
+  edu: ['edu_stages', 'edu_doc_types', 'edu_levels', 'edu_intakes', 'edu_countries', 'edu_application_statuses', 'edu_payment_types', 'edu_visa_outcomes'],
   assignment: ['assignment_rules', 'sla_minutes', 'working_hours'],
   visits: ['sites', 'visit_feedback_hours'],
   inventory: ['unit_statuses', 'listing_statuses', 'max_holds_per_agent'],
@@ -148,6 +149,8 @@ const LABELS = {
   sla_minutes: 'First-contact SLA (minutes)', working_hours: 'Working hours', sites: 'Visit sites', visit_feedback_hours: 'Visit feedback due within (hours)',
   societies: 'Societies & areas', lease_amber_days: 'Lease turns amber this many days before it ends', lease_red_days: 'Lease turns red this many days before it ends',
   unit_statuses: 'Unit statuses', listing_statuses: 'Listing statuses', max_holds_per_agent: 'Max units on hold per agent', permissions: 'Permissions',
+  edu_stages: 'Admission journey stages', edu_doc_types: 'Document types', edu_levels: 'Study levels', edu_intakes: 'Available intakes',
+  edu_countries: 'Destination countries', edu_application_statuses: 'Application lifecycle statuses', edu_payment_types: 'Payment & fee types', edu_visa_outcomes: 'Visa outcomes',
 }
 
 export function Settings({ query = '' }) {
