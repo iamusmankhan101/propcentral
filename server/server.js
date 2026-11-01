@@ -585,7 +585,9 @@ app.get('/api/cron/tick', (req, res) => {
 const fbConf = () => ({ verify_token: process.env.FB_VERIFY_TOKEN, app_secret: process.env.FB_APP_SECRET, page_token: process.env.FB_PAGE_TOKEN, ...S('facebook') })
 const GRAPH = process.env.FB_GRAPH_URL || 'https://graph.facebook.com/v21.0' // override only to test against a fake Graph API
 async function graph(path, params = {}, method = 'GET') {
-  const r = await fetch(`${GRAPH}/${path}?${new URLSearchParams(params)}`, { method })
+  let r
+  try { r = await fetch(`${GRAPH}/${path}?${new URLSearchParams(params)}`, { method }) }
+  catch (e) { throw err(502, `The CRM server could not reach Facebook: ${e.cause?.code || e.message}`) }
   const d = await r.json().catch(() => ({}))
   if (!r.ok || d.error) throw err(400, `Facebook says: ${d.error?.message || r.statusText}`)
   return d
