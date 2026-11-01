@@ -1939,6 +1939,108 @@ app.post('/api/facebook/disconnect', adminOnly, async (req, res) => {
   res.json({ ok: true })
 })
 
+// ---- Assistant: natural-language questions answered from scoped, read-only metrics (Groq) ----
+const GROQ_URL = () => process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'
+const KARACHI_TODAY = () => { const d = new Date(Date.now() + 5 * 3600e3); return d.toISOString().slice(0, 10) }
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/
+const assistantRange = q => {
+  const from = DAY_RE.test(q.from || '') ? q.from : new Date(Date.now() - 29 * 864e5 + 5 * 3600e3).toISOString().slice(0, 10)
+  const to = DAY_RE.test(q.to || '') ? q.to : KARACHI_TODAY()
+  return { fromISO: new Date(`${from}T00:00:00+05:00`).toISOString(), toISO: new Date(`${to}T23:59:59.999+05:00`).toISOString(), from, to }
+}
+const ASSISTANT_SCHEMAS = [
+  { type: 'function', function: { name: 'sales_summary', description: 'Period totals: leads, contacted, booked, SLA compliance, sales value, commissions. Use when asked about overall sales/numbers.', parameters: { type: 'object', properties: { from: { type: 'string', description: 'YYYY-MM-DD in Asia/Karachi' }, to: { type: 'string', description: 'YYYY-MM-DD in Asia/Karachi' } } } } },
+  { type: 'function', function: { name: 'agent_leaderboard', description: 'Per-agent performance: leads, calls, visits, bookings, sales value, commission earned. Use when asked about agents, team performance or commissions.', parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } } } },
+  { type: 'function', function: { name: 'pipeline_overview', description: 'Current lead counts grouped by pipeline status.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'top_sources', description: 'Lead counts and bookings grouped by source and campaign for a period.', parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } } } },
+  { type: 'function', function: { name: 'find_leads', description: 'Search leads by name or phone substring, optionally filtered by status. Returns at most 20.', parameters: { type: 'object', properties: { search: { type: 'string' }, status: { type: 'string', description: 'optional pipeline status, e.g. New, Booked, Lost' }, limit: { type: 'integer' } }, required: ['search'] } } },
+]
+const assistantTools = u => {
+  const [w, p] = scope(u)
+  const visibleAgents = `SELECT l.agent_id FROM leads l WHERE l.deleted=0 AND ${w}`
+  return {
+    sales_summary: q => {
+      const { fromISO, toISO, from, to } = assistantRange(q)
+      const kpi = one(`SELECT count(*) leads, sum(l.first_contact_at IS NOT NULL) contacted, sum(l.status='Booked') booked,
+          round(avg((julianday(l.first_contact_at)-julianday(l.assigned_at))*1440)) avg_response_min,
+          sum(NOT EXISTS(SELECT 1 FROM sla_breaches b WHERE b.lead_id=l.id)) within_sla
+        FROM leads l WHERE l.deleted=0 AND ${w} AND l.created_at BETWEEN ? AND ?`, ...p, fromISO, toISO)
+      // Money is per agent, not per lead row: scope it to agents the user can see, sum once
+      const sales = one(`SELECT COALESCE(sum(a.price),0) n FROM allotments a WHERE a.status='active' AND a.sale_date BETWEEN ? AND ? AND a.agent_id IN (${visibleAgents})`, fromISO, toISO, ...p).n
+      const commission = one(`SELECT COALESCE(sum(c.amount),0) n FROM commissions c JOIN allotments a ON a.id=c.allotment_id
+        WHERE c.status<>'cancelled' AND a.sale_date BETWEEN ? AND ? AND c.user_id IN (${visibleAgents})`, fromISO, toISO, ...p).n
+      return { period: { from, to }, ...kpi, sales, commission }
+    },
+    agent_leaderboard: q => {
+      const { fromISO, toISO, from, to } = assistantRange(q)
+      // Parameter order follows appearance: two subqueries, then scope, then the BETWEEN pair
+      const rows = all(`SELECT u.name, count(l.id) leads, sum(l.first_contact_at IS NOT NULL) contacted, sum(l.status='Booked') booked,
+          (SELECT COALESCE(sum(a.price),0) FROM allotments a WHERE a.agent_id=u.id AND a.status='active' AND a.sale_date BETWEEN ? AND ?) sales,
+          (SELECT COALESCE(sum(c.amount),0) FROM commissions c JOIN allotments a ON a.id=c.allotment_id WHERE c.user_id=u.id AND c.status<>'cancelled' AND a.sale_date BETWEEN ? AND ?) commission
+        FROM leads l JOIN users u ON u.id=l.agent_id
+        WHERE l.deleted=0 AND ${w} AND l.created_at BETWEEN ? AND ? GROUP BY u.id ORDER BY booked DESC, leads DESC LIMIT 10`,
+        fromISO, toISO, fromISO, toISO, ...p, fromISO, toISO)
+      return { period: { from, to }, rows }
+    },
+    pipeline_overview: () => ({ rows: all(`SELECT l.status, count(*) n FROM leads l WHERE l.deleted=0 AND ${w} GROUP BY l.status ORDER BY n DESC`, ...p) }),
+    top_sources: q => {
+      const { fromISO, toISO, from, to } = assistantRange(q)
+      return { period: { from, to }, rows: all(`SELECT l.source, l.campaign, count(*) leads, sum(l.status='Booked') booked
+        FROM leads l WHERE l.deleted=0 AND ${w} AND l.created_at BETWEEN ? AND ? GROUP BY l.source, l.campaign ORDER BY leads DESC LIMIT 10`, ...p, fromISO, toISO) }
+    },
+    find_leads: q => {
+      const limit = Math.min(Math.max(+q.limit || 10, 1), 20)
+      const search = String(q.search || '').trim()
+      if (!search) return { error: 'search is required' }
+      const status = String(q.status || '').trim()
+      const like = `%${search.slice(0, 40)}%`
+      const rows = all(`SELECT l.id, c.name, l.status, l.source, l.created_at, u.name agent_name, c.phone, l.next_action_at
+        FROM leads l JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=l.agent_id
+        WHERE l.deleted=0 AND ${w}${status ? ' AND l.status=?' : ''} AND (c.name LIKE ? OR c.phone LIKE ?)
+        ORDER BY l.id DESC LIMIT ?`, ...p, ...(status ? [status] : []), like, like, limit)
+      return { rows: rows.map(r => maskRow(u, r)) }
+    },
+  }
+}
+app.post('/api/assistant', async (req, res) => {
+  const key = process.env.GROQ_API_KEY
+  if (!key) throw err(503, 'The assistant is not configured yet (missing GROQ_API_KEY)')
+  const u = req.user
+  rateHit(rateKey('assistant', u.id), 30, 60e3, 'The assistant is busy. Give it a moment and try again.')
+  const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-12) : []
+  const fns = assistantTools(u)
+  const msgs = [
+    { role: 'system', content: `You are the built-in assistant of the Estate Centric CRM. Today is ${KARACHI_TODAY()} (Asia/Karachi). Answer the user's question about their sales business using the provided tools. Dates you pass to tools must be YYYY-MM-DD in Asia/Karachi. Amounts are in PKR. Be concise: a few sentences or a compact list. When a tool returns rows, summarize the key numbers rather than dumping everything. If the tools cannot answer, say so plainly.` },
+    ...history.filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string').map(m => ({ role: m.role, content: m.content.slice(0, 4000) })),
+  ]
+  if (!msgs.some(m => m.role === 'user')) throw err(400, 'Ask a question first')
+  for (let round = 0; round < 5; round++) {
+    const r = await fetch(`${GROQ_URL()}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', messages: msgs, tools: ASSISTANT_SCHEMAS, temperature: 0.2 }),
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) throw err(502, `Assistant provider error: ${d.error?.message || r.statusText}`)
+    const msg = d.choices?.[0]?.message
+    if (!msg) throw err(502, 'Assistant returned no answer')
+    if (!msg.tool_calls?.length) return res.json({ reply: msg.content || 'No answer.', usage: d.usage?.total_tokens ?? null })
+    msgs.push(msg)
+    for (const call of msg.tool_calls) {
+      const fn = fns[call.function?.name]
+      let result
+      if (!fn) result = { error: `Unknown tool ${call.function?.name}` }
+      else {
+        let args = {}
+        try { args = JSON.parse(call.function.arguments || '{}') } catch { /* unparseable args: run with none */ }
+        try { result = fn(args) } catch (e) { result = { error: e.message } }
+      }
+      msgs.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
+    }
+  }
+  throw err(502, 'The assistant took too many steps to answer. Rephrase the question.')
+})
+
 // ---- Settings › Website forms: the key for POST /api/inbound ----
 app.get('/api/integrations/inbound', adminOnly, (_req, res) =>
   res.json({ key: inboundKey() || null, from_env: !S('inbound_key') && !!process.env.INBOUND_API_KEY, website_leads_30d: one(`SELECT count(*) n FROM leads WHERE source='Website' AND created_at>?`, new Date(Date.now() - 30 * 864e5).toISOString()).n }))

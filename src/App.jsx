@@ -10,6 +10,7 @@ import { Ledger, Receipt, Collections } from './Payments.jsx'
 import Commissions from './Commissions.jsx'
 import Listings from './Listings.jsx'
 import Reports from './Reports.jsx'
+import Assistant from './Assistant.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
@@ -402,6 +403,7 @@ export default function App() {
           </div>
           <div className="content">{page}</div>
         </main>
+        <Assistant />
       </div>
     </Meta.Provider>
   )

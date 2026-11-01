@@ -25,15 +25,19 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 | `CRON_SECRET` | Bearer secret for `/api/cron/tick` (SLA, lease and weekly-report jobs) |
 | `FB_VERIFY_TOKEN`, `FB_APP_SECRET`, `FB_PAGE_TOKEN` | Optional fallback. Normally an admin connects Facebook in **Settings › Facebook** (paste app secret + Graph API Explorer token; the CRM makes a permanent Page token, registers the webhook at `/api/webhooks/facebook` and subscribes the Page) |
 | `INBOUND_API_KEY` | `POST /api/inbound` with header `x-api-key`. For website forms, Zapier, portal email parsers and telephony |
+| `GROQ_API_KEY` | Enables the **Assistant** chat (the bubble in the bottom-right corner). `POST /api/assistant` asks Groq and lets it call read-only, row-scoped queries over leads, agents and commissions. Get a key at console.groq.com; without it the assistant answers 503 and the rest of the CRM is unaffected |
+| `GROQ_MODEL` | Optional model override for the assistant (default `openai/gpt-oss-120b`) |
 
 Both integration endpoints stay disabled until their variables are set.
+
+The assistant only sees what the signed-in user already sees — the same branch/team/own scope the dashboards use — and is limited to 30 questions per user per minute.
 
 ## Deploy to Vercel
 
 The API runs as one serverless function (`api/[...path].js`) and the Vite build is served statically. The database lives in Turso, so nothing is written to the function's filesystem.
 
 1. Create the database with the [Turso CLI](https://docs.turso.tech/cli/introduction): `turso db create propcentral`, then copy `turso db show propcentral --url` and `turso db tokens create propcentral`.
-2. In the Vercel project, add `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `CRON_SECRET` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
+2. In the Vercel project, add `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `CRON_SECRET`, `GROQ_API_KEY` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
 3. Deploy. Tables, migrations and the demo seed run automatically on the first request.
 4. Check `https://<app>/api/health` after deploying. It reports `ok`, whether the database is Turso or a local file, and the exact init error when the database cannot be reached (the rest of the API answers 503 in that case).
 5. `vercel.json` registers a daily Vercel Cron for `/api/cron/tick`. Vercel sends `Authorization: Bearer $CRON_SECRET` for you. On the free plan the schedule cannot be more frequent than daily; for minute-level SLA checks either upgrade (cron `*/5 * * * *`) or point an external scheduler such as cron-job.org at `https://<app>/api/cron/tick` with the same bearer header.
