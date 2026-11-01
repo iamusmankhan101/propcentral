@@ -8,6 +8,8 @@ import { newSecret, checkTotp } from './totp.js'
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
 const remote = /^(libsql|https?):/i.test(dbUrl)
+// /api/health may report where a remote database lives, but only the hostname: never the token or path
+const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
 const SCHEMA_VERSION = '6'
 
 // A failed database init must not take the whole function down: /api/health reports the cause
@@ -461,8 +463,9 @@ app.use((req, _res, next) => { if (req.body == null) req.body = {}; next() })
 
 app.get('/api/health', (req, res) => {
   const mode = remote ? 'turso' : 'file'
-  if (!db) return res.status(503).json({ ok: false, db: mode, error: String(dbError?.message || 'Database unavailable').slice(0, 300) })
-  res.json({ ok: true, db: mode, schema: SCHEMA_VERSION })
+  const host = dbHost ? { host: dbHost } : {}
+  if (!db) return res.status(503).json({ ok: false, db: mode, ...host, error: String(dbError?.message || 'Database unavailable').slice(0, 300) })
+  res.json({ ok: true, db: mode, ...host, schema: SCHEMA_VERSION })
 })
 
 // Without this, a failed database init becomes an opaque FUNCTION_INVOCATION_FAILED on every route
