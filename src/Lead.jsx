@@ -21,9 +21,10 @@ export default function Lead({ id }) {
   const [data, reload, loadError] = useApi('/leads/' + id)
   if (loadError) return <p className="error">{loadError}</p>
   if (!data) return <p className="muted">Loading…</p>
-  const { lead, activities, visits, other_leads, units } = data
+  const { lead, activities, visits, other_leads, units, student } = data
   const closed = m.settings.closed_statuses.includes(lead.status)
   const masked = lead.phone?.includes('*')
+  const eduOn = (m.me.modules || []).includes('edu') && m.can('edu')
 
   return (
     <section>
@@ -66,6 +67,7 @@ export default function Lead({ id }) {
         </div>
         <div>
           <ChangeStatus lead={lead} reload={reload} />
+          {eduOn && <PromoteStudent lead={lead} student={student} />}
           {!closed && <RecordOffer lead={lead} units={units} reload={reload} />}
           {m.can('reassign') && <Reassign lead={lead} reload={reload} />}
           <ScheduleVisit lead={lead} reload={reload} />
@@ -109,6 +111,25 @@ function DeleteLead({ lead }) {
       <button className="ghost danger" onClick={del} disabled={busy}>Delete lead</button>
       {error && <p className="error">{error}</p>}
     </div>
+  )
+}
+
+function PromoteStudent({ lead, student }) {
+  const { run, error, busy } = useAction()
+  if (student) return (
+    <div className="card">
+      <h3>Student Consultancy</h3>
+      <p className="muted">{lead.name} is already on an admission journey.</p>
+      <a className="button" href={'#/students/' + student.id}>Open student</a>
+    </div>
+  )
+  return (
+    <form className="card" onSubmit={e => { e.preventDefault(); run(async () => go('/students/' + (await api(`/edu/leads/${lead.id}/promote`, { body: {} })).id)) }}>
+      <h3>Student Consultancy</h3>
+      <p className="muted">Turn this lead into a student. The capture, source and history stay linked to the same person.</p>
+      {error && <p className="error">{error}</p>}
+      <button disabled={busy}>Promote to student</button>
+    </form>
   )
 }
 

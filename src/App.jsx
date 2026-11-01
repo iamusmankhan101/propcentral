@@ -13,6 +13,7 @@ import Reports from './Reports.jsx'
 import Campaigns from './Campaigns.jsx'
 import Assistant from './Assistant.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
+import Students, { Student } from './Edu.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -297,6 +298,10 @@ const NAV = [
   ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more'],
 ]
 
+// Student Consultancy pages. Shown only when the platform switched the module on for this company *and*
+// the role's permission matrix includes edu — the API refuses the same way, so hiding is tidiness, not security.
+const EDU_NAV = [['/students', 'Students', 'cap', 'edu', 'all']]
+
 // The platform owner manages sign-ups only, so their whole app is the Users page
 const PLATFORM_NAV = [['/users', 'Accounts', 'users', null, 'all']]
 
@@ -384,10 +389,13 @@ export default function App() {
   const formId = path.match(/^\/booking-form\/(\d+)/)?.[1]
   const propertyId = path.match(/^\/properties\/(\d+)/)?.[1]
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
-  const nav = isPlatform ? PLATFORM_NAV : NAV
+  const eduOn = (meta.me.modules || []).includes('edu') && meta.perms.includes('edu')
+  const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
+  const nav = isPlatform ? PLATFORM_NAV : eduOn ? [...NAV, ...EDU_NAV] : NAV
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
     : leadId ? <Lead id={leadId} key={leadId} />
+    : studentId ? <Student id={studentId} key={studentId} />
     : propertyId ? <PropertyPage id={propertyId} key={propertyId} />
     : rentReceiptId ? <RentReceipt id={rentReceiptId} key={rentReceiptId} />
     : formId ? <BookingForm id={formId} key={formId} />
@@ -395,9 +403,9 @@ export default function App() {
     : receiptId ? <Receipt id={receiptId} key={receiptId} />
     : projectId ? <Project id={projectId} key={projectId} />
     : allotmentId ? <AllotmentLetter id={allotmentId} key={allotmentId} />
-    : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/campaigns': <Campaigns />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit /> }[path]
+    : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/campaigns': <Campaigns />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit />, ...(eduOn ? { '/students': <Students query={query} key={query} /> } : {}) }[path]
     ?? <p>Not found</p>
-  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
+  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : studentId ? 'Student' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
   const home = path === homePath
 

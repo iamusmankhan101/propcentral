@@ -124,6 +124,14 @@ td code { font-size: 11px; word-break: break-all; color: var(--muted); }
 .s-visit-scheduled, .s-visit-done, .s-negotiation { background: #fff5dc; color: #9a6400; }
 .s-booked { background: #e3f6ec; color: #0f7f46; }
 .s-lost, .s-junk, .s-not-reachable { background: #f2edfb; color: #6d3fc0; }
+/* Student Consultancy journey — counsel, then paperwork, then offers, money, visa */
+.s-new-inquiry, .s-initial-counseling, .s-profile-evaluation { background: #e9f0fd; color: #2459c2; }
+.s-documents-collection { background: #fff5dc; color: #9a6400; }
+.s-university-application { background: #f2edfb; color: #6d3fc0; }
+.s-offer-received, .s-enrolled { background: #e3f6ec; color: #0f7f46; }
+.s-fee-payment { background: #fdece6; color: #c2441c; }
+.s-visa-processing { background: #e4f4f6; color: #146a75; }
+.s-visa-decision { background: #eef1f5; color: #41506b; }
 .phone { font-weight: 800; font-size: 16px; }
 .banner { background: #fff8db; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 

@@ -120,6 +120,28 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
   db.exec(`CREATE TABLE IF NOT EXISTS payment_requests(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, plan TEXT, amount INTEGER, method TEXT, reference TEXT, note TEXT,
     status TEXT NOT NULL DEFAULT 'pending', created_at TEXT, decided_at TEXT)`)
 
+  // Student Consultancy. A student is the contact behind a lead, promoted: the same person, now on an
+  // admission journey instead of a property one. lead_id keeps the link back to the original capture.
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_students(id INTEGER PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    lead_id INTEGER, branch_id INTEGER, counselor_id INTEGER REFERENCES users(id),
+    stage TEXT NOT NULL DEFAULT 'New Inquiry', stage_at TEXT,
+    gender TEXT, dob TEXT, city TEXT, passport TEXT, passport_expiry TEXT,
+    current_level TEXT, institution TEXT, graduate_year INTEGER, gpa REAL, major TEXT,
+    ielts REAL, toefl INTEGER, gre INTEGER, gmat INTEGER, target_level TEXT, target_countries TEXT, intake TEXT,
+    sponsor_name TEXT, sponsor_occupation TEXT, remarks TEXT, tags TEXT,
+    created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT)`)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS edu_students_contact ON edu_students(contact_id)')
+  db.exec('CREATE INDEX IF NOT EXISTS edu_students_stage ON edu_students(stage, counselor_id)')
+  // documents are the paper an admission actually needs, so they carry their own verification flag.
+  // Passports and CNICs, so no public token URL like media has — the browser fetches the file with the session header.
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_documents(id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES edu_students(id),
+    type TEXT NOT NULL, name TEXT, mime TEXT, data TEXT, verified INTEGER DEFAULT 0, notes TEXT,
+    uploaded_by INTEGER, created_at TEXT NOT NULL)`)
+  db.exec('CREATE INDEX IF NOT EXISTS edu_documents_student ON edu_documents(student_id, type)')
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_activities(id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES edu_students(id),
+    user_id INTEGER, type TEXT NOT NULL, outcome TEXT, notes TEXT, next_action TEXT, next_action_at TEXT, created_at TEXT NOT NULL)`)
+  db.exec('CREATE INDEX IF NOT EXISTS edu_activities_student ON edu_activities(student_id)')
+
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
   if (schemaVersion !== SCHEMA_VERSION) {
@@ -203,6 +225,11 @@ const DEFAULTS = {
     // the student consultancy module. Only meaningful for companies the platform has switched Edu on for
     edu: ['agent', ...MGMT, 'owner'],
   },
+  // the admission journey, in order. `stage` on edu_students always holds one of these.
+  edu_stages: ['New Inquiry', 'Initial Counseling', 'Profile Evaluation', 'Documents Collection', 'University Application', 'Offer Received', 'Fee Payment', 'Visa Processing', 'Visa Decision', 'Enrolled'],
+  edu_doc_types: ['passport', 'cnic', 'transcript', 'diploma', 'ielts', 'toefl', 'gre', 'gmat', 'cv', 'sop', 'lor', 'financial', 'offer_letter', 'visa', 'other'],
+  edu_levels: ['Intermediate', 'Bachelor', 'Master', 'PhD'],
+  edu_intakes: ['Spring 2027', 'Fall 2027', 'Spring 2028', 'Fall 2028'],
 }
 // Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
 const BUILT_IN_ROLES = [
@@ -523,7 +550,7 @@ app.use((req, res, next) => {
 // giant payload cannot be used to burn memory or CPU on the API.
 const jsonParser = limit => express.json({ limit, verify: (req, _res, buf) => { req.rawBody = buf } })
 const smallJson = jsonParser('2mb'), bigJson = jsonParser('24mb')
-const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\//
+const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\/|^\/api\/edu\/students\/\d+\/documents$/
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next()
   const parse = BIG_BODY.test(req.path) ? bigJson : smallJson
@@ -853,12 +880,13 @@ app.post('/api/users/:id/reset-password', guard('manage_users'), (req, res) => {
 app.get('/api/meta', (req, res) => {
   const u = req.user
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
+  const edu = eduOpen(u) ? { edu_stages: S('edu_stages'), edu_doc_types: S('edu_doc_types'), edu_levels: S('edu_levels'), edu_intakes: S('edu_intakes') } : {}
   res.json({
     me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
-    settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
+    settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), ...edu, projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
     users: all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' ORDER BY name"),
     branches: all('SELECT * FROM branches'), teams: all('SELECT * FROM teams'),
     dealers: all('SELECT id, name, company, active FROM dealers ORDER BY name'),
@@ -1012,6 +1040,8 @@ app.get('/api/leads/:id', (req, res) => {
     other_leads: all('SELECT id, lead_type, status, project, created_at FROM leads WHERE contact_id=? AND id<>? AND deleted=0', lead.contact_id, lead.id),
     units: all(`SELECT un.id, un.project_id, p.name project, un.block, un.unit_no, un.status, un.hold_until, a.id allotment_id, a.allotment_no
       FROM units un JOIN projects p ON p.id=un.project_id LEFT JOIN allotments a ON a.unit_id=un.id AND a.status='active' WHERE un.lead_id=?`, lead.id),
+    // the same person can already be on an admission journey, and the lead page says so instead of promoting twice
+    student: eduStudentOf(req.user, lead.contact_id),
   })
 })
 
@@ -2156,6 +2186,196 @@ app.delete('/api/media/:id', (req, res) => {
   run('DELETE FROM media WHERE id=?', m.id)
   log(req, 'delete_media', m.entity, m.entity_id, { media_id: m.id, name: m.name })
   res.json({ ok: true })
+})
+
+// ---------- Student Consultancy (the edu module) ----------
+// Two gates, in order: the platform switches the module on for the company, then the permission matrix
+// picks which staff inside it get in. Both are checked on every request, so a bookmarked URL is not a way in.
+const hasEdu = u => modulesOf(u).includes('edu')
+const eduOpen = u => hasEdu(u) && can(u, 'edu')
+const eduGuard = (req, _res, next) => (eduOpen(req.user)
+  ? next() : next(err(403, 'Student Consultancy is not enabled for your account')))
+// the same reach as leads, measured on the counsellor instead of the agent
+function eduScope(u) {
+  const a = accessOf(u.role)
+  if (a === 'all') return ['1=1', []]
+  if (a === 'branch') return ['s.branch_id=?', [u.branch_id]]
+  if (a === 'team') return ['s.counselor_id IN (SELECT id FROM users WHERE team_id=?)', [u.team_id]]
+  if (a === 'own') return ['s.counselor_id=?', [u.id]]
+  return ['0', []]
+}
+const EDU_FROM = 'FROM edu_students s JOIN contacts c ON c.id=s.contact_id LEFT JOIN users u ON u.id=s.counselor_id'
+const EDU_FIELDS = ['gender', 'dob', 'city', 'passport', 'passport_expiry', 'current_level', 'institution', 'graduate_year',
+  'gpa', 'major', 'ielts', 'toefl', 'gre', 'gmat', 'target_level', 'target_countries', 'intake', 'sponsor_name', 'sponsor_occupation', 'remarks', 'tags']
+const eduStage = s => {
+  const list = S('edu_stages')
+  if (s != null && s !== '' && !list.includes(s)) throw err(400, `Unknown stage. Use: ${list.join(', ')}`)
+  return s || list[0]
+}
+function scopedEdu(u, id) {
+  const [w, p] = eduScope(u)
+  const s = one(`SELECT s.*, c.name, c.phone, c.alt_phones, c.email, c.cnic, u.name counselor_name ${EDU_FROM} WHERE s.id=? AND ${w}`, id, ...p)
+  if (!s) throw err(404, 'Student not found')
+  return s
+}
+const eduDocs = id => all('SELECT id, type, name, mime, verified, notes, created_at FROM edu_documents WHERE student_id=? ORDER BY type, id', id)
+// the student behind a contact, but only where this user has reach: the lead page links to it rather than promoting twice
+function eduStudentOf(u, contactId) {
+  if (!eduOpen(u)) return null
+  const [w, p] = eduScope(u)
+  return one(`SELECT s.id, s.stage FROM edu_students s WHERE s.contact_id=? AND ${w}`, contactId, ...p) || null
+}
+// a student keeps one timeline; stage moves are written into it so the journey reads as one story
+function eduActivity(studentId, userId, type, notes, x = {}) {
+  run('INSERT INTO edu_activities(student_id,user_id,type,outcome,notes,next_action,next_action_at,created_at) VALUES(?,?,?,?,?,?,?,?)',
+    studentId, userId ?? null, type, x.outcome ?? null, notes ?? null, x.next_action ?? null, x.next_action_at ?? null, now())
+}
+
+app.get('/api/edu/students', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  const where = [w], params = [...p]
+  const add = (sql, ...v) => { where.push(sql); params.push(...v) }
+  const q = req.query
+  if (q.stage) add('s.stage=?', eduStage(q.stage))
+  if (q.counselor_id) add('s.counselor_id=?', +q.counselor_id)
+  if (q.branch_id) add('s.branch_id=?', +q.branch_id)
+  if (q.missing_docs) add('(SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id)=0')
+  if (q.followup) add('s.id IN (SELECT student_id FROM edu_activities WHERE next_action_at IS NOT NULL AND next_action_at<=?)', now())
+  if (q.q) { const like = `%${q.q}%`; add('(c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR s.institution LIKE ? OR s.passport LIKE ?)', like, like, like, like, like) }
+  const size = Math.min(200, Math.max(1, +q.size || 60)), page = Math.max(0, +q.page || 0)
+  const from = `${EDU_FROM} WHERE ${where.join(' AND ')}`
+  res.json({
+    rows: all(`SELECT s.id, s.stage, s.stage_at, s.counselor_id, u.name counselor_name, s.target_level, s.target_countries, s.intake,
+      s.current_level, s.institution, s.graduate_year, s.ielts, c.name, c.phone, c.email,
+      (SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id) documents,
+      (SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id AND d.verified=0) unverified,
+      (SELECT max(created_at) FROM edu_activities a WHERE a.student_id=s.id) last_activity,
+      (SELECT min(next_action_at) FROM edu_activities a WHERE a.student_id=s.id AND a.next_action_at IS NOT NULL) next_action_at
+      ${from} ORDER BY s.id DESC LIMIT ? OFFSET ?`, ...params, size, page * size).map(r => maskRow(req.user, r)),
+    total: one(`SELECT count(*) n ${from}`, ...params).n,
+    stages: S('edu_stages').map(stage => ({ stage, n: one(`SELECT count(*) n ${EDU_FROM} WHERE stage=? AND ${w}`, stage, ...p).n })),
+  })
+})
+app.post('/api/edu/students', eduGuard, (req, res) => {
+  const name = String(req.body.name || '').trim(), phone = L.normalizePhone(req.body.phone || '')
+  if (!name) throw err(400, 'Name is required')
+  if (!phone) throw err(400, 'A phone number is required')
+  const email = req.body.email?.trim().toLowerCase() || null
+  const contact = findContact(phone, email) ?? { id: run('INSERT INTO contacts(name,phone,alt_phones,email,cnic,created_at) VALUES(?,?,?,?,?,?)',
+    name, phone, req.body.alt_phones || null, email, req.body.cnic || null, now()).lastInsertRowid }
+  const f = pick(req.body, EDU_FIELDS)
+  const id_ = v => (v === '' || v == null || isNaN(+v) ? null : +v) // an empty <select> must not reach the foreign key as ""
+  const cols = ['contact_id', 'lead_id', 'branch_id', 'counselor_id', 'stage', 'stage_at', ...Object.keys(f), 'created_by', 'created_at']
+  const vals = [contact.id, id_(req.body.lead_id), id_(req.body.branch_id) ?? req.user.branch_id,
+    id_(req.body.counselor_id) ?? req.user.id, eduStage(req.body.stage), now(), ...Object.values(f), req.user.id, now()]
+  const id = run(`INSERT INTO edu_students(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, ...vals).lastInsertRowid
+  eduActivity(id, req.user.id, 'note', `Student added${one('SELECT 1 FROM leads WHERE contact_id=?', contact.id) ? ' from a known contact' : ''}`)
+  log(req, 'create', 'student', id, { name, stage: vals[4] })
+  res.json({ id })
+})
+app.get('/api/edu/students/:id', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  res.json({
+    student: maskRow(req.user, s),
+    documents: eduDocs(s.id),
+    activities: all(`SELECT a.*, u.name user_name FROM edu_activities a LEFT JOIN users u ON u.id=a.user_id
+      WHERE a.student_id=? ORDER BY a.id DESC LIMIT 200`, s.id),
+    lead: s.lead_id ? one('SELECT id, source, campaign, status, agent_id FROM leads WHERE id=?', s.lead_id) : null,
+  })
+})
+app.patch('/api/edu/students/:id', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  const f = pick(req.body, [...EDU_FIELDS, 'branch_id', 'counselor_id'])
+  const cf = pick(req.body, CONTACT_FIELDS) // the person is shared with the lead, so one edit updates both pages
+  const stage = req.body.stage === undefined ? null : eduStage(req.body.stage)
+  if (stage && stage !== s.stage) {
+    f.stage = stage
+    f.stage_at = now()
+    eduActivity(s.id, req.user.id, 'system', `${s.stage} → ${stage}`)
+    if (s.counselor_id && s.counselor_id !== req.user.id) notify(s.counselor_id, `${s.name} moved to ${stage}`, s.lead_id)
+  }
+  if (Object.keys(f).length) run(`UPDATE edu_students SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`,
+    ...Object.values(f), now(), s.id)
+  if (Object.keys(cf).length) run(`UPDATE contacts SET ${Object.keys(cf).map(k => k + '=?')} WHERE id=?`, ...Object.values(cf), s.contact_id)
+  log(req, 'update', 'student', s.id, { before: pick(s, Object.keys({ ...f, ...cf })), after: { ...f, ...cf } })
+  res.json({ ok: true, stage: f.stage ?? s.stage })
+})
+app.post('/api/edu/students/:id/activity', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  const type = String(req.body.type || 'note')
+  if (![...S('activity_types'), 'system'].includes(type)) throw err(400, `Unknown activity type. Use: ${S('activity_types').join(', ')}`)
+  const notes = String(req.body.notes || '').trim().slice(0, 4000)
+  if (!notes) throw err(400, 'Write something first')
+  const next = req.body.next_action_at ? String(req.body.next_action_at).slice(0, 32) : null
+  eduActivity(s.id, req.user.id, type, notes, { outcome: req.body.outcome || null, next_action: req.body.next_action || null, next_action_at: next })
+  // the same contact can be live in both products: a property lead keeps its own last-touch clock
+  if (s.lead_id && type !== 'system') run('UPDATE leads SET last_activity_at=?, stale_flag=0 WHERE id=?', now(), s.lead_id)
+  if (next) notify(req.user.id, `Follow-up: ${s.name} — ${req.body.next_action || notes.slice(0, 60)}`, s.lead_id)
+  log(req, 'activity', 'student', s.id, { type })
+  res.json({ ok: true })
+})
+app.post('/api/edu/students/:id/documents', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, +req.params.id)
+  const type = String(req.body.type || '')
+  if (!S('edu_doc_types').includes(type)) throw err(400, `Unknown document. Use: ${S('edu_doc_types').join(', ')}`)
+  const data = String(req.body.data || '')
+  const m = data.match(/^data:(image\/(jpeg|png|webp)|application\/pdf);base64,/)
+  if (!m) throw err(400, 'Upload a PDF, JPEG, PNG or WebP file')
+  if (data.length > 8e6) throw err(400, 'File is too large (max 6 MB)')
+  const id = run('INSERT INTO edu_documents(student_id,type,name,mime,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)',
+    s.id, type, String(req.body.name || '').trim().slice(0, 120) || null, m[1], data, req.user.id, now()).lastInsertRowid
+  eduActivity(s.id, req.user.id, 'note', `Document uploaded: ${type}`)
+  log(req, 'upload_doc', 'student', s.id, { type, document_id: id })
+  res.json({ id })
+})
+// Paperwork is passports and CNICs, so unlike the marketing media there is no bare-token URL:
+// the browser fetches this with the session header and opens the result as a blob.
+app.get('/api/edu/documents/:id/file', eduGuard, (req, res) => {
+  const d = one('SELECT * FROM edu_documents WHERE id=?', +req.params.id)
+  if (!d) throw err(404, 'Document not found')
+  scopedEdu(req.user, d.student_id)
+  const raw = String(d.data || '').replace(/^data:[^;]*;base64,/, '')
+  log(req, 'view_doc', 'student', d.student_id, { document_id: d.id, type: d.type })
+  res.set('cache-control', 'private, max-age=86400').type(d.mime || 'application/octet-stream')
+    .set('content-disposition', `inline; filename="${(d.name || d.type).replace(/[^\w. -]/g, '_')}"`)
+    .send(Buffer.from(raw, 'base64'))
+})
+app.patch('/api/edu/documents/:id', eduGuard, (req, res) => {
+  const d = one('SELECT * FROM edu_documents WHERE id=?', +req.params.id)
+  if (!d) throw err(404, 'Document not found')
+  scopedEdu(req.user, d.student_id) // scope check: an out-of-reach student's paper is not here
+  const verified = req.body.verified === undefined ? d.verified : (req.body.verified ? 1 : 0)
+  const notes = req.body.notes === undefined ? d.notes : String(req.body.notes).slice(0, 1000)
+  run('UPDATE edu_documents SET verified=?, notes=? WHERE id=?', verified, notes, d.id)
+  if (verified && !d.verified) eduActivity(d.student_id, req.user.id, 'note', `Verified: ${d.type}`)
+  log(req, 'update_doc', 'student', d.student_id, { document_id: d.id, verified })
+  res.json({ ok: true, verified: !!verified })
+})
+app.delete('/api/edu/documents/:id', eduGuard, (req, res) => {
+  const d = one('SELECT * FROM edu_documents WHERE id=?', +req.params.id)
+  if (!d) throw err(404, 'Document not found')
+  scopedEdu(req.user, d.student_id)
+  if (!req.body.reason) throw err(400, 'Say why the document is being removed')
+  run('DELETE FROM edu_documents WHERE id=?', d.id)
+  log(req, 'delete_doc', 'student', d.student_id, { document_id: d.id, type: d.type, reason: req.body.reason })
+  res.json({ ok: true })
+})
+// A promoted lead is the usual way in: the capture, SLA and routing engine already found the person.
+app.post('/api/edu/leads/:id/promote', eduGuard, (req, res) => {
+  const lead = scopedLead(req.user, +req.params.id)
+  const existing = one('SELECT id FROM edu_students WHERE contact_id=?', lead.contact_id)
+  if (existing) {
+    if (!eduStudentOf(req.user, lead.contact_id)) throw err(409, 'This contact is already a student under another counsellor.')
+    log(req, 'promote', 'student', existing.id, { lead_id: lead.id }); return res.json({ id: existing.id, existed: true })
+  }
+  const stage = eduStage(req.body.stage)
+  const id = run(`INSERT INTO edu_students(contact_id,lead_id,branch_id,counselor_id,stage,stage_at,remarks,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`, lead.contact_id, lead.id, lead.branch_id ?? req.user.branch_id, lead.agent_id ?? req.user.id, stage, now(),
+    lead.remarks || null, req.user.id, now()).lastInsertRowid
+  eduActivity(id, req.user.id, 'system', `Promoted from lead #${lead.id} (${lead.source}${lead.campaign ? ' / ' + lead.campaign : ''})`)
+  addActivity(lead.id, req.user.id, 'system', `Promoted to student (stage: ${stage})`)
+  log(req, 'promote', 'student', id, { lead_id: lead.id, stage })
+  res.json({ id })
 })
 
 // ---- Settings › Facebook: connect a Page's Lead Ads in one step ----
