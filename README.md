@@ -21,7 +21,8 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 | Variable | Purpose |
 |---|---|
 | `PORT`, `DB_PATH` | Server port, local database file (default `./crm.db`). Ignored when `TURSO_DATABASE_URL` is set |
-| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database URL (`libsql://…`) and token. Required on Vercel |
+| `CRM_DATABASE_URL`, `CRM_DATABASE_TOKEN` | Turso database URL (`libsql://…`) and token. Take priority over the `TURSO_*` ones. Use these on Vercel: the Turso integration creates a new database branch per deployment and overwrites `TURSO_*` |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database URL (`libsql://…`) and token. Required on Vercel unless `CRM_DATABASE_URL` is set |
 | `CRON_SECRET` | Bearer secret for `/api/cron/tick` (SLA, lease and weekly-report jobs) |
 | `FB_VERIFY_TOKEN`, `FB_APP_SECRET`, `FB_PAGE_TOKEN` | Optional fallback. Normally an admin connects Facebook in **Settings › Facebook** (paste app secret + Graph API Explorer token; the CRM makes a permanent Page token, registers the webhook at `/api/webhooks/facebook` and subscribes the Page) |
 | `INBOUND_API_KEY` | `POST /api/inbound` with header `x-api-key`. For website forms, Zapier, portal email parsers and telephony |

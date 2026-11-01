@@ -6,7 +6,8 @@ import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const dbUrl = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
+const dbUrl = process.env.CRM_DATABASE_URL || process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
+const dbToken = process.env.CRM_DATABASE_TOKEN || process.env.TURSO_AUTH_TOKEN
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
@@ -18,7 +19,7 @@ let db = null
 let dbError = null
 try {
   const { default: Database } = await import('libsql')
-  db = new Database(dbUrl, process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : undefined)
+  db = new Database(dbUrl, dbToken ? { authToken: dbToken } : undefined)
   if (!remote) db.pragma('journal_mode = WAL')
   const tablesReady = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'`).get()
   if (!tablesReady) db.exec(`
