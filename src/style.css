@@ -132,6 +132,16 @@ td code { font-size: 11px; word-break: break-all; color: var(--muted); }
 .s-fee-payment { background: #fdece6; color: #c2441c; }
 .s-visa-processing { background: #e4f4f6; color: #146a75; }
 .s-visa-decision { background: #eef1f5; color: #41506b; }
+/* an application moves on its own wall: filed, reviewed, then an offer or a no */
+.s-ready { background: #f0f1f3; color: #55585e; }
+.s-submitted, .s-under-review { background: #e9f0fd; color: #2459c2; }
+.s-interview { background: #fff5dc; color: #9a6400; }
+.s-conditional-offer, .s-unconditional-offer, .s-accepted { background: #e3f6ec; color: #0f7f46; }
+.s-rejected, .s-withdrawn { background: #f2edfb; color: #6d3fc0; }
+/* one application inside the student page */
+.app-row { padding: 10px 0; border-top: 1px solid var(--line); }
+.app-row > .row { margin-top: 8px; }
+.app-row form.grid { margin-top: 10px; }
 .phone { font-weight: 800; font-size: 16px; }
 .banner { background: #fff8db; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 

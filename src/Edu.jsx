@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt, toIso, go, phone, readFile, shrinkImage } from './api.js'
 import { Select, When, Status } from './Leads.jsx'
+import { StudentApplications } from './EduApplications.jsx'
 
 const docLabel = t => (t || '').replace(/_/g, ' ')
 const due = d => d && d < new Date().toISOString()
@@ -52,7 +53,7 @@ export default function Students({ query }) {
       {board ? <Journey data={data} reload={reload} /> : <>
         <div className="card scroll">
           <table>
-            <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Studied</th><th>Target</th><th>Docs</th><th>Counselor</th><th>Next follow-up</th><th>Added</th></tr></thead>
+            <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Studied</th><th>Target</th><th>Docs</th><th>Cases</th><th>Counselor</th><th>Next follow-up</th><th>Added</th></tr></thead>
             <tbody>
               {data?.rows.map(r => (
                 <tr key={r.id} onClick={() => go('/students/' + r.id)} className="link">
@@ -62,12 +63,13 @@ export default function Students({ query }) {
                   <td>{r.institution || '—'}{r.graduate_year && <small className="muted"> · {r.graduate_year}</small>}</td>
                   <td>{r.target_level || '—'}{r.target_countries && <small><br />{r.target_countries}</small>}{r.intake && <small className="muted"><br />{r.intake}</small>}</td>
                   <td>{r.documents} <small className={r.unverified ? 'warn' : 'muted'}>({r.unverified} to verify)</small></td>
+                  <td>{r.applications ? <span>{r.applications}{r.offers ? <small className="ok"> · {r.offers} offer{r.offers === 1 ? '' : 's'}</small> : null}</span> : <span className="muted">none</span>}</td>
                   <td>{r.counselor_name || <span className="warn">Unassigned</span>}</td>
                   <When d={r.next_action_at} className={due(r.next_action_at) ? 'warn' : ''} />
                   <When d={r.stage_at} />
                 </tr>
               ))}
-              {data?.rows.length === 0 && <tr><td colSpan="9" className="muted">No students yet. Add one, or promote a lead from its page.</td></tr>}
+              {data?.rows.length === 0 && <tr><td colSpan="10" className="muted">No students yet. Add one, or promote a lead from its page.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -115,6 +117,7 @@ function Journey({ data, reload }) {
                   <small className="muted">{x.target_level || 'No target'}{x.target_countries ? ` · ${x.target_countries}` : ''}{x.intake ? ` · ${x.intake}` : ''}</small>
                   <small>{x.counselor_name ? <span className="board-agent">👤 {x.counselor_name}</span> : <span className="warn">⚠️ Unassigned</span>}</small>
                   {x.documents === 0 && <small className="warn">📄 No documents</small>}
+                  {x.applications > 0 && <small className="muted">🎓 {x.applications} application{x.applications === 1 ? '' : 's'}{x.offers ? ` · ${x.offers} offer${x.offers === 1 ? '' : 's'}` : ''}</small>}
                   {x.next_action_at && <small className={'board-due ' + (due(x.next_action_at) ? 'warn' : 'muted')}>📅 {fmt(x.next_action_at)}</small>}
                 </a>
               ))}
@@ -157,7 +160,7 @@ export function Student({ id }) {
   const [data, reload, loadError] = useApi('/edu/students/' + id)
   if (loadError) return <p className="error">{loadError}</p>
   if (!data) return <p className="muted">Loading…</p>
-  const { student, documents, activities, lead } = data
+  const { student, documents, activities, lead, applications } = data
   const masked = student.phone?.includes('*')
 
   return (
@@ -198,6 +201,7 @@ export function Student({ id }) {
         </div>
         <div>
           <ChangeStage student={student} reload={reload} />
+          <StudentApplications student={student} applications={applications} reload={reload} />
           <Documents student={student} documents={documents} reload={reload} />
           <StudentProfile student={student} reload={reload} />
         </div>

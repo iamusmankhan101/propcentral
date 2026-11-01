@@ -142,6 +142,25 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     user_id INTEGER, type TEXT NOT NULL, outcome TEXT, notes TEXT, next_action TEXT, next_action_at TEXT, created_at TEXT NOT NULL)`)
   db.exec('CREATE INDEX IF NOT EXISTS edu_activities_student ON edu_activities(student_id)')
 
+  // The catalog a counsellor sells from, shared by the whole company, and the applications that hang off it.
+  // One student applies to several universities, so an application is its own record keyed on student + course.
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_universities(id INTEGER PRIMARY KEY, name TEXT NOT NULL, country TEXT NOT NULL, city TEXT,
+    website TEXT, ranking TEXT, note TEXT, active INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT)`)
+  db.exec('CREATE INDEX IF NOT EXISTS edu_universities_country ON edu_universities(country, active)')
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_campuses(id INTEGER PRIMARY KEY, university_id INTEGER NOT NULL REFERENCES edu_universities(id),
+    name TEXT NOT NULL, city TEXT, note TEXT, created_at TEXT NOT NULL)`)
+  db.exec('CREATE INDEX IF NOT EXISTS edu_campuses_university ON edu_campuses(university_id)')
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_programs(id INTEGER PRIMARY KEY, university_id INTEGER NOT NULL REFERENCES edu_universities(id),
+    campus_id INTEGER REFERENCES edu_campuses(id), name TEXT NOT NULL, level TEXT, field TEXT, tuition INTEGER, currency TEXT DEFAULT 'GBP',
+    duration_months INTEGER, intakes TEXT, eligibility TEXT, requirements TEXT, ielts_min REAL, active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT)`)
+  db.exec('CREATE INDEX IF NOT EXISTS edu_programs_university ON edu_programs(university_id, active)')
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_applications(id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES edu_students(id),
+    program_id INTEGER NOT NULL REFERENCES edu_programs(id), status TEXT NOT NULL DEFAULT 'Ready', ref TEXT, note TEXT,
+    submitted_at TEXT, decision_at TEXT, offer_type TEXT, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT)`)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS edu_applications_pair ON edu_applications(student_id, program_id)')
+  db.exec('CREATE INDEX IF NOT EXISTS edu_applications_status ON edu_applications(status)')
+
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
   if (schemaVersion !== SCHEMA_VERSION) {
@@ -230,6 +249,10 @@ const DEFAULTS = {
   edu_doc_types: ['passport', 'cnic', 'transcript', 'diploma', 'ielts', 'toefl', 'gre', 'gmat', 'cv', 'sop', 'lor', 'financial', 'offer_letter', 'visa', 'other'],
   edu_levels: ['Intermediate', 'Bachelor', 'Master', 'PhD'],
   edu_intakes: ['Spring 2027', 'Fall 2027', 'Spring 2028', 'Fall 2028'],
+  // where the company places students; a university's country is picked from this list
+  edu_countries: ['UK', 'USA', 'Canada', 'Australia', 'Ireland', 'Germany', 'Netherlands', 'China', 'Turkey', 'UAE', 'Malaysia', 'Saudi Arabia'],
+  // an application has its own lifecycle, separate from the student's stage: one student runs several at once
+  edu_application_statuses: ['Ready', 'Submitted', 'Under review', 'Interview', 'Conditional offer', 'Unconditional offer', 'Accepted', 'Rejected', 'Withdrawn'],
 }
 // Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
 const BUILT_IN_ROLES = [
@@ -880,7 +903,8 @@ app.post('/api/users/:id/reset-password', guard('manage_users'), (req, res) => {
 app.get('/api/meta', (req, res) => {
   const u = req.user
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
-  const edu = eduOpen(u) ? { edu_stages: S('edu_stages'), edu_doc_types: S('edu_doc_types'), edu_levels: S('edu_levels'), edu_intakes: S('edu_intakes') } : {}
+  const edu = eduOpen(u) ? { edu_stages: S('edu_stages'), edu_doc_types: S('edu_doc_types'), edu_levels: S('edu_levels'), edu_intakes: S('edu_intakes'),
+    edu_countries: S('edu_countries'), edu_application_statuses: S('edu_application_statuses') } : {}
   res.json({
     me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
@@ -2249,6 +2273,8 @@ app.get('/api/edu/students', eduGuard, (req, res) => {
       s.current_level, s.institution, s.graduate_year, s.ielts, c.name, c.phone, c.email,
       (SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id) documents,
       (SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id AND d.verified=0) unverified,
+      (SELECT count(*) FROM edu_applications a WHERE a.student_id=s.id) applications,
+      (SELECT count(*) FROM edu_applications a WHERE a.student_id=s.id AND a.status IN ('Conditional offer','Unconditional offer','Accepted')) offers,
       (SELECT max(created_at) FROM edu_activities a WHERE a.student_id=s.id) last_activity,
       (SELECT min(next_action_at) FROM edu_activities a WHERE a.student_id=s.id AND a.next_action_at IS NOT NULL) next_action_at
       ${from} ORDER BY s.id DESC LIMIT ? OFFSET ?`, ...params, size, page * size).map(r => maskRow(req.user, r)),
@@ -2281,6 +2307,9 @@ app.get('/api/edu/students/:id', eduGuard, (req, res) => {
     activities: all(`SELECT a.*, u.name user_name FROM edu_activities a LEFT JOIN users u ON u.id=a.user_id
       WHERE a.student_id=? ORDER BY a.id DESC LIMIT 200`, s.id),
     lead: s.lead_id ? one('SELECT id, source, campaign, status, agent_id FROM leads WHERE id=?', s.lead_id) : null,
+    applications: all(`SELECT a.*, p.name program, p.level, p.tuition, p.currency, p.intakes, p.university_id, u.name university, u.country
+      FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id JOIN edu_universities u ON u.id=p.university_id
+      WHERE a.student_id=? ORDER BY a.id DESC`, s.id),
   })
 })
 app.patch('/api/edu/students/:id', eduGuard, (req, res) => {
@@ -2376,6 +2405,209 @@ app.post('/api/edu/leads/:id/promote', eduGuard, (req, res) => {
   addActivity(lead.id, req.user.id, 'system', `Promoted to student (stage: ${stage})`)
   log(req, 'promote', 'student', id, { lead_id: lead.id, stage })
   res.json({ id })
+})
+
+// ---------- The catalogue a counsellor sells from: universities, campuses, courses ----------
+// Company-wide on purpose, not per counsellor: two people working the same student must see the same
+// tuition and the same entry requirements. Once an application exists the course is proof of an offer,
+// so the rows are deactivated rather than deleted.
+const UNI_FIELDS = ['name', 'country', 'city', 'website', 'ranking', 'note']
+const PROG_FIELDS = ['university_id', 'campus_id', 'name', 'level', 'field', 'tuition', 'currency', 'duration_months', 'intakes', 'eligibility', 'requirements', 'ielts_min']
+const uniOf = id => { const u = one('SELECT * FROM edu_universities WHERE id=?', +id); if (!u) throw err(404, 'University not found'); return u }
+const progOf = id => { const p = one(`SELECT p.*, u.name university, u.country FROM edu_programs p JOIN edu_universities u ON u.id=p.university_id WHERE p.id=?`, +id); if (!p) throw err(404, 'Course not found'); return p }
+const countryOf = c => { const list = S('edu_countries'); if (!c) throw err(400, `Pick a country. Add more in Settings › edu_countries`); if (!list.includes(c)) throw err(400, `Unknown country. Use: ${list.join(', ')}`); return c }
+const levelOf = l => { if (l == null || l === '') return null; if (!S('edu_levels').includes(l)) throw err(400, `Unknown level. Use: ${S('edu_levels').join(', ')}`); return l }
+const insert = (table, obj) => run(`INSERT INTO ${table}(${Object.keys(obj).join(',')}) VALUES(${Object.keys(obj).map(() => '?').join(',')})`, ...Object.values(obj)).lastInsertRowid
+// forms post strings; a tuition of "24000" stored as text would sort and add wrong, so the numbers are coerced here
+const num = v => (v == null || v === '' || !Number.isFinite(+v) ? null : +v)
+const PROG_NUMS = ['campus_id', 'tuition', 'duration_months', 'ielts_min']
+const numFields = f => { PROG_NUMS.forEach(k => k in f && (f[k] = num(f[k]))); return f }
+
+app.get('/api/edu/universities', eduGuard, (_req, res) => {
+  const where = ['1=1'], params = []
+  const q = _req.query
+  if (q.country) { where.push('u.country=?'); params.push(q.country) }
+  if (q.q) { const like = `%${q.q}%`; where.push('(u.name LIKE ? OR u.city LIKE ? OR u.note LIKE ?)'); params.push(like, like, like) }
+  where.push(q.active === '0' ? 'u.active=0' : 'u.active=1')
+  const w = where.join(' AND ')
+  res.json({
+    rows: all(`SELECT u.*, (SELECT count(*) FROM edu_programs p WHERE p.university_id=u.id AND p.active=1) programs,
+      (SELECT count(*) FROM edu_campuses c WHERE c.university_id=u.id) campuses,
+      (SELECT count(*) FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id WHERE p.university_id=u.id) applications,
+      (SELECT count(DISTINCT s.id) FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id JOIN edu_students s ON s.id=a.student_id WHERE p.university_id=u.id) students
+      FROM edu_universities u WHERE ${w} ORDER BY u.country, u.name`, ...params),
+    countries: all('SELECT country, count(*) n FROM edu_universities WHERE active=1 GROUP BY country ORDER BY n DESC, country'),
+  })
+})
+app.get('/api/edu/universities/:id', eduGuard, (req, res) => {
+  const u = uniOf(req.params.id)
+  res.json({
+    university: { ...u,
+      applications: one(`SELECT count(*) n FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id WHERE p.university_id=?`, u.id).n,
+      students: one(`SELECT count(DISTINCT a.student_id) n FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id WHERE p.university_id=?`, u.id).n },
+    campuses: all(`SELECT c.*, (SELECT count(*) FROM edu_programs p WHERE p.campus_id=c.id) programs FROM edu_campuses c WHERE c.university_id=? ORDER BY c.name`, u.id),
+    programs: all(`SELECT p.*, c.name campus, (SELECT count(*) FROM edu_applications a WHERE a.program_id=p.id) applications
+      FROM edu_programs p LEFT JOIN edu_campuses c ON c.id=p.campus_id WHERE p.university_id=? ORDER BY p.active DESC, p.level, p.name`, u.id),
+  })
+})
+app.post('/api/edu/universities', eduGuard, (req, res) => {
+  const f = pick(req.body, UNI_FIELDS)
+  if (!f.name) throw err(400, 'Name is required')
+  f.country = countryOf(f.country)
+  const id = insert('edu_universities', { ...f, active: 1, created_by: req.user.id, created_at: now() })
+  log(req, 'create', 'university', id, { name: f.name, country: f.country })
+  res.json({ id })
+})
+app.patch('/api/edu/universities/:id', eduGuard, (req, res) => {
+  const u = uniOf(req.params.id)
+  const f = pick(req.body, UNI_FIELDS)
+  if (f.country !== undefined) f.country = countryOf(f.country)
+  if (req.body.active !== undefined) f.active = req.body.active ? 1 : 0
+  if (Object.keys(f).length) run(`UPDATE edu_universities SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), u.id)
+  log(req, 'update', 'university', u.id, { before: pick(u, Object.keys(f)), after: f })
+  res.json({ ok: true })
+})
+app.delete('/api/edu/universities/:id', eduGuard, (req, res) => {
+  const u = uniOf(req.params.id)
+  const used = one(`SELECT count(*) n FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id WHERE p.university_id=?`, u.id).n
+  if (used) throw err(400, `${u.name} has ${used} application${used === 1 ? '' : 's'} — switch it off instead of deleting it`)
+  run('DELETE FROM edu_programs WHERE university_id=?', u.id)
+  run('DELETE FROM edu_campuses WHERE university_id=?', u.id)
+  run('DELETE FROM edu_universities WHERE id=?', u.id)
+  log(req, 'delete', 'university', u.id, { name: u.name, reason: req.body.reason || null })
+  res.json({ ok: true })
+})
+app.post('/api/edu/universities/:id/campuses', eduGuard, (req, res) => {
+  const u = uniOf(req.params.id)
+  const name = String(req.body.name || '').trim()
+  if (!name) throw err(400, 'Campus name is required')
+  const id = insert('edu_campuses', { university_id: u.id, name, city: req.body.city || null, note: req.body.note || null, created_at: now() })
+  log(req, 'create', 'university', u.id, { campus_id: id, name })
+  res.json({ id })
+})
+app.delete('/api/edu/campuses/:id', eduGuard, (req, res) => {
+  const c = one('SELECT * FROM edu_campuses WHERE id=?', +req.params.id)
+  if (!c) throw err(404, 'Campus not found')
+  if (one('SELECT count(*) n FROM edu_programs WHERE campus_id=?', c.id).n) throw err(400, 'Courses are attached to this campus')
+  run('DELETE FROM edu_campuses WHERE id=?', c.id)
+  log(req, 'delete', 'university', c.university_id, { campus_id: c.id, name: c.name })
+  res.json({ ok: true })
+})
+
+app.get('/api/edu/programs', eduGuard, (req, res) => {
+  const where = ['p.active=1', 'u.active=1'], params = []
+  const q = req.query
+  if (q.university_id) { where.push('p.university_id=?'); params.push(+q.university_id) }
+  if (q.level) { where.push('p.level=?'); params.push(levelOf(q.level)) }
+  if (q.country) { where.push('u.country=?'); params.push(q.country) }
+  if (q.intake) { where.push(`p.intakes LIKE ?`); params.push(`%${q.intake}%`) }
+  if (q.q) { const like = `%${q.q}%`; where.push('(p.name LIKE ? OR p.field LIKE ? OR u.name LIKE ?)'); params.push(like, like, like) }
+  const w = where.join(' AND ')
+  res.json({
+    rows: all(`SELECT p.*, u.name university, u.country, c.name campus,
+      (SELECT count(*) FROM edu_applications a WHERE a.program_id=p.id) applications
+      FROM edu_programs p JOIN edu_universities u ON u.id=p.university_id LEFT JOIN edu_campuses c ON c.id=p.campus_id
+      WHERE ${w} ORDER BY u.country, u.name, p.name`, ...params),
+    total: one(`SELECT count(*) n FROM edu_programs p JOIN edu_universities u ON u.id=p.university_id WHERE ${w}`, ...params).n,
+  })
+})
+app.post('/api/edu/programs', eduGuard, (req, res) => {
+  const f = numFields(pick(req.body, PROG_FIELDS))
+  if (!f.name) throw err(400, 'Course name is required')
+  if (!f.university_id) throw err(400, 'Pick the university this course belongs to')
+  const u = uniOf(f.university_id)
+  if (f.campus_id && !one('SELECT id FROM edu_campuses WHERE id=? AND university_id=?', f.campus_id, u.id)) throw err(400, 'That campus belongs to another university')
+  f.level = levelOf(f.level)
+  const id = insert('edu_programs', { ...f, university_id: u.id, active: 1, created_by: req.user.id, created_at: now() })
+  log(req, 'create', 'program', id, { name: f.name, university_id: u.id })
+  res.json({ id })
+})
+app.patch('/api/edu/programs/:id', eduGuard, (req, res) => {
+  const p = progOf(req.params.id)
+  const f = numFields(pick(req.body, PROG_FIELDS))
+  if (f.level !== undefined) f.level = levelOf(f.level)
+  if (f.university_id !== undefined) f.university_id = uniOf(f.university_id).id
+  if (f.campus_id && !one('SELECT id FROM edu_campuses WHERE id=? AND university_id=?', f.campus_id, f.university_id ?? p.university_id)) throw err(400, 'That campus belongs to another university')
+  if (req.body.active !== undefined) f.active = req.body.active ? 1 : 0
+  if (Object.keys(f).length) run(`UPDATE edu_programs SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), p.id)
+  log(req, 'update', 'program', p.id, { before: pick(p, Object.keys(f)), after: f })
+  res.json({ ok: true })
+})
+app.delete('/api/edu/programs/:id', eduGuard, (req, res) => {
+  const p = progOf(req.params.id)
+  const used = one('SELECT count(*) n FROM edu_applications WHERE program_id=?', p.id).n
+  if (used) throw err(400, `${p.name} has ${used} application${used === 1 ? '' : 's'} — switch it off instead of deleting it`)
+  run('DELETE FROM edu_programs WHERE id=?', p.id)
+  log(req, 'delete', 'program', p.id, { name: p.name })
+  res.json({ ok: true })
+})
+
+// ---------- Applications: one row per student and course, with its own lifecycle ----------
+// The student's stage is the counsellor's pipeline; an application is a live case with a university,
+// so they move independently. Reach is still the student's: eduScope is measured on the counsellor.
+const APP_FROM = `FROM edu_applications a JOIN edu_programs p ON p.id=a.program_id JOIN edu_universities u ON u.id=p.university_id
+  JOIN edu_students s ON s.id=a.student_id JOIN contacts c ON c.id=s.contact_id LEFT JOIN users cu ON cu.id=s.counselor_id`
+const APP_SELECT = `SELECT a.*, p.name program, p.level, p.tuition, p.currency, p.intakes, p.university_id, u.name university, u.country,
+  c.name student_name, c.phone, s.stage, s.lead_id, s.counselor_id, cu.name counselor_name`
+const appStatus = x => { const list = S('edu_application_statuses'); if (x && !list.includes(x)) throw err(400, `Unknown status. Use: ${list.join(', ')}`); return x || list[0] }
+const DECIDED = ['Conditional offer', 'Unconditional offer', 'Accepted', 'Rejected']
+function scopedApp(u, id) {
+  const [w, p] = eduScope(u)
+  const a = one(`${APP_SELECT} ${APP_FROM} WHERE a.id=? AND ${w}`, id, ...p)
+  if (!a) throw err(404, 'Application not found')
+  return a
+}
+
+app.get('/api/edu/applications', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  const where = [w], params = [...p]
+  const q = req.query
+  if (q.status) { where.push('a.status=?'); params.push(appStatus(q.status)) }
+  if (q.student_id) { where.push('a.student_id=?'); params.push(+q.student_id) }
+  if (q.university_id) { where.push('p.university_id=?'); params.push(+q.university_id) }
+  if (q.country) { where.push('u.country=?'); params.push(q.country) }
+  if (q.q) { const like = `%${q.q}%`; where.push('(c.name LIKE ? OR p.name LIKE ? OR u.name LIKE ?)'); params.push(like, like, like) }
+  const from = `${APP_FROM} WHERE ${where.join(' AND ')}`
+  res.json({
+    rows: all(`${APP_SELECT}, s.stage student_stage ${from} ORDER BY a.updated_at DESC, a.id DESC LIMIT 300`, ...params).map(r => maskRow(req.user, r)),
+    total: one(`SELECT count(*) n ${from}`, ...params).n,
+    statuses: S('edu_application_statuses').map(status => ({ status, n: one(`SELECT count(*) n ${APP_FROM} WHERE a.status=? AND ${w}`, status, ...p).n })),
+  })
+})
+app.post('/api/edu/applications', eduGuard, (req, res) => {
+  const s = scopedEdu(req.user, num(req.body.student_id))
+  const p = progOf(req.body.program_id)
+  if (one('SELECT id FROM edu_applications WHERE student_id=? AND program_id=?', s.id, p.id))
+    throw err(409, `${s.name} already has an application to ${p.name} at ${p.university}`)
+  const status = appStatus(req.body.status)
+  const id = insert('edu_applications', { student_id: s.id, program_id: p.id, status, ref: req.body.ref || null, note: req.body.note || null,
+    submitted_at: status === 'Ready' ? null : now(), created_by: req.user.id, created_at: now() })
+  eduActivity(s.id, req.user.id, 'system', `Application opened: ${p.name} — ${p.university}, ${p.country}`)
+  log(req, 'create', 'application', id, { student_id: s.id, program_id: p.id, status })
+  res.json({ id })
+})
+app.patch('/api/edu/applications/:id', eduGuard, (req, res) => {
+  const a = scopedApp(req.user, req.params.id)
+  const f = pick(req.body, ['ref', 'note', 'offer_type'])
+  const status = req.body.status === undefined ? null : appStatus(req.body.status)
+  if (status && status !== a.status) {
+    f.status = status
+    if (status !== 'Ready' && !a.submitted_at) f.submitted_at = now()
+    if (DECIDED.includes(status)) f.decision_at = now()
+    eduActivity(a.student_id, req.user.id, 'system', `${a.university} (${a.program}): ${a.status} → ${status}`)
+    if (a.counselor_id && a.counselor_id !== req.user.id) notify(a.counselor_id, `${a.student_name}: ${a.university} is ${status}`, a.lead_id ?? null)
+  }
+  if (Object.keys(f).length) run(`UPDATE edu_applications SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), a.id)
+  log(req, 'update', 'application', a.id, { before: pick(a, Object.keys(f)), after: f })
+  res.json({ ok: true, status: f.status ?? a.status })
+})
+app.delete('/api/edu/applications/:id', eduGuard, (req, res) => {
+  const a = scopedApp(req.user, req.params.id)
+  if (!req.body.reason) throw err(400, 'Say why the application is being removed')
+  run('DELETE FROM edu_applications WHERE id=?', a.id)
+  eduActivity(a.student_id, req.user.id, 'system', `Application withdrawn from the record: ${a.university} (${a.program}) — ${req.body.reason}`)
+  log(req, 'delete', 'application', a.id, { student_id: a.student_id, program_id: a.program_id, reason: req.body.reason })
+  res.json({ ok: true })
 })
 
 // ---- Settings › Facebook: connect a Page's Lead Ads in one step ----
