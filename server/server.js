@@ -6,8 +6,9 @@ import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const dbUrl = process.env.CRM_DATABASE_URL || process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(root, 'crm.db')
-const dbToken = process.env.CRM_DATABASE_TOKEN || process.env.TURSO_AUTH_TOKEN
+const clean = v => v?.trim().replace(/^(['"])(.*)\1$/, '$2') || undefined
+const dbUrl = clean(process.env.CRM_DATABASE_URL) || clean(process.env.TURSO_DATABASE_URL) || clean(process.env.DB_PATH) || path.join(root, 'crm.db')
+const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO_AUTH_TOKEN)
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
