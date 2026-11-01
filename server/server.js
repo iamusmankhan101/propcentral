@@ -123,7 +123,13 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
   if (schemaVersion !== SCHEMA_VERSION) {
-    const addColumn = (table, col, type) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col) || db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
+    // SQLite matches column names case-insensitively, so the guard must too: a column stored as PLAN
+    // would otherwise be "missing" here and the ALTER would abort the whole init (every route 503s).
+    const addColumn = (table, col, type) => {
+      if (db.prepare(`PRAGMA table_info(${table})`).all().some(c => String(c.name).toLowerCase() === col)) return
+      try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) }
+      catch (e) { if (!/duplicate column name/i.test(e.message)) throw e }
+    }
     addColumn('price_lists', 'size', 'REAL')
     addColumn('price_lists', 'uom', 'TEXT')
     addColumn('units', 'down_payment', 'INTEGER')
