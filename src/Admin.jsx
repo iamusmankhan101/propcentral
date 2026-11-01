@@ -131,6 +131,7 @@ const SECTIONS = [
   ['facebook', 'Facebook & Instagram', 'inbox', 'admin'], ['website', 'Website forms & API', 'arrow', 'admin'], ['maps', 'Maps', 'map', 'admin'], ['reports', 'Email reports', 'mail', 'settings'],
   ['leads', 'Leads & pipeline', 'leads', 'settings'], ['edu', 'Student consultancy', 'book', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
   ['inventory', 'Inventory & listings', 'building', 'settings'], ['properties', 'Properties & leases', 'key', 'settings'], ['sales', 'Commission', 'percent', 'settings'], ['permissions', 'Roles & permissions', 'audit', 'admin'],
+  ['modules', 'Company modules', 'layers', 'admin'],
 ]
 const GROUPS = ['Account', 'Integrations', 'Company']
 const groupOf = k => (['profile', 'security'].includes(k) ? 'Account' : ['facebook', 'website', 'maps', 'reports'].includes(k) ? 'Integrations' : 'Company')
@@ -172,7 +173,7 @@ export function Settings({ query = '' }) {
   const tab = allowed.find(x => x[0] === want)?.[0] || (!propertyOn && eduOn ? 'edu' : 'profile')
   const [s, reload] = useApi(KEYS[tab] || ['reports', 'sales'].includes(tab) ? '/settings' : null)
   const saved = () => { reload(); m.reloadMeta() }
-  const title = SECTIONS.find(x => x[0] === tab)[1]
+  const title = SECTIONS.find(x => x[0] === tab)?.[1] || 'Settings'
   return (
     <section className="settings">
       <div className="settings-nav card" role="navigation" aria-label="Settings sections">
@@ -195,6 +196,7 @@ export function Settings({ query = '' }) {
         {tab === 'reports' && s && <WeeklyReport v={s.weekly_report} onSaved={saved} />}
         {tab === 'sales' && s && <CommissionDefaults v={s.commission} onSaved={saved} />}
         {tab === 'permissions' && <RolesPermissions />}
+        {tab === 'modules' && <CompanyModules />}
         {KEYS[tab] && s && <>
           <p className="muted">Changes apply immediately and are recorded in the audit log.</p>
           {KEYS[tab].map(k => <SettingField key={k} k={k} v={s[k]} onSaved={saved} />)}
@@ -605,5 +607,53 @@ export function Audit() {
         </table>
       </div>
     </section>
+  )
+}
+
+
+function CompanyModules() {
+  const m = useMeta()
+  const { run, error, busy } = useAction()
+  const [msg, setMsg] = useState('')
+  const currentModules = m.me.modules || []
+
+  const toggle = (id, on) => {
+    let next
+    if (on) next = [...new Set([...currentModules, id])]
+    else next = currentModules.filter(x => x !== id)
+    if (!next.length) return alert('At least one module must remain enabled.')
+
+    run(async () => {
+      await api('/company/modules', { method: 'POST', body: { modules: next } })
+      setMsg('Company modules updated. Reloading navigation…')
+      m.reloadMeta()
+      setTimeout(() => location.reload(), 800)
+    })
+  }
+
+  return (
+    <div className="card">
+      <h3>Active Company Modules</h3>
+      <p className="muted">Turn modules on or off for this CRM workspace. If real estate is disabled, all leads, projects, plot listings, visits, and property sales are hidden.</p>
+      {msg && <p className="ok">{msg}</p>}
+      {error && <p className="error">{error}</p>}
+      <div className="grid" style={{ marginTop: 12 }}>
+        {MODULES.map(mod => (
+          <label key={mod.id} className="card row between" style={{ cursor: 'pointer', padding: 14 }}>
+            <div>
+              <b>{mod.name}</b>
+              <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>{mod.blurb}</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={currentModules.includes(mod.id)}
+              disabled={busy}
+              onChange={e => toggle(mod.id, e.target.checked)}
+              style={{ width: 20, height: 20 }}
+            />
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }

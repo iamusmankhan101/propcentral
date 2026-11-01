@@ -1418,6 +1418,20 @@ app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
   log(req, 'modules', 'user', acct.id, { modules: list })
   res.json({ id: acct.id, modules: list })
 })
+
+// Company admins can toggle modules for their own workspace directly from Settings › Company modules
+app.post('/api/company/modules', guard('settings'), (req, res) => {
+  if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
+  const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
+  if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}`)
+  const list = req.body.modules.filter(m => MODULE_IDS.includes(m))
+  if (!list.length) throw err(400, 'At least one module must remain enabled')
+
+  const targetId = req.user.owner_id ?? req.user.id
+  run('UPDATE users SET modules=? WHERE id=? OR owner_id=?', JSON.stringify(list), targetId, targetId)
+  log(req, 'modules', 'company', targetId, { modules: list })
+  res.json({ ok: true, modules: list })
+})
 app.get('/api/platform/dashboard', platformOnly, (_req, res) => {
   const mains = all("SELECT * FROM users WHERE role!='platform' AND owner_id IS NULL"), t = now(), soon = new Date(Date.now() + 3 * 864e5).toISOString()
   const trial = mains.filter(u => !u.paid_at && u.trial_ends_at && u.trial_ends_at >= t)
