@@ -84,28 +84,48 @@ test('an expired trial locks sign-in until an admin marks it paid', async t => {
   assert.equal(again.status, 200, 'marking it paid opens the door again')
 })
 
-test('the acting account plan caps users and branches', async t => {
+test('the acting account plan caps the whole company, not one branch', async t => {
   const base = await boot(t, portCap)
   const admin = await login(base, 'admin@propcentral.local')
+  const auth = { authorization: 'Bearer ' + admin }
   const me = (await (await get(base, '/meta', admin)).json()).me.id
-  const add = (email, branch_id = 1) => post(base, '/users',
-    { name: email.split('@')[0], email, role: 'agent', password: 'Passw0rd12345', branch_id }, { authorization: 'Bearer ' + admin })
+  const setPlan = plan => patch(base, `/users/${me}`, { plan }, admin)
+  // no branch_id on purpose: a seat outside every branch still counts
+  const add = email => post(base, '/users', { name: email.split('@')[0], email, role: 'agent', password: 'Passw0rd12345' }, auth)
 
-  assert.equal((await add('free1@example.com')).status, 200, 'no plan on the actor = the pre-billing account, never capped')
+  assert.equal((await add('seat1@example.com')).status, 200, 'no plan on the actor = the pre-billing account, never capped')
 
-  assert.equal((await patch(base, `/users/${me}`, { plan: 'solo' }, admin)).status, 200)
-  const tooMany = await add('free2@example.com')
-  assert.equal(tooMany.status, 400)
-  assert.match((await tooMany.json()).error, /covers 1 user\./)
+  assert.equal((await setPlan('solo')).status, 200)
+  const tooManySeats = await add('seat2@example.com')
+  assert.equal(tooManySeats.status, 400)
+  assert.match((await tooManySeats.json()).error, /covers 1 user\./)
 
-  const branch = await post(base, '/branches', { name: 'Faisalabad' }, { authorization: 'Bearer ' + admin })
-  assert.equal(branch.status, 400)
+  const branch = await post(base, '/branches', { name: 'Faisalabad' }, auth)
+  assert.equal(branch.status, 400, 'the seed branch already uses the Solo allowance')
   assert.match((await branch.json()).error, /covers 1 branch\./)
 
-  assert.equal((await patch(base, `/users/${me}`, { plan: 'starter' }, admin)).status, 200)
-  assert.match((await (await add('free2@example.com')).json()).error, /covers 5 users\./, 'the wording pluralises above one seat')
+  // the seed project takes one of Solo's three, so the fourth is refused
+  const named = i => post(base, '/projects', { name: `Cap Test ${i} ${Date.now()}`, city: 'Lahore', kind: 'land', marla_sqft: 225 }, auth)
+  assert.equal((await named(2)).status, 200)
+  assert.equal((await named(3)).status, 200)
+  const overProject = await named(4)
+  assert.equal(overProject.status, 400, 'the third new project is one past the plan')
+  assert.match((await overProject.json()).error, /covers 3 projects\./)
 
-  assert.equal((await patch(base, `/users/${me}`, { plan: 'agency' }, admin)).status, 200)
-  assert.equal((await add('free2@example.com')).status, 200, 'Agency lifts the user cap')
-  assert.equal((await post(base, '/branches', { name: 'Faisalabad' }, { authorization: 'Bearer ' + admin })).status, 200, 'and the branch cap')
+  // a batch is measured against the ceiling before any row is written
+  const units = n => post(base, '/projects/1/units', { units: Array.from({ length: n }, (_, i) =>
+    ({ block: 'C', unit_no: 'BULK' + i, unit_type: 'Plot', size: 5, uom: 'marla' })) }, auth)
+  assert.match((await (await units(270)).json()).error, /covers 300 units\./, 'the seed holds 40 of Solo 300 units')
+  assert.equal((await units(250)).status, 200, 'the room that is left still fits')
+
+  const importRows = n => post(base, '/leads/import', { commit: true, rows: Array.from({ length: n }, (_, i) =>
+    ({ name: `Bulk ${i}`, phone: '03' + String(70000000 + i), source: 'Website' })) }, auth)
+  assert.match((await (await importRows(1000)).json()).error, /covers 1,000 leads\./, 'a batch over the ceiling is refused whole')
+  assert.equal((await importRows(2)).status, 200, 'under the ceiling the same call works')
+
+  assert.equal((await setPlan('agency')).status, 200)
+  assert.equal((await add('seat2@example.com')).status, 200, 'Agency lifts the seat cap')
+  assert.equal((await post(base, '/branches', { name: 'Faisalabad' }, auth)).status, 200, 'the branch cap')
+  assert.equal((await named(5)).status, 200, 'the project cap')
+  assert.equal((await units(300)).status, 200, 'and the inventory cap')
 })

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
-import { PLANS, planOf, planName, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const clean = v => v?.trim().replace(/^(['"])(.*)\1$/, '$2') || undefined
@@ -221,12 +221,26 @@ function pickPlan(id) {
 // Admins are never locked out either — same reason the permission matrix keeps settings/manage_users off the table.
 const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now() && u.role !== 'admin'
 const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Date.now()) / 864e5))
-const SINGULAR = { users: 'user', branches: 'branch' }
-const countLabel = (n, what) => `${n} ${SINGULAR[what]}${n === 1 ? '' : SINGULAR[what] === 'branch' ? 'es' : 's'}`
-function planCap(actor, what, count) { // count = how many there would be after this change
+// A plan is sold per company, so every cap counts the whole database: no branch or project gets its own allowance.
+const COUNT = {
+  users: () => one('SELECT count(*) n FROM users WHERE active=1').n,
+  branches: () => one('SELECT count(*) n FROM branches').n,
+  projects: () => one('SELECT count(*) n FROM projects').n,
+  units: () => one('SELECT count(*) n FROM units').n,
+  leads: () => one(`SELECT count(*) n FROM leads l WHERE ${OPEN}`, closedJson()).n,
+}
+function planCap(actor, what, add = 1) {
   const p = planOf(actor.plan)
-  if (!p || p[what] == null || count <= p[what]) return
-  throw err(400, `Your ${p.name} plan covers ${countLabel(p[what], what)}. Upgrade the plan or free one up first.`)
+  if (!p || p[what] == null || COUNT[what]() + add <= p[what]) return
+  throw err(400, `Your ${p.name} plan covers ${limitLabel(p, what)}. Upgrade the plan or free one up first.`)
+}
+// Website forms and the Facebook webhook carry no signed-in user, so the company's plan is read off its admin account.
+const systemAccount = () => one(`SELECT plan FROM users WHERE role='admin' AND active=1 AND plan IS NOT NULL
+  ORDER BY (paid_at IS NOT NULL) DESC, id LIMIT 1`) || {}
+// A refused capture must not be silent: the webhook still answers Meta with 200, so tell someone who can upgrade
+function notifyPlanBlock(message, where) {
+  for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
+    notify(u.id, `Plan limit hit (${where}): ${message}`, null)
 }
 
 // ---------- auth throttling ----------
@@ -646,10 +660,16 @@ app.post('/api/webhooks/facebook', async (req, res) => {
   const ids = []
   for (const e of req.body.entry || []) for (const c of e.changes || [])
     if (c.field === 'leadgen') ids.push(c.value?.leadgen_id)
-  await Promise.all(ids.map(id => importFbLead(id).then(() => fbNote({ t: now(), id, ok: true }), e => fbNote({ t: now(), id, ok: false, err: e.message }))))
+  await Promise.all(ids.map(id => importFbLead(id).then(
+    () => fbNote({ t: now(), id, ok: true }),
+    e => {
+      fbNote({ t: now(), id, ok: false, err: e.message })
+      if (/plan covers/.test(e.message)) notifyPlanBlock(e.message, 'Facebook lead ' + id)
+    })))
   res.sendStatus(200)
 })
 async function importFbLead(id) {
+  planCap(systemAccount(), 'leads')
   const fields = 'field_data,campaign_id,campaign_name,adset_name,ad_name,form_id,platform,created_time'
   const d = await graph(id, { fields, access_token: fbConf().page_token })
   const fd = Object.fromEntries((d.field_data || []).map(f => [f.name, f.values?.[0]]))
@@ -675,6 +695,7 @@ app.post('/api/inbound', (req, res) => {
   // A leaked key must not be able to flood the pipeline; hash it so the raw secret never lands in the DB
   const keyHash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)
   rateHit(rateKey('inbound', keyHash), 600, 3600e3, 'Website form limit reached')
+  planCap(systemAccount(), 'leads')
   res.json(createLead({ ...req.body, source: req.body.source || 'Website' }))
 })
 
@@ -927,6 +948,7 @@ app.get('/api/exports/:id/download', (req, res) => {
 
 app.post('/api/leads', (req, res) => {
   const u = req.user
+  planCap(u, 'leads')
   // Agents' manual entries stay with them; managers/receptionist may pick an agent (walk-in M2.7) or leave to rules
   const agentId = u.role === 'agent' ? u.id : req.body.agent_id || null
   const r = createLead(req.body, u.id, agentId)
@@ -936,6 +958,7 @@ app.post('/api/leads', (req, res) => {
 
 app.post('/api/leads/import', guard('import'), (req, res) => {
   const rows = req.body.rows || []
+  if (req.body.commit) planCap(req.user, 'leads', rows.length)
   const report = rows.map((row, i) => {
     try {
       if (!req.body.commit) {
@@ -1212,8 +1235,7 @@ app.post('/api/users', guard('manage_users'), (req, res) => {
   const problem = L.passwordProblem(pass)
   if (problem) throw err(400, problem)
   f.email = f.email.toLowerCase()
-  const branchId = f.branch_id ?? req.user.branch_id
-  planCap(req.user, 'users', (branchId ? one('SELECT count(*) n FROM users WHERE branch_id=? AND active=1', branchId).n : 0) + 1)
+  planCap(req.user, 'users')
   const plan = req.body.plan ? pickPlan(req.body.plan) : null
   const cols = [...Object.keys(f), 'pass', ...(plan ? ['plan', 'trial_ends_at'] : [])]
   const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass),
@@ -1265,15 +1287,15 @@ app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {
 app.post('/api/users/:id/activate', guard('manage_users'), (req, res) => {
   const target = one('SELECT * FROM users WHERE id=?', req.params.id)
   if (!target) throw err(404, 'User not found')
-  // bringing someone back uses up a seat on the admin's plan too
-  planCap(req.user, 'users', (target.branch_id ? one('SELECT count(*) n FROM users WHERE branch_id=? AND active=1', target.branch_id).n : 0) + 1)
+  // bringing someone back uses up a seat on the admin's plan too (activating an active account adds nothing)
+  if (!target.active) planCap(req.user, 'users')
   run('UPDATE users SET active=1, available=1 WHERE id=?', req.params.id)
   log(req, 'activate', 'user', +req.params.id)
   res.json({ ok: true })
 })
 app.post('/api/branches', guard('manage_users'), (req, res) => {
   if (!req.body.name) throw err(400, 'Name required')
-  planCap(req.user, 'branches', one('SELECT count(*) n FROM branches').n + 1)
+  planCap(req.user, 'branches')
   res.json({ id: run('INSERT INTO branches(name,city) VALUES(?,?)', req.body.name, req.body.city ?? null).lastInsertRowid })
 })
 app.post('/api/teams', guard('manage_users'), (req, res) => {
@@ -1341,6 +1363,7 @@ app.post('/api/projects', guard('manage_inventory'), (req, res) => {
   if (!f.name?.trim()) throw err(400, 'Name is required')
   if (one('SELECT 1 FROM projects WHERE name=?', f.name.trim())) throw err(400, 'A project with this name exists')
   f.name = f.name.trim()
+  planCap(req.user, 'projects')
   const cols = [...Object.keys(f), 'created_at']
   const id = run(`INSERT INTO projects(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), now()).lastInsertRowid
   log(req, 'create', 'project', id, f)
@@ -1438,6 +1461,7 @@ app.post('/api/projects/:id/units', guard('manage_inventory'), (req, res) => {
   const p = projectRow(req.params.id)
   const rows = req.body.units || []
   if (!rows.length || rows.length > 2000) throw err(400, 'Send 1 to 2000 units')
+  planCap(req.user, 'units', rows.length) // all-or-nothing: a half-imported block is worse than a refused batch
   const added = tx(() => rows.reduce((n, r) => {
     const f = pick(r, UNIT_FIELDS)
     if (!String(f.unit_no ?? '').trim()) throw err(400, 'Every unit needs a number')
@@ -1478,6 +1502,7 @@ app.post('/api/projects/:id/plot', guard('manage_inventory'), (req, res) => {
   if (!f.unit_no) throw err(400, 'Plot number is required')
   if (f.uom && !UOMS.includes(f.uom)) throw err(400, 'Unknown unit of measure')
   if (f.size != null && !(+f.size > 0)) throw err(400, 'Size must be positive')
+  planCap(req.user, 'units')
   const cols = ['project_id', ...Object.keys(f), 'updated_at']
   const id = uniqueUnit(() => run(`INSERT INTO units(${cols}) VALUES(${cols.map(() => '?')})`, p.id, ...Object.values(f), now()).lastInsertRowid)
   unitHistory(id, req.user.id, null, 'Available', null, 'Plot added')
@@ -1587,6 +1612,7 @@ app.post('/api/projects/:id/categories', guard('manage_inventory'), (req, res) =
   if (!Number.isInteger(count) || count < 0 || count > 5000) throw err(400, 'Number of plots must be 0 to 5000')
   if (!count && !price) throw err(400, 'Give a price, plots, or both')
   if (price && !can(req.user, 'edit_pricing')) throw err(403, 'Only pricing managers can set prices')
+  planCap(req.user, 'units', count)
   const result = tx(() => {
     if (price) addPrice(p, { unit_type, rate: price, per: 'plot', size, uom, effective_from: req.body.effective_from || now().slice(0, 10), note: req.body.note }, req.user.id)
     const taken = takenIn(p.id, block)

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt } from './api.js'
 import { Select, When } from './Leads.jsx'
-import { PLANS } from '../shared/plans.js'
+import { PLANS, limitLine } from '../shared/plans.js'
 import Icon from './Icon.jsx'
 
 
@@ -35,7 +35,7 @@ export function Users() {
   return (
     <section>
       <h2>Users</h2>
-      <p className="muted">New sign-ups choose a plan and get a 7-day free trial; when it runs out they cannot sign in until someone with <b>Manage users</b> marks the plan paid. The plan on the account doing the adding sets the limits: {PLANS.map(p => `${p.name} ${p.users ?? 'unlimited'} users / ${p.branches ?? 'unlimited'} branches`).join(' · ')}.</p>
+      <p className="muted">New sign-ups choose a plan and get a 7-day free trial; when it runs out they cannot sign in until someone with <b>Manage users</b> marks the plan paid. Limits count the whole company, and the plan on the account doing the adding sets them: {PLANS.map(p => `${p.name} — ${limitLine(p)}`).join(' · ')}.</p>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error" onClick={() => setError('')}>{error}</p>}
       {resetLink && <div className="card row between reset-link">

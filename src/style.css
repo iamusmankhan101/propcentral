@@ -279,14 +279,18 @@ option { color: var(--text); font-size: 14px; }
 .auth-switch a { color: var(--s1); font-weight: 700; text-decoration: none; }
 .auth-switch a:hover { text-decoration: underline; }
 
-/* Sign-up plan picker: the selected card takes the brand border */
-.plan-picker { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 8px; }
+/* Sign-up plan picker: each card is a left-aligned stack (radio + name + tag / price / limits);
+   the selected card takes the brand border */
+.plan-picker { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; align-items: stretch; }
 .plan-picker legend { font-weight: 700; padding: 0; margin-bottom: 6px; }
-.plan-picker label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 10px 12px; border: 2px solid #e3e4e8; border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+.plan-picker label { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: 2px 8px; min-width: 0; padding: 10px 12px; border: 2px solid #e3e4e8; border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text); }
 .plan-picker label:has(input:checked) { border-color: var(--s1); background: #fff8f2; }
 .plan-picker label:has(input:focus-visible) { outline: 2px solid var(--s1); outline-offset: 2px; }
-.plan-picker .plan-price { margin-left: auto; font-weight: 700; }
-.plan-picker label > small { flex: 1 1 100%; margin-left: 22px; }
+.plan-picker label > input { margin: 0; flex: none; }
+.plan-picker label > b { font-weight: 800; min-width: 0; }
+.plan-picker .plan-price { flex: 1 0 100%; margin: 2px 0 0; font-weight: 700; }
+.plan-picker .plan-price small { font-weight: 600; color: var(--muted); }
+.plan-picker label > small { flex: 1 0 100%; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .plan-picker .tag { font-style: normal; font-size: 11px; font-weight: 700; background: var(--s1); color: #fff; border-radius: 999px; padding: 2px 7px; }
 .plan-picker > small { grid-column: 1 / -1; }
 

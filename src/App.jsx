@@ -16,7 +16,7 @@ import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
-import { PLANS, planName, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, planName, limitLine, SUPPORT_WHATSAPP } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
 
@@ -73,7 +73,7 @@ function Login() {
                 <input type="radio" name="plan" value={p.id} defaultChecked={p.id === 'solo'} />
                 <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
                 <span className="plan-price">PKR {p.monthly.toLocaleString('en-PK')}<small>/mo</small></span>
-                <small className="muted">{p.users ? `${p.users} user${p.users === 1 ? '' : 's'}` : 'Unlimited users'} · {p.branches ? `${p.branches} branch${p.branches === 1 ? '' : 'es'}` : 'unlimited branches'}</small>
+                <small className="muted">{limitLine(p)}</small>
               </label>
             ))}
             <small className="muted">7-day free trial on every plan. No card.</small>
