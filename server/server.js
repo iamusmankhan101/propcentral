@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
-import { PLANS, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const clean = v => v?.trim().replace(/^(['"])(.*)\1$/, '$2') || undefined
@@ -15,7 +15,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '9'
+const SCHEMA_VERSION = '10'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'trial_ends_at', 'TEXT')
     addColumn('users', 'owner_id', 'INTEGER') // NULL = main account (a sign-up); else the main account this user was added under
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
+    addColumn('users', 'modules', 'TEXT') // JSON array of product modules this company can use; NULL = property only
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
@@ -199,6 +200,8 @@ const DEFAULTS = {
     payments: ['accounts', 'sales_head', 'admin'],
     request_export: ['branch_manager'],
     properties: ['inventory', 'accounts', 'sales_head', 'admin'],
+    // the student consultancy module. Only meaningful for companies the platform has switched Edu on for
+    edu: ['agent', ...MGMT, 'owner'],
   },
 }
 // Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
@@ -255,6 +258,18 @@ const systemAccount = () => one(`SELECT plan FROM users WHERE role='admin' AND a
 function notifyPlanBlock(message, where) {
   for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
     notify(u.id, `Plan limit hit (${where}): ${message}`, null)
+}
+
+// ---------- product modules ----------
+// The platform owner switches a module on for a whole company; the setting lives on that company's main
+// account so every user under it inherits it, and moving a sub-account between companies needs no copy.
+// Property CRM is the base product and is always on, so a NULL column (every account predating modules)
+// resolves to it alone. `edu` in the permission matrix then decides which staff inside see it.
+const MODULE_IDS = MODULES.map(m => m.id)
+const modulesOf = u => {
+  const main = u.owner_id ? one('SELECT modules FROM users WHERE id=?', u.owner_id) : u
+  const extra = parseModules(main?.modules).filter(id => MODULE_IDS.includes(id) && id !== 'property')
+  return ['property', ...extra]
 }
 
 // ---------- auth throttling ----------
@@ -840,7 +855,7 @@ app.get('/api/meta', (req, res) => {
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
   res.json({
     me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
-      plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at,
+      plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
@@ -1243,7 +1258,7 @@ const checkRole = (f, actor) => {
 }
 const checkRate = f => { if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%') }
 app.get('/api/users', guard('manage_users'), (_req, res) => res.json(all(`SELECT u.id, ${USER_FIELDS.map(f => 'u.' + f)}, u.active, u.totp_on,
-  u.plan, u.trial_ends_at, u.paid_at,
+  u.plan, u.trial_ends_at, u.paid_at, u.owner_id, u.modules,
   (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u ORDER BY u.active DESC, u.name`, closedJson())))
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
@@ -1298,8 +1313,24 @@ app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
 const platformOnly = (req, _res, next) => (req.user.role === 'platform' ? next() : next(err(403, 'Platform admins only')))
 // Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
 app.get('/api/platform/accounts', platformOnly, (_req, res) => {
-  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id FROM users WHERE role!='platform' ORDER BY active DESC, name`)
+  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules FROM users WHERE role!='platform' ORDER BY active DESC, name`)
   res.json(us.filter(u => u.owner_id == null).map(m => ({ ...m, subs: us.filter(u => u.owner_id === m.id) })))
+})
+// Which product modules a company can use. Set on its main account so everyone under it inherits the same
+// navigation; who inside the company actually sees Edu is then the permission matrix's job.
+app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
+  const acct = one('SELECT id, name, owner_id, modules FROM users WHERE id=?', +req.params.id)
+  if (!acct) throw err(404, 'Account not found')
+  if (acct.owner_id != null) throw err(400, 'Modules are switched on the main account, not on a user added under it')
+  if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
+  const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
+  if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}. Choose from ${MODULE_IDS.join(', ')}`)
+  const list = ['property', ...req.body.modules.filter(m => m !== 'property')] // the base CRM never switches off
+  run('UPDATE users SET modules=? WHERE id=?', JSON.stringify(list), acct.id)
+  for (const u of all("SELECT id FROM users WHERE (id=? OR owner_id=?) AND role='admin' AND active=1", acct.id, acct.id))
+    notify(u.id, list.includes('edu') ? 'The Student Consultancy module is now enabled for your account.' : 'The Student Consultancy module was disabled for your account.', null)
+  log(req, 'modules', 'user', acct.id, { modules: list })
+  res.json({ id: acct.id, modules: list })
 })
 app.get('/api/platform/dashboard', platformOnly, (_req, res) => {
   const mains = all("SELECT * FROM users WHERE role!='platform' AND owner_id IS NULL"), t = now(), soon = new Date(Date.now() + 3 * 864e5).toISOString()

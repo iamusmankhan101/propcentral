@@ -77,3 +77,46 @@ test('platform panel: guarded, hierarchy, payment request approval, backup', asy
   assert.equal(bk.status, 200)
   assert.ok((await bk.arrayBuffer()).byteLength > 1000)
 })
+
+test('the platform switches product modules on for one company at a time', async t => {
+  const base = await boot(t)
+  const boss = await login(base, PLATFORM.email, PLATFORM.password)
+  const otherAdmin = await login(base, 'admin@propcentral.local', 'password123')
+
+  const reg = await fetch(base + '/register', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Skyline Docs', email: 'skyline@example.com', password: 'Passw0rd12345', plan: 'starter' }) })
+  assert.equal(reg.status, 200)
+  const accounts = async () => (await call(base, 'GET', '/platform/accounts', boss)).json()
+  const co = (await accounts()).find(a => a.email === 'skyline@example.com')
+  await call(base, 'POST', `/users/${co.id}/activate`, boss)
+  await call(base, 'PATCH', `/users/${co.id}`, boss, { role: 'admin' })
+  const coTok = await login(base, 'skyline@example.com', 'Passw0rd12345')
+
+  const modules = async tok => (await (await call(base, 'GET', '/meta', tok)).json()).me.modules
+  assert.deepEqual(await modules(coTok), ['property'], 'a new company gets the base CRM only')
+
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, otherAdmin, { modules: ['edu'] })).status, 403, 'a company admin cannot switch on its own module')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: 'edu' })).status, 400, 'not a list')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['eduction'] })).status, 400, 'unknown module')
+
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['edu'] })).status, 200)
+  assert.deepEqual(await modules(coTok), ['property', 'edu'], 'the base CRM stays on whatever the client sends')
+
+  const sub = await call(base, 'POST', '/users', coTok, { name: 'Counselor', email: 'counselor@example.com', role: 'agent', password: 'Passw0rd12345' })
+  assert.equal(sub.status, 200)
+  const subId = (await sub.json()).id
+  await call(base, 'POST', `/users/${subId}/activate`, coTok)
+  const subTok = await login(base, 'counselor@example.com', 'Passw0rd12345')
+  assert.deepEqual(await modules(subTok), ['property', 'edu'], 'a user added under the company inherits it')
+
+  assert.equal((await call(base, 'POST', `/platform/accounts/${subId}/modules`, boss, { modules: ['edu'] })).status, 400, 'a sub-account has no switch of its own')
+
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: [] })).status, 200)
+  assert.deepEqual(await modules(subTok), ['property'], 'switching off takes it from the whole company at once')
+  assert.deepEqual(await modules(otherAdmin), ['property'], 'and only that company')
+
+  // inside a company that has the module, the permission matrix decides who sees it
+  const { permissions } = await (await call(base, 'GET', '/roles', otherAdmin)).json()
+  assert.ok(permissions.edu.includes('agent') && permissions.edu.includes('admin'), 'counselors and admins get the Edu nav')
+  assert.ok(!permissions.edu.includes('inventory') && !permissions.edu.includes('platform'), 'and the roles that counsel nobody do not')
+})

@@ -22,3 +22,18 @@ export const limitLabel = (plan, what) => {
 }
 // "1 user · 1 branch · 3 projects · 300 units · 1,000 leads", used by the sign-up cards and Users
 export const limitLine = plan => PLAN_LIMITS.map(w => limitLabel(plan, w)).join(' · ')
+
+// Product modules. `property` is the base CRM and every company keeps it; the platform owner switches the
+// others on per company. Edu is sold inside every plan, so it costs nothing — it is gated to keep the
+// navigation honest, not to upsell. `perm` is the role permission that decides which staff inside the
+// company actually see it once the company has it.
+export const MODULES = [
+  { id: 'property', name: 'Property CRM', blurb: 'Leads, projects, inventory, allotments and collections.' },
+  { id: 'edu', name: 'Student Consultancy', blurb: 'Student leads, universities and courses, applications, documents, visas and appointments.', perm: 'edu' },
+]
+
+export const moduleOf = id => MODULES.find(m => m.id === id) || null
+// users.modules is a JSON array; a hand-edited or legacy value must not take a request or the UI down
+export const parseModules = raw => {
+  try { const v = JSON.parse(raw ?? '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
+}

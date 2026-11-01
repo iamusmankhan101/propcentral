@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt } from './api.js'
 import { Select, When } from './Leads.jsx'
-import { PLANS, limitLine } from '../shared/plans.js'
+import { PLANS, MODULES, parseModules, limitLine } from '../shared/plans.js'
 import Icon from './Icon.jsx'
 
 
@@ -12,6 +12,7 @@ export function Users() {
   const [msg, setMsg] = useState('')
   const [resetLink, setResetLink] = useState('')
   const teams = m.teams.map(t => [t.id, t.name]), branches = m.branches.map(b => [b.id, b.name])
+  const isPlatform = m.me.role === 'platform'
   const done = text => { setMsg(text); reload(); m.reloadMeta() }
 
   const create = e => {
@@ -20,6 +21,12 @@ export function Users() {
     run(async () => { await api('/users', { body }); form.reset(); done('User created') })
   }
   const patch = (u, body) => run(async () => { await api('/users/' + u.id, { method: 'PATCH', body }); done('Saved') })
+  // The platform switches a product module on for a whole company; the setting lives on its main account
+  const setModule = (u, id, on) => run(async () => {
+    const other = parseModules(u.modules).filter(x => x !== id && x !== 'property')
+    await api(`/platform/accounts/${u.id}/modules`, { body: { modules: on ? [...other, id] : other } })
+    done(`${u.name}: ${MODULES.find(x => x.id === id)?.name ?? id} ${on ? 'enabled' : 'disabled'}`)
+  })
   const deactivate = u => run(async () => {
     const r = await api(`/users/${u.id}/deactivate`, { body: {} })
     done(`${u.name} deactivated. ${r.reassigned} of ${r.open} open leads reassigned.`)
@@ -45,7 +52,7 @@ export function Users() {
       </div>}
       <div className="card scroll">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Plan</th><th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Plan</th>{isPlatform && <th>Modules</th>}<th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
           <tbody>{users?.map(u => (
             <tr key={u.id} className={u.active ? '' : 'muted'}>
               <td>{u.name}<small><br />{u.phone}</small></td><td>{u.email}</td>
@@ -57,6 +64,11 @@ export function Users() {
                 {u.paid_at ? <small className="ok"><br />Paid {fmt(u.paid_at).slice(0, 10)}</small>
                   : u.trial_ends_at ? <small className={u.trial_ends_at < new Date().toISOString() ? 'warn' : 'muted'}><br />Trial to {fmt(u.trial_ends_at).slice(0, 10)}</small> : null}
               </td>
+              {isPlatform && <td>{u.owner_id == null
+                ? MODULES.filter(x => x.id !== 'property').map(x => <label key={x.id} className="module-toggle" title={x.blurb}>
+                  <input type="checkbox" checked={parseModules(u.modules).includes(x.id)} disabled={busy} onChange={e => setModule(u, x.id, e.target.checked)} />{x.name}
+                </label>)
+                : <small className="muted" title="Set on the main account this user belongs to">inherits</small>}</td>}
               <td>{u.open_leads}</td>
               <td><input type="number" className="narrow" defaultValue={u.max_open} onBlur={e => +e.target.value !== u.max_open && patch(u, { max_open: +e.target.value })} /></td>
               <td><input type="number" className="narrow" min="0" max="20" step="0.1" placeholder={`${m.settings.commission?.agent_pct ?? 1} (default)`} defaultValue={u.commission_rate ?? ''}
@@ -416,6 +428,7 @@ const PERMS = [
   ['import', 'Import leads'], ['export', 'Export leads'], ['request_export', 'Request an export', 'Needs approval from someone who can export'],
   ['delete', 'Delete leads'], ['manage_inventory', 'Manage projects, units & media'], ['edit_pricing', 'Edit prices'],
   ['unit_status', 'Change unit status & allot plots'], ['payments', 'Payments, commissions & dealers'],
+  ['edu', 'Student Consultancy', 'Only shows the Edu nav when the platform has switched the module on for this company'],
   ['settings', 'Change company settings'], ['manage_users', 'Manage users'], ['audit', 'View audit log'],
 ]
 const LOCKED = ['settings', 'manage_users'] // admins always keep these, so nobody locks themselves out

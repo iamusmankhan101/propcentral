@@ -281,6 +281,7 @@ option { color: var(--text); font-size: 14px; }
 
 /* Sign-up plan picker: each card is a left-aligned stack (radio + name + tag / price / limits);
    the selected card takes the brand border */
+.module-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; cursor: pointer; }
 .plan-picker { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; align-items: stretch; }
 .plan-picker legend { font-weight: 700; padding: 0; margin-bottom: 6px; }
 .plan-picker label { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: 2px 8px; min-width: 0; padding: 10px 12px; border: 2px solid #e3e4e8; border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text); }
