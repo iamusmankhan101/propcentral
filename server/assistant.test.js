@@ -80,6 +80,20 @@ test('assistant answers through a scoped tool call', async t => {
   assert.ok(summary.period.from && summary.period.to, 'period is echoed back')
 })
 
+test('a provider that never settles still answers instead of erroring', async t => {
+  let emptyOnce = false
+  const stub = await groqStub(t, () => {
+    if (!emptyOnce) { emptyOnce = true; return { choices: [] } } // first reply: nothing at all
+    return stub.calls.length > 5 ? final('Stopped and summarized.') : toolCall('sales_summary')
+  })
+  const base = await boot(t, { GROQ_API_KEY: 'test-key', GROQ_BASE_URL: stub.url })
+  const admin = await login(base, 'admin@propcentral.local')
+  const r = await ask(base, admin, 'compare every agent for the whole year')
+  assert.equal(r.status, 200, 'tool-calling loops end in an answer, not a 502')
+  assert.equal((await r.json()).reply, 'Stopped and summarized.')
+  assert.equal(stub.calls.at(-1).tools, undefined, 'the closing call is made without tools')
+})
+
 test('agents only see their own numbers in assistant tools', async t => {
   const stub = await groqStub(t, n => (n % 2 === 1 ? toolCall('sales_summary') : final('ok')))
   const base = await boot(t, { GROQ_API_KEY: 'test-key', GROQ_BASE_URL: stub.url })

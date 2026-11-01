@@ -2014,17 +2014,19 @@ app.post('/api/assistant', async (req, res) => {
     ...history.filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string').map(m => ({ role: m.role, content: m.content.slice(0, 4000) })),
   ]
   if (!msgs.some(m => m.role === 'user')) throw err(400, 'Ask a question first')
-  for (let round = 0; round < 5; round++) {
-    const r = await fetch(`${GROQ_URL()}/chat/completions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', messages: msgs, tools: ASSISTANT_SCHEMAS, temperature: 0.2 }),
-    })
+  const ask = withTools => fetch(`${GROQ_URL()}/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', messages: msgs, temperature: 0.2, ...(withTools ? { tools: ASSISTANT_SCHEMAS } : {}) }),
+  }).then(async r => {
     const d = await r.json().catch(() => ({}))
     if (!r.ok) throw err(502, `Assistant provider error: ${d.error?.message || r.statusText}`)
-    const msg = d.choices?.[0]?.message
-    if (!msg) throw err(502, 'Assistant returned no answer')
-    if (!msg.tool_calls?.length) return res.json({ reply: msg.content || 'No answer.', usage: d.usage?.total_tokens ?? null })
+    return d.choices?.[0]?.message
+  })
+  for (let round = 0; round < 5; round++) {
+    const msg = await ask(true)
+    if (!msg) continue // provider hiccup: fall through to the no-tools answer below
+    if (!msg.tool_calls?.length) return res.json({ reply: msg.content || 'No answer.', usage: null })
     msgs.push(msg)
     for (const call of msg.tool_calls) {
       const fn = fns[call.function?.name]
@@ -2038,7 +2040,9 @@ app.post('/api/assistant', async (req, res) => {
       msgs.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
     }
   }
-  throw err(502, 'The assistant took too many steps to answer. Rephrase the question.')
+  msgs.push({ role: 'user', content: 'Answer in your own words now, from the tool results above. Do not call any more tools.' })
+  const final = await ask(false).catch(() => null)
+  res.json({ reply: final?.content || 'The assistant could not turn that into an answer. Try naming a period, an agent or a lead.' })
 })
 
 // ---- Settings › Website forms: the key for POST /api/inbound ----
