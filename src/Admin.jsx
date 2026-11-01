@@ -287,6 +287,9 @@ function Facebook() {
           <p className="muted">{connected
             ? <>Page <b>{s.page_name}</b> since {fmt(s.connected_at)} · {s.last_lead.n ? `${s.last_lead.n} leads, last ${fmt(s.last_lead.at)}` : 'no leads yet'}</>
             : 'New leads from your Facebook and Instagram ad forms arrive here automatically, with campaign, ad set and ad.'}</p>
+        {connected && <p className="muted">{!s.recent?.length
+          ? 'No webhook delivery from Facebook yet. If a test lead does not show up, Meta is not reaching this address.'
+          : <>Recent deliveries: {s.recent.map(r => r.ok ? `lead ${r.id} imported` : r.sig ? 'delivery rejected (wrong app secret)' : `lead ${r.id} failed: ${r.err}`).join(' · ')}</>}</p>}
         </div>
         {connected && <div className="row">
           <button className="ghost danger" onClick={disconnect} disabled={busy}>Disconnect</button>

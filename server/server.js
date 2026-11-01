@@ -583,6 +583,10 @@ app.get('/api/cron/tick', (req, res) => {
 // Facebook settings come from Settings › Facebook (stored in the DB); .env values are the fallback
 // ponytail: the app secret and page token sit in the settings table in plain text like the rest of the DB; encrypt them if the DB file ever leaves the server
 const fbConf = () => ({ verify_token: process.env.FB_VERIFY_TOKEN, app_secret: process.env.FB_APP_SECRET, page_token: process.env.FB_PAGE_TOKEN, ...S('facebook') })
+// The webhook answers 200 before importing, so a failed import is otherwise invisible: keep the last
+// deliveries in the settings row and show them in Settings › Facebook.
+const fbNote = ev => run(`INSERT INTO settings VALUES('fb_log',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+  JSON.stringify([...(S('fb_log') || []), ev].slice(-20)))
 const GRAPH = process.env.FB_GRAPH_URL || 'https://graph.facebook.com/v21.0' // override only to test against a fake Graph API
 async function graph(path, params = {}, method = 'GET') {
   let r
@@ -600,10 +604,13 @@ app.post('/api/webhooks/facebook', (req, res) => {
   const secret = fbConf().app_secret
   if (!secret) throw err(503, 'Facebook is not connected (Settings › Facebook)')
   const sig = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || '').digest('hex')
-  if (!safeEqual(req.headers['x-hub-signature-256'], sig)) return res.sendStatus(401)
+  if (!safeEqual(req.headers['x-hub-signature-256'], sig)) { fbNote({ t: now(), sig: 'rejected' }); return res.sendStatus(401) }
   res.sendStatus(200)
   for (const e of req.body.entry || []) for (const c of e.changes || [])
-    if (c.field === 'leadgen') importFbLead(c.value.leadgen_id).catch(e => console.error('FB lead import failed', c.value.leadgen_id, e.message))
+    if (c.field === 'leadgen') {
+      const id = c.value?.leadgen_id
+      importFbLead(id).then(() => fbNote({ t: now(), id, ok: true }), e => fbNote({ t: now(), id, ok: false, err: e.message }))
+    }
 })
 async function importFbLead(id) {
   const fields = 'field_data,campaign_name,adset_name,ad_name,form_id,platform,created_time'
@@ -1896,6 +1903,7 @@ app.get('/api/facebook', adminOnly, (_req, res) => {
     page_id: c.page_id ?? null, page_name: c.page_name ?? null, connected_at: c.connected_at ?? null, callback_url: c.callback_url ?? null,
     app_secret: mask(c.app_secret), page_token: mask(c.page_token),
     last_lead: one(`SELECT max(created_at) at, count(*) n FROM leads WHERE ext_id LIKE 'fb:%'`),
+    recent: (S('fb_log') || []).slice(-8).reverse(),
   })
 })
 app.post('/api/facebook/connect', adminOnly, async (req, res) => {
@@ -1930,6 +1938,7 @@ app.post('/api/facebook/connect', adminOnly, async (req, res) => {
   } catch (e) { throw err(400, `${e.message} Check that ${base} is online and opens this CRM.`) }
   await graph(`${page.id}/subscribed_apps`, { subscribed_fields: 'leadgen', access_token: page.access_token }, 'POST')
   save({ connected_at: now() })
+  run(`DELETE FROM settings WHERE key='fb_log'`) // fresh delivery history for the new connection
   log(req, 'facebook_connect', 'setting', null, { page_id: page.id, page_name: page.name, app_id: appId })
   res.json({ ok: true, page_name: page.name })
 })
