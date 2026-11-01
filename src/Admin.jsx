@@ -300,7 +300,7 @@ function Facebook() {
         <form className="grid" onSubmit={connect}>
           <ol className="wide muted fb-steps">
             <li>At <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer">developers.facebook.com/apps</a> create an app (type <b>Business</b>), add the <b>Webhooks</b> product, and copy the <b>App secret</b> from App settings › Basic.</li>
-            <li>Open <a href="https://developers.facebook.com/tools/explorer" target="_blank" rel="noreferrer">Graph API Explorer</a>, pick your app, add the permissions <code>leads_retrieval</code>, <code>pages_show_list</code>, <code>pages_manage_metadata</code>, <code>pages_read_engagement</code>, click <b>Generate Access Token</b>, tick your Page, and copy the token.</li>
+            <li>Open <a href="https://developers.facebook.com/tools/explorer" target="_blank" rel="noreferrer">Graph API Explorer</a>, pick your app, add the permissions <code>leads_retrieval</code>, <code>pages_show_list</code>, <code>pages_manage_metadata</code>, <code>pages_read_engagement</code>, <code>ads_read</code>, <code>business_management</code> (ads_read lets the CRM list your active campaigns), click <b>Generate Access Token</b>, tick your Page, and copy the token.</li>
             <li>Paste both below. The CRM makes a permanent Page token, registers the webhook and subscribes the Page.</li>
           </ol>
           <label>App secret<input name="app_secret" type="password" autoComplete="off" placeholder={s.app_secret ? `saved ${s.app_secret} (leave empty to keep)` : ''} required={!s.app_secret} /></label>

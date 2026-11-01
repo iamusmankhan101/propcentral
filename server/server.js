@@ -12,7 +12,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '6'
+const SCHEMA_VERSION = '7'
 
 // A failed database init must not take the whole function down: /api/health reports the cause
 // and every other route answers 503 instead of a boot crash nobody can read.
@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'commission_rate', 'REAL')
     addColumn('overlays', 'clear_white', 'INTEGER DEFAULT 1') // show the plan's white background as see-through // agent's own commission %, empty = the default in settings
     addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
+    addColumn('leads', 'campaign_id', 'TEXT') // Meta campaign id, so leads match campaigns even if renamed
     addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
@@ -364,7 +365,7 @@ function autoAssign(leadId, { exclude = null, reason = 'Auto-assigned', quiet = 
 }
 
 // ---------- lead creation (M1.2, M1.3, M1.4) ----------
-const LEAD_FIELDS = ['source', 'campaign', 'adset', 'ad', 'form_id', 'referrer', 'city', 'lead_type', 'interest', 'property_type', 'budget_min', 'budget_max',
+const LEAD_FIELDS = ['source', 'campaign', 'campaign_id', 'adset', 'ad', 'form_id', 'referrer', 'city', 'lead_type', 'interest', 'property_type', 'budget_min', 'budget_max',
   'locations', 'payment_pref', 'project', 'remarks', 'tags', 'custom', 'dealer_id']
 const CONTACT_FIELDS = ['name', 'alt_phones', 'email', 'cnic']
 const pick = (o, keys) => Object.fromEntries(keys.filter(k => o[k] !== undefined).map(k => [k, o[k] === '' ? null : typeof o[k] === 'object' && o[k] ? JSON.stringify(o[k]) : o[k]]))
@@ -617,7 +618,7 @@ app.post('/api/webhooks/facebook', async (req, res) => {
   res.sendStatus(200)
 })
 async function importFbLead(id) {
-  const fields = 'field_data,campaign_name,adset_name,ad_name,form_id,platform,created_time'
+  const fields = 'field_data,campaign_id,campaign_name,adset_name,ad_name,form_id,platform,created_time'
   const d = await graph(id, { fields, access_token: fbConf().page_token })
   const fd = Object.fromEntries((d.field_data || []).map(f => [f.name, f.values?.[0]]))
   const rawPhone = fd.phone_number || fd.whatsapp_number || null
@@ -629,7 +630,7 @@ async function importFbLead(id) {
   ].filter(Boolean).join('; ') || null
   createLead({
     ext_id: 'fb:' + id, name: fd.full_name || fd.first_name || 'Facebook lead', phone, email: fd.email, city: fd.city,
-    source: d.platform === 'ig' ? 'Instagram' : 'Facebook', campaign: d.campaign_name, adset: d.adset_name, ad: d.ad_name, form_id: d.form_id,
+    source: d.platform === 'ig' ? 'Instagram' : 'Facebook', campaign: d.campaign_name, campaign_id: d.campaign_id, adset: d.adset_name, ad: d.ad_name, form_id: d.form_id,
     remarks,
   })
 }
@@ -796,6 +797,7 @@ function leadQuery(req) {
   if (q.status) add('l.status=?', q.status)
   if (q.source) add('l.source=?', q.source)
   if (q.project) add('l.project=?', q.project)
+  if (q.campaign) add('(l.campaign_id=? OR lower(l.campaign)=lower(?))', q.campaign, q.campaign)
   if (q.agent_id) add('l.agent_id=?', q.agent_id)
   if (q.q) add('(c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR l.project LIKE ?)', `%${q.q}%`, `%${L.normalizePhone(q.q) || q.q.replace(/\D/g, '').replace(/^0+/, '') || q.q}%`, `%${q.q}%`, `%${q.q}%`)
   const closed = closedJson()
@@ -820,6 +822,32 @@ app.get('/api/campaigns', (req, res) => {
   const rows = all(`SELECT l.campaign, l.form_id, l.source, l.project, l.status, l.created_at FROM leads l
     WHERE l.deleted=0 AND (l.campaign IS NOT NULL OR l.form_id IS NOT NULL) AND ${w}`, ...p)
   res.json({ rows: L.groupCampaigns(rows, S('closed_statuses')), page_name: S('facebook')?.page_name ?? null })
+})
+
+// Meta campaigns (needs the ads_read user token saved on connect), with CRM lead counts; cached 60s
+let metaCache
+app.get('/api/campaigns/meta', async (req, res) => {
+  const tok = S('facebook')?.user_token
+  if (!tok) return res.json({ connected: false, reason: 'Reconnect Facebook and tick the ads_read permission' })
+  if (metaCache?.tok !== tok || Date.now() - metaCache.at > 6e4) {
+    try {
+      const out = []
+      for (const a of (await graph('me/adaccounts', { fields: 'name,account_id,currency', access_token: tok, limit: 100 })).data || []) {
+        const camps = (await graph(`act_${a.account_id}/campaigns`, { fields: 'name,status,effective_status,objective,daily_budget,lifetime_budget,start_time', limit: 100, access_token: tok })).data || []
+        const spend = {}
+        try { for (const i of (await graph(`act_${a.account_id}/insights`, { level: 'campaign', fields: 'campaign_id,spend', date_preset: 'maximum', limit: 500, access_token: tok })).data || []) spend[i.campaign_id] = +i.spend } catch {}
+        out.push(...camps.map(c => ({ ...c, account: a.name, currency: a.currency, active: c.effective_status === 'ACTIVE', spend: spend[c.id] ?? null })))
+      }
+      metaCache = { tok, at: Date.now(), out }
+    } catch (e) { return res.json({ connected: true, error: e.message }) }
+  }
+  const [w, p] = scope(req.user)
+  const leads = all(`SELECT l.campaign, l.campaign_id, l.status FROM leads l WHERE l.deleted=0 AND (l.campaign IS NOT NULL OR l.campaign_id IS NOT NULL) AND ${w}`, ...p)
+  res.json({ connected: true, rows: metaCache.out.map(c => {
+    const mine = leads.filter(l => l.campaign_id ? l.campaign_id === c.id : l.campaign?.toLowerCase() === c.name.toLowerCase())
+    const won = mine.filter(l => l.status === 'Booked').length
+    return { ...c, leads: mine.length, won, conversion: mine.length ? Math.round((won / mine.length) * 100) : 0 }
+  }), known_names: metaCache.out.map(c => c.name.toLowerCase()) })
 })
 
 app.get('/api/leads/export', guard('export'), (req, res) => sendExport(req, res))
@@ -1935,9 +1963,10 @@ app.post('/api/facebook/connect', adminOnly, async (req, res) => {
   if (!info?.is_valid) throw err(400, 'That access token is not valid any more. Generate a new one.')
   const missing = ['leads_retrieval', 'pages_show_list', 'pages_manage_metadata'].filter(p => !(info.scopes || []).includes(p))
   if (info.type === 'USER' && missing.length) throw err(400, `The token is missing permissions: ${missing.join(', ')}. Tick them in Graph API Explorer and generate again.`)
-  let page
+  let page, userToken
   if (info.type === 'USER') { // swap for a long-lived user token: page tokens made from it never expire
     const long = (await graph('oauth/access_token', { grant_type: 'fb_exchange_token', client_id: appId, client_secret: secret, fb_exchange_token: token })).access_token
+    userToken = long
     const pages = (await graph('me/accounts', { fields: 'id,name,access_token', access_token: long })).data || []
     if (!pages.length) throw err(400, 'This Facebook account does not manage any Page (or the Page was not ticked when generating the token).')
     page = pages.find(p => p.id === b.page_id) || (pages.length === 1 && pages[0])
@@ -1949,7 +1978,7 @@ app.post('/api/facebook/connect', adminOnly, async (req, res) => {
   } else throw err(400, 'Use a user or Page access token from Graph API Explorer')
   const verify = fbConf().verify_token || crypto.randomBytes(16).toString('hex'), callback = base + '/api/webhooks/facebook'
   const save = extra => run(`INSERT INTO settings VALUES('facebook',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-    JSON.stringify({ verify_token: verify, app_secret: secret, page_token: page.access_token, page_id: page.id, page_name: page.name, app_id: appId, callback_url: callback, ...extra }))
+    JSON.stringify({ verify_token: verify, app_secret: secret, page_token: page.access_token, page_id: page.id, page_name: page.name, app_id: appId, callback_url: callback, user_token: userToken ?? fbConf().user_token, ...extra }))
   save({}) // saved first: Facebook calls our webhook to check the verify token while we subscribe
   try {
     await graph(`${appId}/subscriptions`, { object: 'page', callback_url: callback, verify_token: verify, fields: 'leadgen', include_values: 'true', access_token: appToken }, 'POST')
