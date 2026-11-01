@@ -278,6 +278,21 @@ option { color: var(--text); font-size: 14px; }
 .auth-switch { margin: 2px 0 0; text-align: center; }
 .auth-switch a { color: var(--s1); font-weight: 700; text-decoration: none; }
 .auth-switch a:hover { text-decoration: underline; }
+
+/* Sign-up plan picker: the selected card takes the brand border */
+.plan-picker { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 8px; }
+.plan-picker legend { font-weight: 700; padding: 0; margin-bottom: 6px; }
+.plan-picker label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 10px 12px; border: 2px solid #e3e4e8; border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+.plan-picker label:has(input:checked) { border-color: var(--s1); background: #fff8f2; }
+.plan-picker label:has(input:focus-visible) { outline: 2px solid var(--s1); outline-offset: 2px; }
+.plan-picker .plan-price { margin-left: auto; font-weight: 700; }
+.plan-picker label > small { flex: 1 1 100%; margin-left: 22px; }
+.plan-picker .tag { font-style: normal; font-size: 11px; font-weight: 700; background: var(--s1); color: #fff; border-radius: 999px; padding: 2px 7px; }
+.plan-picker > small { grid-column: 1 / -1; }
+
+.trial-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0 0; padding: 9px 14px; border-radius: var(--radius); background: #fff8db; font-size: 13px; font-weight: 600; }
+.trial-bar a { margin-left: auto; color: var(--s1); font-weight: 700; text-decoration: none; }
+.trial-ended { flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 12px; }
 @media (max-width: 800px) {
   .login-page { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .login-bg { padding: 0; min-height: 90px; }

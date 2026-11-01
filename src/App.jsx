@@ -16,8 +16,11 @@ import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
+import { PLANS, planName, SUPPORT_WHATSAPP } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
+
+const waLink = (number, text) => `https://wa.me/${number}?text=${encodeURIComponent(text)}`
 
 function Login() {
   const { run, error, busy, setError } = useAction()
@@ -25,8 +28,9 @@ function Login() {
   const [needCode, setNeedCode] = useState(false)
   const [notice, setNotice] = useState('')
   const [email, setEmail] = useState('')
+  const [trial, setTrial] = useState(null)
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false) }
+  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTrial(null) }
   const submit = e => {
     const body = formData(e)
     run(async () => {
@@ -38,10 +42,11 @@ function Login() {
       if (signup) {
         await api('/register', { body })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
-        setNotice('Account created. An admin has to activate it before you can sign in.')
+        setNotice(`Account created on the ${planName(body.plan)} plan. An admin has to activate it before you can sign in.`)
         return
       }
-      const r = await api('/login', { body })
+      let r
+      try { r = await api('/login', { body }) } catch (e) { if (e.data?.trial_ended) setTrial(e.data); throw e }
       if (r.need_code) return setNeedCode(true)
       localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
     })
@@ -56,15 +61,32 @@ function Login() {
       <div className="login-side">
         <form className="login" onSubmit={submit}>
           <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Sign up to join the sales floor. An admin activates new accounts.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Pick the plan that fits your team — every plan starts with a 7-day free trial. An admin activates new accounts.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
           {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
           {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
           <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
           {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" maxLength={30} /></span></label>}
+          {signup && <fieldset className="plan-picker">
+            <legend>Your plan</legend>
+            {PLANS.map(p => (
+              <label key={p.id}>
+                <input type="radio" name="plan" value={p.id} defaultChecked={p.id === 'solo'} />
+                <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
+                <span className="plan-price">PKR {p.monthly.toLocaleString('en-PK')}<small>/mo</small></span>
+                <small className="muted">{p.users ? `${p.users} user${p.users === 1 ? '' : 's'}` : 'Unlimited users'} · {p.branches ? `${p.branches} branch${p.branches === 1 ? '' : 'es'}` : 'unlimited branches'}</small>
+              </label>
+            ))}
+            <small className="muted">7-day free trial on every plan. No card.</small>
+          </fieldset>}
           {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
           {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
           {notice && <p className="ok">{notice}</p>}
           {error && <p className="error">{error}</p>}
+          {trial && <div className="card banner trial-ended">
+            <b>Your {planName(trial.plan)} free trial ended on {String(trial.trial_ends_at).slice(0, 10)}.</b>
+            <p className="muted">Nothing is deleted — activate the plan and sign straight back in.</p>
+            <a className="button" href={waLink(trial.support, `I'd like to activate my ${planName(trial.plan)} plan on Estate Centric`)} target="_blank" rel="noreferrer">WhatsApp to activate</a>
+          </div>}
           <button disabled={busy}>{forgot ? 'Request reset link' : signup ? 'Create account' : 'Continue'}</button>
           {!signup && !forgot && <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('forgot') }}>Forgot password?</a></p>}
           {forgot ? <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('signin') }}>Back to sign in</a></p> : (
@@ -384,6 +406,12 @@ export default function App() {
         </nav>
         <main>
           <div className={'hero-bg' + (home ? ' tall' : '')} />
+          {meta.me.trial_days_left != null && <p className="trial-bar">
+            {planName(meta.me.plan)} free trial — {meta.me.trial_days_left > 0
+              ? <>{meta.me.trial_days_left} day{meta.me.trial_days_left === 1 ? '' : 's'} left</>
+              : <>ended</>}
+            <a href={waLink(SUPPORT_WHATSAPP, `I'd like to activate my ${planName(meta.me.plan)} plan on Estate Centric`)} target="_blank" rel="noreferrer">Activate</a>
+          </p>}
           <div className={'page-head' + (home ? ' home' : '')}>
             <div className="topbar">
               <MobileAccount me={meta.me} onLogout={logout} />

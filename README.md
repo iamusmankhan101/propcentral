@@ -28,6 +28,7 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 | `INBOUND_API_KEY` | `POST /api/inbound` with header `x-api-key`. For website forms, Zapier, portal email parsers and telephony |
 | `GROQ_API_KEY` | Enables the **Assistant** chat (the bubble in the bottom-right corner). `POST /api/assistant` asks Groq and lets it call read-only, row-scoped queries over leads, agents and commissions. Get a key at console.groq.com; without it the assistant answers 503 and the rest of the CRM is unaffected |
 | `GROQ_MODEL` | Optional model override for the assistant (default `openai/gpt-oss-120b`) |
+| `TRIAL_DAYS` | Free-trial length in days, default `7`. `TRIAL_DAYS=0` locks every new sign-up immediately — used by the tests, handy for a demo |
 
 Both integration endpoints stay disabled until their variables are set.
 
@@ -56,6 +57,8 @@ Limits to know: serverless functions cap request/response bodies at ~4.5 MB (lar
 - **M9 Dashboards:** KPI tiles against the PRD targets, funnel, agent leaderboard (avg/median response, breaches, calls, visits), source/campaign table, lost reasons, all filterable
 - **M10 Projects & inventory:** land (phase/block/street/plot) or building (tower/floor/unit) projects, bulk unit creation, colour-coded inventory map, marla/kanal/sq ft/sq yd conversion with per-project marla size, premium factors, versioned price lists with effective dates, holds that expire on their own with a per-agent limit, race-safe hold and booking, unit history, share to WhatsApp. Booking a unit marks its lead Booked. Plot map: upload an SVG (plan image + one path per plot in `<g id="plots">`) under Setup, link plots to units by clicking them, and the Inventory › Map view colours each plot by its live status. `maps/reva.svg` is the Reva masterplan
 - **M22–M24:** role-scoped data (agent, team, branch, all), permission matrix editable in Settings, JSON settings for every rule, phone masking by role, append-only audit log (logins, views, exports, changes), watermarked export, soft delete, login lockout
+- **Plans & 7-day free trial:** sign-up asks for a plan (Solo PKR 1,999 / Starter 6,499 / Growth 12,499 / Agency 19,999 per month — the same four as the marketing site, defined once in `shared/plans.js`) and stamps `users.trial_ends_at` seven days out. An expired trial stops the sign-in with a "WhatsApp to activate" screen; **Users › Mark paid** (`POST /api/users/:id/mark-paid`) clears the lock and records `paid_at`. Payment itself stays off the CRM — no card, no gateway. Accounts with no plan (created before this existed) are never locked, and the `admin` role is never locked either, so nobody shuts themselves out of their own CRM.
+  The acting account's plan also caps what that account can add: Solo 1 user / 1 branch, Starter 5 / 1, Growth 15 / 3, Agency unlimited. Adding a user counts active users in the target branch; `POST /api/users`, `POST /api/users/:id/activate` and `POST /api/branches` answer 400 over the cap. Changing someone's plan restarts their 7 days unless they are already marked paid.
 - **Deleting a lead:** admins only, from the Danger zone on the lead page. It is a soft delete (`deleted=1`) — the row, its activities and its audit entries stay, but the lead leaves every list, dashboard and agent count and `GET /api/leads/:id` returns 404. A lead with an active allotment cannot be deleted; cancel the allotment first so payments never lose their owner. There is no restore.
 
 - **Collections:** payment plan per allotment (down payment + monthly/quarterly/half-yearly/yearly installments), payments and refunds with printable receipts (`RC-00001`), void with reason, customer ledger with overdue status (payments applied oldest installment first), transfer to a new owner with a receipted fee, Collections page of overdue and plan-less allotments. Permission `payments` (accounts, sales head, admin)
@@ -78,5 +81,6 @@ Limits to know: serverless functions cap request/response bodies at ~4.5 MB (lar
   - Native mobile app with offline mode and device binding; the web UI is responsive in the meantime
   - Meta spend import, so there's no cost per lead yet
   - Email delivery for the weekly report (needs SMTP or an email API)
+  - Card payments and invoices: plans, the 7-day trial, the caps and the "mark paid" switch are in the CRM, but collecting money is still a WhatsApp + bank-transfer conversation
 - **Still open:** SMS installment reminders (needs the SMS gateway), required 2FA per role.
 - **Scale:** the API keeps better-sqlite3's synchronous query style over libSQL. A single process handles one query at a time; Turso adds network latency per query, so move hot paths to batched queries or a Postgres driver before the 1,000-user target (A1).

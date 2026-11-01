@@ -64,7 +64,8 @@ test('API refuses abusive requests and replies with security headers', async t =
   assert.equal((await post(base, '/login', { email: botEmail, password: 'password123' })).status, 401, 'honeypot sign-up creates no account')
 
   const realEmail = `real-${Date.now()}@example.com`
-  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x' })).status, 200)
+  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x' })).status, 400, 'a sign-up has to pick a plan')
+  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x', plan: 'growth' })).status, 200)
   assert.equal((await post(base, '/login', { email: realEmail, password: 'CrmPass2026x' })).status, 403, 'real sign-up still reaches the approval queue')
 
   const token = (await (await post(base, '/login', { email: 'admin@propcentral.local', password: 'password123' })).json()).token

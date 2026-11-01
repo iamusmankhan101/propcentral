@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
+import { PLANS, planOf, planName, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const clean = v => v?.trim().replace(/^(['"])(.*)\1$/, '$2') || undefined
@@ -12,7 +13,10 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '7'
+const SCHEMA_VERSION = '8'
+// Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
+const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
+const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
 
 // A failed database init must not take the whole function down: /api/health reports the cause
 // and every other route answers 503 instead of a boot crash nobody can read.
@@ -133,6 +137,9 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'totp_on', 'INTEGER DEFAULT 0')
     addColumn('leads', 'campaign_id', 'TEXT') // Meta campaign id, so leads match campaigns even if renamed
     addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
+    addColumn('users', 'plan', 'TEXT') // sold plan id from shared/plans.js; NULL = account predating plans, never capped
+    addColumn('users', 'trial_ends_at', 'TEXT')
+    addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
@@ -197,12 +204,30 @@ const OPEN = `l.deleted=0 AND l.status NOT IN (SELECT value FROM json_each(?))`
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString()
-const err = (status, message) => Object.assign(new Error(message), { status })
+const err = (status, message, data) => Object.assign(new Error(message), { status, ...(data ? { data } : {}) })
 // libsql attaches query timing metadata to rows; strip it so API responses stay clean
 const stripMeta = r => { if (r) delete r._metadata; return r }
 const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...p))
 const all = (sql, ...p) => db.prepare(sql).all(...p).map(stripMeta)
 const run = (sql, ...p) => db.prepare(sql).run(...p)
+
+// ---------- plans & trials ----------
+function pickPlan(id) {
+  const p = planOf(typeof id === 'string' ? id.trim().toLowerCase() : '')
+  if (!p) throw err(400, `Choose a plan: ${PLANS.map(x => x.name).join(', ')}`)
+  return p
+}
+// Accounts that signed up before billing exists have no plan: never locked, never capped.
+// Admins are never locked out either — same reason the permission matrix keeps settings/manage_users off the table.
+const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now() && u.role !== 'admin'
+const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Date.now()) / 864e5))
+const SINGULAR = { users: 'user', branches: 'branch' }
+const countLabel = (n, what) => `${n} ${SINGULAR[what]}${n === 1 ? '' : SINGULAR[what] === 'branch' ? 'es' : 's'}`
+function planCap(actor, what, count) { // count = how many there would be after this change
+  const p = planOf(actor.plan)
+  if (!p || p[what] == null || count <= p[what]) return
+  throw err(400, `Your ${p.name} plan covers ${countLabel(p[what], what)}. Upgrade the plan or free one up first.`)
+}
 
 // ---------- auth throttling ----------
 // Counters live in the DB so limits hold across serverless instances; Turso serialises the upsert.
@@ -497,6 +522,11 @@ app.post('/api/login', (req, res) => {
     audit(u?.id, 'login_failed', 'user', u?.id, { email }, req.ip)
     throw err(401, 'Wrong email or password')
   }
+  if (trialOver(u)) {
+    audit(u.id, 'login_blocked_trial', 'user', u.id, { plan: u.plan }, req.ip)
+    throw err(403, `Your ${planName(u.plan)} free trial ended on ${u.trial_ends_at.slice(0, 10)}.`,
+      { trial_ended: true, plan: u.plan, trial_ends_at: u.trial_ends_at, support: SUPPORT_WHATSAPP })
+  }
   if (u.totp_on) {
     if (!req.body.code) return res.json({ need_code: true }) // password was right; ask for the authenticator code
     if (!checkTotp(u.totp_secret, req.body.code)) {
@@ -532,12 +562,14 @@ app.post('/api/register', (req, res) => {
   if (pwProblem) throw err(400, pwProblem)
   if (rawPhone.length > 30 || (rawPhone && !phone)) throw err(400, 'Enter a valid phone number')
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
-  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass) VALUES(?,?,?,?,0,1,?)',
-    name, email, phone, 'agent', hash(pass)).lastInsertRowid
+  const plan = pickPlan(req.body.plan)
+  const trialEnds = trialEndsAt()
+  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at) VALUES(?,?,?,?,0,1,?,?,?)',
+    name, email, phone, 'agent', hash(pass), plan.id, trialEnds).lastInsertRowid
   for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
-    notify(u.id, `New sign-up: ${name} (${email}) is waiting for approval`, null)
-  audit(null, 'register', 'user', id, { email }, req.ip)
-  res.json({ ok: true })
+    notify(u.id, `New sign-up: ${name} (${email}) chose ${plan.name}, waiting for approval`, null)
+  audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
+  res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds })
 })
 
 // "Forgot password": the answer never reveals whether the email exists, and no reset secret is emailed
@@ -772,7 +804,9 @@ app.get('/api/meta', (req, res) => {
   const u = req.user
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
   res.json({
-    me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on },
+    me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
+      plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at,
+      trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
     users: all('SELECT id, name, role, team_id, branch_id, active, available FROM users ORDER BY name'),
@@ -1168,6 +1202,7 @@ const USER_FIELDS = ['name', 'email', 'phone', 'role', 'team_id', 'branch_id', '
 const checkRole = f => { if ('role' in f && !roles().some(r => r.key === f.role)) throw err(400, 'Unknown role') }
 const checkRate = f => { if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%') }
 app.get('/api/users', guard('manage_users'), (_req, res) => res.json(all(`SELECT u.id, ${USER_FIELDS.map(f => 'u.' + f)}, u.active, u.totp_on,
+  u.plan, u.trial_ends_at, u.paid_at,
   (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u ORDER BY u.active DESC, u.name`, closedJson())))
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
@@ -1177,9 +1212,13 @@ app.post('/api/users', guard('manage_users'), (req, res) => {
   const problem = L.passwordProblem(pass)
   if (problem) throw err(400, problem)
   f.email = f.email.toLowerCase()
-  const cols = [...Object.keys(f), 'pass']
-  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass)).lastInsertRowid
-  log(req, 'create', 'user', id, { ...f })
+  const branchId = f.branch_id ?? req.user.branch_id
+  planCap(req.user, 'users', (branchId ? one('SELECT count(*) n FROM users WHERE branch_id=? AND active=1', branchId).n : 0) + 1)
+  const plan = req.body.plan ? pickPlan(req.body.plan) : null
+  const cols = [...Object.keys(f), 'pass', ...(plan ? ['plan', 'trial_ends_at'] : [])]
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass),
+    ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
+  log(req, 'create', 'user', id, { ...f, plan: plan?.id })
   res.json({ id })
 })
 app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
@@ -1192,8 +1231,24 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
     f.pass = hash(pass)
     run('DELETE FROM sessions WHERE user_id=?', req.params.id)
   }
+  // Choosing a plan (at activation, or moving someone up or down) restarts their 7 days — unless an admin has marked it paid.
+  if ('plan' in req.body) {
+    const target = one('SELECT * FROM users WHERE id=?', req.params.id)
+    if (!target) throw err(404, 'User not found')
+    f.plan = req.body.plan ? pickPlan(req.body.plan).id : null
+    if (f.plan && !target.paid_at) f.trial_ends_at = trialEndsAt()
+  }
   if (Object.keys(f).length) run(`UPDATE users SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), req.params.id)
   log(req, 'update', 'user', +req.params.id, { ...f, pass: f.pass && '***' })
+  res.json({ ok: true })
+})
+// Payment is still handled off the CRM (WhatsApp + bank transfer), so the admin says "this one is paid"
+// and the trial lock stops applying. The plan stays as the record of what they are on.
+app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
+  const target = one('SELECT * FROM users WHERE id=?', req.params.id)
+  if (!target) throw err(404, 'User not found')
+  run('UPDATE users SET paid_at=?, trial_ends_at=NULL WHERE id=?', now(), target.id)
+  log(req, 'mark_paid', 'user', target.id, { plan: target.plan })
   res.json({ ok: true })
 })
 // M3.7 / M22.7: offboarding — deactivate, kill sessions, redistribute open leads
@@ -1208,12 +1263,17 @@ app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {
   res.json({ open: open.length, reassigned: moved })
 })
 app.post('/api/users/:id/activate', guard('manage_users'), (req, res) => {
+  const target = one('SELECT * FROM users WHERE id=?', req.params.id)
+  if (!target) throw err(404, 'User not found')
+  // bringing someone back uses up a seat on the admin's plan too
+  planCap(req.user, 'users', (target.branch_id ? one('SELECT count(*) n FROM users WHERE branch_id=? AND active=1', target.branch_id).n : 0) + 1)
   run('UPDATE users SET active=1, available=1 WHERE id=?', req.params.id)
   log(req, 'activate', 'user', +req.params.id)
   res.json({ ok: true })
 })
 app.post('/api/branches', guard('manage_users'), (req, res) => {
   if (!req.body.name) throw err(400, 'Name required')
+  planCap(req.user, 'branches', one('SELECT count(*) n FROM branches').n + 1)
   res.json({ id: run('INSERT INTO branches(name,city) VALUES(?,?)', req.body.name, req.body.city ?? null).lastInsertRowid })
 })
 app.post('/api/teams', guard('manage_users'), (req, res) => {
@@ -2755,7 +2815,8 @@ app.use((e, _req, res, _next) => {
   if (e.status === 429 && e.retryAfter) res.set('Retry-After', String(e.retryAfter))
   const status = e.status || 500
   const message = e.type === 'entity.too.large' ? 'Request is too large' : e.type === 'entity.parse.failed' ? 'Malformed JSON body' : e.status ? e.message : 'Server error'
-  res.status(status).json({ error: message })
+  // a 403 login lock carries trial_ended/plan so the client can show its "trial ended" panel
+  res.status(status).json({ error: message, ...(e.data || {}) })
 })
 
 // ---------- background jobs (M4 SLA + stale + unassigned retry) ----------

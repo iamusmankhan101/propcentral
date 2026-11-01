@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt } from './api.js'
 import { Select, When } from './Leads.jsx'
+import { PLANS } from '../shared/plans.js'
 import Icon from './Icon.jsx'
 
 
@@ -34,6 +35,7 @@ export function Users() {
   return (
     <section>
       <h2>Users</h2>
+      <p className="muted">New sign-ups choose a plan and get a 7-day free trial; when it runs out they cannot sign in until someone with <b>Manage users</b> marks the plan paid. The plan on the account doing the adding sets the limits: {PLANS.map(p => `${p.name} ${p.users ?? 'unlimited'} users / ${p.branches ?? 'unlimited'} branches`).join(' · ')}.</p>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error" onClick={() => setError('')}>{error}</p>}
       {resetLink && <div className="card row between reset-link">
@@ -43,13 +45,18 @@ export function Users() {
       </div>}
       <div className="card scroll">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Plan</th><th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
           <tbody>{users?.map(u => (
             <tr key={u.id} className={u.active ? '' : 'muted'}>
               <td>{u.name}<small><br />{u.phone}</small></td><td>{u.email}</td>
               <td><Select value={u.role} onChange={e => patch(u, { role: e.target.value })} options={m.roles.map(r => [r.key, r.label])} blank={null} /></td>
               <td><Select value={u.team_id ?? ''} onChange={e => patch(u, { team_id: e.target.value || null })} options={teams} blank="—" /></td>
               <td><Select value={u.branch_id ?? ''} onChange={e => patch(u, { branch_id: e.target.value || null })} options={branches} blank="—" /></td>
+              <td>
+                <Select value={u.plan ?? ''} onChange={e => patch(u, { plan: e.target.value || null })} options={PLANS.map(p => [p.id, p.name])} blank="No plan" />
+                {u.paid_at ? <small className="ok"><br />Paid {fmt(u.paid_at).slice(0, 10)}</small>
+                  : u.trial_ends_at ? <small className={u.trial_ends_at < new Date().toISOString() ? 'warn' : 'muted'}><br />Trial to {fmt(u.trial_ends_at).slice(0, 10)}</small> : null}
+              </td>
               <td>{u.open_leads}</td>
               <td><input type="number" className="narrow" defaultValue={u.max_open} onBlur={e => +e.target.value !== u.max_open && patch(u, { max_open: +e.target.value })} /></td>
               <td><input type="number" className="narrow" min="0" max="20" step="0.1" placeholder={`${m.settings.commission?.agent_pct ?? 1} (default)`} defaultValue={u.commission_rate ?? ''}
@@ -57,6 +64,7 @@ export function Users() {
               <td><input type="checkbox" checked={!!u.available} onChange={e => patch(u, { available: e.target.checked ? 1 : 0 })} /></td>
               <td className="row">
                 <button className="ghost" onClick={() => resetPw(u)}>Reset link</button>
+                {u.plan && !u.paid_at && <button className="ghost" onClick={() => run(async () => { await api(`/users/${u.id}/mark-paid`, { body: {} }); done(`${u.name} marked paid — the trial lock is off`) })}>Mark paid</button>}
                 {u.totp_on ? <button className="ghost" onClick={() => confirm(`Turn off two-factor login for ${u.name}? (e.g. lost phone)`) && run(async () => { await api(`/users/${u.id}/reset-2fa`, { body: {} }); done('2FA reset') })}>Reset 2FA</button> : null}
                 {u.active
                   ? <button className="ghost danger" disabled={busy} onClick={() => confirm(`Deactivate ${u.name}? Their sessions end and open leads are reassigned.`) && deactivate(u)}>Offboard</button>

@@ -8,7 +8,12 @@ export async function api(path, { method, body } = {}) {
   })
   if (r.status === 401 && path !== '/login') { delete localStorage.token; location.reload() }
   const d = r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text()
-  if (!r.ok) throw new Error(d.error || r.statusText)
+  if (!r.ok) {
+    const e = new Error(typeof d === 'object' ? d.error || r.statusText : d || r.statusText)
+    e.status = r.status
+    e.data = typeof d === 'object' ? d : {} // extra fields the server attaches, e.g. trial_ended
+    throw e
+  }
   return d
 }
 
