@@ -11,6 +11,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 const portA = 46000 + (process.pid % 2000)
 const portB = 47000 + (process.pid % 2000)
 const portC = 48000 + (process.pid % 2000)
+const portD = 49000 + (process.pid % 2000)
 
 async function boot(t, port, env = {}) {
   const dbPath = path.join(os.tmpdir(), `prop-central-sec-${port}.db`)
@@ -131,4 +132,38 @@ test('password reset, role checks, account isolation and SQL-injection shapes', 
   const forgot = await post(base, '/forgot-password', { email: 'nobody@example.com' })
   assert.equal(forgot.status, 200)
   assert.deepEqual(await forgot.json(), { ok: true }, 'unknown emails get the same answer')
+})
+
+test('leads delete for admins only, and never while they hold a booking', async t => {
+  const base = await boot(t, portD)
+  const tokenOf = async email => (await (await post(base, '/login', { email, password: 'password123' })).json()).token
+  const get = (path, token) => fetch(base + path, { headers: { authorization: 'Bearer ' + token } })
+  const del = (id, token) => fetch(`${base}/leads/${id}`, { method: 'DELETE', headers: { authorization: 'Bearer ' + token } })
+  const listIds = async token => (await (await get('/leads?size=50', token)).json()).rows.map(l => l.id)
+  const admin = await tokenOf('admin@propcentral.local')
+  const agent = await tokenOf('agent1@propcentral.local')
+
+  const [booked, spare] = (await (await get('/leads?size=50', admin)).json()).rows
+  assert.ok(booked && spare, 'seeded leads to work with')
+
+  assert.equal((await del(booked.id, agent)).status, 403, 'agents cannot delete leads at all')
+
+  const project = await (await get('/projects/1', admin)).json()
+  const unit = project.units.find(u => u.status === 'Available')
+  const allot = await post(base, `/units/${unit.id}/allot`,
+    { status: 'Booked', expected: unit.status, sale_date: '2026-11-01', lead_id: booked.id, price: unit.price.total },
+    { authorization: 'Bearer ' + admin })
+  assert.equal(allot.status, 200, 'the booking goes through')
+  const { allotment_no } = await allot.json()
+
+  const blocked = await del(booked.id, admin)
+  assert.equal(blocked.status, 400)
+  assert.match((await blocked.json()).error, new RegExp(allotment_no), 'a client with a booking stays so the money trail keeps its owner')
+
+  assert.equal((await del(spare.id, admin)).status, 200)
+  assert.equal((await get(`/leads/${spare.id}`, admin)).status, 404, 'a deleted lead is gone from the CRM')
+  assert.ok(!(await listIds(admin)).includes(spare.id), 'and off the lists')
+
+  const audit = await (await get('/audit?entity=lead', admin)).json()
+  assert.ok(audit.some(a => a.action === 'delete' && a.entity_id === spare.id), 'the deletion is written to the audit trail')
 })

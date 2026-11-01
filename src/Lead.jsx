@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, useApi, useMeta, useAction, formData, fmt, toIso, pkr, phone } from './api.js'
+import { api, useApi, useMeta, useAction, formData, fmt, toIso, pkr, phone, go } from './api.js'
 import { Select, Status, LeadFields, packCustom } from './Leads.jsx'
 
 function CopyButton({ text, label = 'Copy' }) {
@@ -89,9 +89,26 @@ export default function Lead({ id }) {
             </div>
           )}
           <Details lead={lead} reload={reload} />
+          {m.can('delete') && <DeleteLead lead={lead} />}
         </div>
       </div>
     </section>
+  )
+}
+
+function DeleteLead({ lead }) {
+  const { run, error, busy } = useAction()
+  const del = () => confirm(`Delete the lead for ${lead.name}? It leaves the lists, dashboards and agent counts, and the app cannot undo it.`) && run(async () => {
+    await api('/leads/' + lead.id, { method: 'DELETE' })
+    go('/leads')
+  })
+  return (
+    <div className="card">
+      <h3>Danger zone</h3>
+      <p className="muted">Marking a lead Lost or Junk keeps it in your reports. Delete is for entries that should never have existed — duplicate numbers, test submissions, wrong contacts.</p>
+      <button className="ghost danger" onClick={del} disabled={busy}>Delete lead</button>
+      {error && <p className="error">{error}</p>}
+    </div>
   )
 }
 

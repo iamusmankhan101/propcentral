@@ -1022,8 +1022,12 @@ app.post('/api/leads/:id/offers', (req, res) => {
 
 app.delete('/api/leads/:id', guard('delete'), (req, res) => {
   const lead = scopedLead(req.user, req.params.id)
+  // A lead can only be deleted while it holds no money records: allotments and payments keep their lead_id,
+  // and a deleted lead disappears from every list, so an allotted client would become untraceable.
+  const allotment = one(`SELECT allotment_no FROM allotments WHERE lead_id=? AND status='active'`, lead.id)
+  if (allotment) throw err(400, `This lead holds allotment ${allotment.allotment_no}. Cancel it first if the booking really was wrong.`)
   run('UPDATE leads SET deleted=1 WHERE id=?', lead.id) // M24.6 soft delete only
-  log(req, 'delete', 'lead', lead.id)
+  log(req, 'delete', 'lead', lead.id, { status: lead.status })
   res.json({ ok: true })
 })
 
