@@ -10,6 +10,7 @@ import { Ledger, Receipt, Collections } from './Payments.jsx'
 import Commissions from './Commissions.jsx'
 import Listings from './Listings.jsx'
 import Reports from './Reports.jsx'
+import Campaigns from './Campaigns.jsx'
 import Assistant from './Assistant.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import BookingForm from './BookingForm.jsx'
@@ -270,6 +271,7 @@ const NAV = [
   ['/', 'Dashboard', 'dashboard', null, 'all'], ['/leads', 'Leads', 'leads', null, 'all'], ['/projects', 'Projects', 'building', null, 'all'], ['/visits', 'Visits', 'visits', null, 'all'],
   ['/properties', 'Properties', 'map', null, 'wide'], ['/collections', 'Collections', 'wallet', 'payments', 'wide'], ['/reports', 'Reports', 'calendar', null, 'wide'],
   ['/commissions', 'Sales', 'percent', null, 'more'], ['/listings', 'Listings', 'key', null, 'more'], ['/import', 'Import', 'import', 'import', 'more'],
+  ['/campaigns', 'Campaigns', 'inbox', null, 'more'],
   ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more'],
 ]
 
@@ -357,7 +359,7 @@ export default function App() {
     : receiptId ? <Receipt id={receiptId} key={receiptId} />
     : projectId ? <Project id={projectId} key={projectId} />
     : allotmentId ? <AllotmentLetter id={allotmentId} key={allotmentId} />
-    : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit /> }[path]
+    : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/campaigns': <Campaigns />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit /> }[path]
     ?? <p>Not found</p>
   const title = leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : NAV.find(n => n[0] === path)?.[1] ?? ''
   const home = path === '/'

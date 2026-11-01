@@ -814,6 +814,14 @@ app.get('/api/leads', (req, res) => {
   res.json({ rows: rows.map(r => maskRow(req.user, r)), total: one(`SELECT count(*) n ${from}`, ...p).n })
 })
 
+// Campaigns: lead counts per (campaign, form_id) from the same scoped rows the leads list uses
+app.get('/api/campaigns', (req, res) => {
+  const [w, p] = scope(req.user)
+  const rows = all(`SELECT l.campaign, l.form_id, l.source, l.project, l.status, l.created_at FROM leads l
+    WHERE l.deleted=0 AND (l.campaign IS NOT NULL OR l.form_id IS NOT NULL) AND ${w}`, ...p)
+  res.json({ rows: L.groupCampaigns(rows, S('closed_statuses')), page_name: S('facebook')?.page_name ?? null })
+})
+
 app.get('/api/leads/export', guard('export'), (req, res) => sendExport(req, res))
 function sendExport(req, res, extra) {
   const [from, p] = leadQuery(req)

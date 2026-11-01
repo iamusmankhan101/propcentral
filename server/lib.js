@@ -77,6 +77,30 @@ export function leadScore(lead, stats, w) {
     + (['Qualified', 'Visit Scheduled', 'Visit Done', 'Negotiation', 'Booked'].includes(lead.status) ? w.qualified : 0)
 }
 
+// Facebook/campaign roll-up: one row per (campaign, form_id) pair, built from scoped lead rows.
+// `closed` is the configured closed_statuses list; a lead is "won" when its status is Booked.
+export function groupCampaigns(rows, closed) {
+  const closedSet = new Set(closed || [])
+  const groups = new Map()
+  for (const r of rows) {
+    const key = JSON.stringify([r.campaign ?? null, r.form_id ?? null])
+    let g = groups.get(key)
+    if (!g) groups.set(key, g = { campaign: r.campaign ?? null, form_id: r.form_id ?? null, leads: 0, open: 0, won: 0, last_lead_at: null, projects: new Map(), sources: new Map() })
+    g.leads++
+    if (!closedSet.has(r.status)) g.open++
+    if (r.status === 'Booked') g.won++
+    if (r.created_at && (!g.last_lead_at || r.created_at > g.last_lead_at)) g.last_lead_at = r.created_at
+    if (r.project) g.projects.set(r.project, (g.projects.get(r.project) || 0) + 1)
+    if (r.source) g.sources.set(r.source, (g.sources.get(r.source) || 0) + 1)
+  }
+  const most = m => { let best = null, n = -1; for (const [k, c] of m) if (c > n) { best = k; n = c } return best }
+  return [...groups.values()].map(g => ({
+    campaign: g.campaign, form_id: g.form_id, source: most(g.sources), project: most(g.projects),
+    leads: g.leads, open: g.open, won: g.won, last_lead_at: g.last_lead_at,
+    conversion: g.leads ? Math.round((g.won / g.leads) * 100) : 0,
+  })).sort((a, b) => String(b.last_lead_at || '').localeCompare(String(a.last_lead_at || '')))
+}
+
 // M1.6: RFC4180-ish CSV (quotes, escaped quotes, newlines in quotes)
 export function parseCsv(text) {
   const rows = [[]]

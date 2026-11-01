@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { base32, totp, checkTotp } from './totp.js'
-import { normalizePhone, pickAgent, ruleMatches, workingMinutes, slaLevel, distanceM, parseCsv, addMonths, buildSchedule, allocate, rentSchedule, daysLeft, inPolygon, areasAt, fitTransform, fitCorners, passwordProblem } from './lib.js'
+import { normalizePhone, pickAgent, ruleMatches, workingMinutes, slaLevel, distanceM, parseCsv, addMonths, buildSchedule, allocate, rentSchedule, daysLeft, inPolygon, areasAt, fitTransform, fitCorners, passwordProblem, groupCampaigns } from './lib.js'
 
 test('phone normalization', () => {
   for (const p of ['0300-1234567', '+92 300 1234567', '923001234567', '00923001234567', '3001234567'])
@@ -86,6 +86,19 @@ test('payment plan and allocation', () => {
   assert.equal(buildSchedule(500, 500, 0, 1, '2026-01-01')[0].label, 'Full payment')
   const a = allocate(s, 400, '2026-03-15')
   assert.deepEqual(a.map(r => [r.paid, r.status]), [[250, 'Paid'], [150, 'Overdue'], [0, 'Due'], [0, 'Due']])
+})
+
+test('campaign grouping', () => {
+  const rows = [
+    { campaign: 'DHA Plots Oct', form_id: 'f1', source: 'Facebook', project: 'Phase 9', status: 'New', created_at: '2026-10-01' },
+    { campaign: 'DHA Plots Oct', form_id: 'f1', source: 'Facebook', project: 'Phase 9', status: 'Booked', created_at: '2026-10-03' },
+    { campaign: 'DHA Plots Oct', form_id: 'f1', source: 'Facebook', project: 'Phase 8', status: 'Lost', created_at: '2026-10-02' },
+    { campaign: null, form_id: 'f2', source: 'Instagram', project: null, status: 'New', created_at: '2026-09-01' },
+  ]
+  const out = groupCampaigns(rows, ['Booked', 'Lost', 'Junk'])
+  assert.equal(out.length, 2) // ordered by last_lead_at desc
+  assert.deepEqual(out[0], { campaign: 'DHA Plots Oct', form_id: 'f1', source: 'Facebook', project: 'Phase 9', leads: 3, open: 1, won: 1, last_lead_at: '2026-10-03', conversion: 33 })
+  assert.deepEqual(out[1], { campaign: null, form_id: 'f2', source: 'Instagram', project: null, leads: 1, open: 1, won: 0, last_lead_at: '2026-09-01', conversion: 0 })
 })
 
 test('TOTP matches RFC 6238 vectors', () => {
