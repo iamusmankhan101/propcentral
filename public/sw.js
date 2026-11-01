@@ -9,8 +9,6 @@ const APP_SHELL = [
   '/icon-512.png',
   '/icon-maskable-512.png',
 ]
-const FONT_HOSTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com'])
-
 const cacheable = (response) => response && response.ok
 
 async function put(request, response) {
@@ -64,22 +62,8 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // Web fonts: cache-first with background refresh.
-  if (FONT_HOSTS.has(url.hostname)) {
-    event.respondWith(
-      caches.match(request).then((cached) => {
-        const network = fetch(request)
-          .then((response) => {
-            if (cacheable(response)) put(request, response.clone())
-            return response
-          })
-          .catch(() => cached)
-        return cached || network
-      })
-    )
-    return
-  }
-
+  // Web fonts are cross-origin and the document's CSP blocks a service-worker fetch for them,
+  // so they go straight to the browser's own cache.
   if (url.origin !== self.location.origin) return
 
   // Hashed build assets never change: serve from cache, fall back to network.
@@ -101,7 +85,7 @@ self.addEventListener('fetch', (event) => {
           if (cacheable(response)) put(request, response.clone())
           return response
         })
-        .catch(() => cached)
+        .catch(() => cached || Response.error())
       return cached || network
     })
   )
