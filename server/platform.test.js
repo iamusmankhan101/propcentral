@@ -1,0 +1,79 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const port = 54000 + (process.pid % 2000)
+const PLATFORM = { email: 'boss@example.com', password: 'PlatformPass123' }
+
+async function boot(t) {
+  const dbPath = path.join(os.tmpdir(), `prop-central-platform-${port}.db`)
+  const child = spawn(process.execPath, ['server/server.js'], {
+    cwd: root,
+    env: { ...process.env, DB_PATH: dbPath, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', PORT: String(port), VERCEL: '', TRIAL_DAYS: '7',
+      PLATFORM_ADMIN_EMAIL: PLATFORM.email, PLATFORM_ADMIN_PASSWORD: PLATFORM.password },
+    stdio: 'ignore',
+  })
+  t.after(async () => {
+    child.kill()
+    await sleep(300)
+    for (const f of [dbPath, dbPath + '-wal', dbPath + '-shm']) fs.rmSync(f, { force: true })
+  })
+  const base = `http://127.0.0.1:${port}/api`
+  for (let i = 0; i < 100; i++) {
+    try { if ((await fetch(`${base}/health`)).ok) return base } catch {}
+    await sleep(100)
+  }
+  throw new Error('server did not start')
+}
+const call = (base, method, p, token, body) => fetch(base + p, { method, headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: body && JSON.stringify(body) })
+const login = (base, email, password) => fetch(base + '/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }).then(r => r.json()).then(d => d.token)
+
+test('platform panel: guarded, hierarchy, payment request approval, backup', async t => {
+  const base = await boot(t)
+  const admin = await login(base, 'admin@propcentral.local', 'password123')
+  const boss = await login(base, PLATFORM.email, PLATFORM.password)
+
+  for (const [m, p] of [['GET', '/platform/accounts'], ['GET', '/platform/dashboard'], ['GET', '/platform/payment-requests'], ['GET', '/platform/settings'], ['GET', '/platform/backup'], ['POST', '/platform/payment-requests/1/approve']])
+    assert.equal((await call(base, m, p, admin)).status, 403, `${m} ${p}`)
+
+  // a sign-up is a main account; the admin it gets is the owner of whoever it adds
+  const reg = await fetch(base + '/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Zed Co', email: 'zed@example.com', password: 'Passw0rd12345', plan: 'starter' }) })
+  assert.equal(reg.status, 200)
+  const accounts = async () => (await call(base, 'GET', '/platform/accounts', boss)).json()
+  const zed = (await accounts()).find(a => a.email === 'zed@example.com')
+  assert.equal(zed.owner_id, null)
+  await call(base, 'POST', `/users/${zed.id}/activate`, boss)
+  await call(base, 'PATCH', `/users/${zed.id}`, boss, { role: 'admin' })
+  const zedTok = await login(base, 'zed@example.com', 'Passw0rd12345')
+  const sub = await call(base, 'POST', '/users', zedTok, { name: 'Sub One', email: 'sub@example.com', role: 'agent', password: 'Passw0rd12345' })
+  assert.equal(sub.status, 200)
+  const nested = (await accounts()).find(a => a.id === zed.id)
+  assert.deepEqual(nested.subs.map(s => s.email), ['sub@example.com'])
+  assert.equal((await call(base, 'GET', '/platform/dashboard', boss).then(r => r.json())).sub_users, 1)
+
+  // payment request -> approve marks paid and sets the plan
+  assert.equal((await call(base, 'PUT', '/platform/settings', boss, { payment_methods: [{ label: 'Bank', details: 'IBAN 123' }] })).status, 200)
+  assert.deepEqual(await (await call(base, 'GET', '/payment-methods', zedTok)).json(), [{ label: 'Bank', details: 'IBAN 123' }])
+  const pr = await call(base, 'POST', '/payment-requests', zedTok, { plan: 'growth', method: 'Bank', reference: 'TX42' })
+  assert.equal(pr.status, 200)
+  const list = await (await call(base, 'GET', '/platform/payment-requests', boss)).json()
+  assert.equal(list[0].status, 'pending')
+  assert.equal(list[0].amount, 12499)
+  assert.equal((await call(base, 'POST', `/platform/payment-requests/${list[0].id}/approve`, boss)).status, 200)
+  assert.equal((await call(base, 'POST', `/platform/payment-requests/${list[0].id}/reject`, boss)).status, 400, 'already decided')
+  const paid = (await accounts()).find(a => a.id === zed.id)
+  assert.ok(paid.paid_at && paid.plan === 'growth' && !paid.trial_ends_at)
+  const dash = await (await call(base, 'GET', '/platform/dashboard', boss)).json()
+  assert.equal(dash.paid, 1)
+  assert.equal(dash.monthly_revenue, 12499)
+
+  const bk = await call(base, 'GET', '/platform/backup', boss)
+  assert.equal(bk.status, 200)
+  assert.ok((await bk.arrayBuffer()).byteLength > 1000)
+})

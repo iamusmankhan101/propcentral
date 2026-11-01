@@ -1,6 +1,8 @@
 import express from 'express'
 import crypto from 'node:crypto'
 import path from 'node:path'
+import os from 'node:os'
+import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
@@ -13,7 +15,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '8'
+const SCHEMA_VERSION = '9'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -115,6 +117,9 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
   db.exec('CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)')
   db.exec('CREATE TABLE IF NOT EXISTS password_resets(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at TEXT)')
 
+  db.exec(`CREATE TABLE IF NOT EXISTS payment_requests(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, plan TEXT, amount INTEGER, method TEXT, reference TEXT, note TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', created_at TEXT, decided_at TEXT)`)
+
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
   if (schemaVersion !== SCHEMA_VERSION) {
@@ -139,6 +144,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('contacts', 'portal_token', 'TEXT') // customer portal link: /#/portal/<token>
     addColumn('users', 'plan', 'TEXT') // sold plan id from shared/plans.js; NULL = account predating plans, never capped
     addColumn('users', 'trial_ends_at', 'TEXT')
+    addColumn('users', 'owner_id', 'INTEGER') // NULL = main account (a sign-up); else the main account this user was added under
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
@@ -224,7 +230,8 @@ const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now(
 const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Date.now()) / 864e5))
 // A plan is sold per company, so every cap counts the whole database: no branch or project gets its own allowance.
 const COUNT = {
-  users: () => one("SELECT count(*) n FROM users WHERE active=1 AND role!='platform'").n,
+  // seats count per main account's tree (it plus the users added under it)
+  users: actor => { const root = actor.owner_id ?? actor.id; return one("SELECT count(*) n FROM users WHERE active=1 AND role!='platform' AND (id=? OR owner_id=?)", root, root).n },
   branches: () => one('SELECT count(*) n FROM branches').n,
   projects: () => one('SELECT count(*) n FROM projects').n,
   units: () => one('SELECT count(*) n FROM units').n,
@@ -232,7 +239,7 @@ const COUNT = {
 }
 function planCap(actor, what, add = 1) {
   const p = planOf(actor.plan)
-  if (!p || p[what] == null || COUNT[what]() + add <= p[what]) return
+  if (!p || p[what] == null || COUNT[what](actor) + add <= p[what]) return
   throw err(400, `Your ${p.name} plan covers ${limitLabel(p, what)}. Upgrade the plan or free one up first.`)
 }
 // Website forms and the Facebook webhook carry no signed-in user, so the company's plan is read off its admin account.
@@ -1242,8 +1249,9 @@ app.post('/api/users', guard('manage_users'), (req, res) => {
   f.email = f.email.toLowerCase()
   planCap(req.user, 'users')
   const plan = req.body.plan ? pickPlan(req.body.plan) : null
-  const cols = [...Object.keys(f), 'pass', ...(plan ? ['plan', 'trial_ends_at'] : [])]
-  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass),
+  const owner = req.user.role === 'platform' ? null : req.user.owner_id ?? req.user.id
+  const cols = [...Object.keys(f), 'pass', 'owner_id', ...(plan ? ['plan', 'trial_ends_at'] : [])]
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass), owner,
     ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
   log(req, 'create', 'user', id, { ...f, plan: plan?.id })
   res.json({ id })
@@ -1271,12 +1279,90 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
 })
 // Payment is still handled off the CRM (WhatsApp + bank transfer), so the admin says "this one is paid"
 // and the trial lock stops applying. The plan stays as the record of what they are on.
+const markPaid = (id, plan) => run('UPDATE users SET paid_at=?, trial_ends_at=NULL, plan=COALESCE(?,plan) WHERE id=?', now(), plan ?? null, id)
 app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
   const target = one('SELECT * FROM users WHERE id=?', req.params.id)
   if (!target) throw err(404, 'User not found')
-  run('UPDATE users SET paid_at=?, trial_ends_at=NULL WHERE id=?', now(), target.id)
+  markPaid(target.id)
   log(req, 'mark_paid', 'user', target.id, { plan: target.plan })
   res.json({ ok: true })
+})
+
+// ---- platform admin panel (role 'platform' only) ----
+const platformOnly = (req, _res, next) => (req.user.role === 'platform' ? next() : next(err(403, 'Platform admins only')))
+// Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
+app.get('/api/platform/accounts', platformOnly, (_req, res) => {
+  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id FROM users WHERE role!='platform' ORDER BY active DESC, name`)
+  res.json(us.filter(u => u.owner_id == null).map(m => ({ ...m, subs: us.filter(u => u.owner_id === m.id) })))
+})
+app.get('/api/platform/dashboard', platformOnly, (_req, res) => {
+  const mains = all("SELECT * FROM users WHERE role!='platform' AND owner_id IS NULL"), t = now(), soon = new Date(Date.now() + 3 * 864e5).toISOString()
+  const trial = mains.filter(u => !u.paid_at && u.trial_ends_at && u.trial_ends_at >= t)
+  const paid = mains.filter(u => u.paid_at)
+  res.json({
+    accounts: mains.length, in_trial: trial.length, expiring_soon: trial.filter(u => u.trial_ends_at <= soon).length, paid: paid.length,
+    inactive: mains.filter(u => !u.active).length,
+    sub_users: one("SELECT count(*) n FROM users WHERE role!='platform' AND owner_id IS NOT NULL").n,
+    revenue: PLANS.map(p => { const n = paid.filter(u => u.plan === p.id).length; return { plan: p.id, name: p.name, count: n, monthly: n * p.monthly } }),
+    monthly_revenue: paid.reduce((s, u) => s + (planOf(u.plan)?.monthly || 0), 0),
+  })
+})
+// A main account reports an off-platform payment (bank transfer etc.); the platform approves or rejects it.
+app.post('/api/payment-requests', (req, res) => {
+  if (req.user.role === 'platform') throw err(403, 'Platform admins have no account to pay for')
+  const plan = pickPlan(req.body.plan)
+  const txt = (k, max) => { const v = typeof req.body[k] === 'string' ? req.body[k].trim() : ''; if (v.length > max) throw err(400, `${k} is too long`); return v || null }
+  const method = txt('method', 80), reference = txt('reference', 200), note = txt('note', 500)
+  if (!method) throw err(400, 'Say how you paid')
+  const uid = req.user.owner_id ?? req.user.id
+  const id = run('INSERT INTO payment_requests(user_id,plan,amount,method,reference,note,created_at) VALUES(?,?,?,?,?,?,?)', uid, plan.id, plan.monthly, method, reference, note, now()).lastInsertRowid
+  for (const a of all("SELECT id FROM users WHERE role='platform' AND active=1")) notify(a.id, `Payment submitted by ${req.user.name} for ${plan.name}`, null)
+  log(req, 'payment_request', 'payment_request', id, { plan: plan.id })
+  res.json({ id })
+})
+app.get('/api/platform/payment-requests', platformOnly, (_req, res) => res.json(all(`SELECT r.*, u.name user_name, u.email user_email FROM payment_requests r
+  LEFT JOIN users u ON u.id=r.user_id ORDER BY (r.status='pending') DESC, r.id DESC LIMIT 300`)))
+const decide = status => (req, res) => {
+  const r = one('SELECT * FROM payment_requests WHERE id=?', req.params.id)
+  if (!r) throw err(404, 'Request not found')
+  if (r.status !== 'pending') throw err(400, `Already ${r.status}`)
+  run('UPDATE payment_requests SET status=?, decided_at=? WHERE id=?', status, now(), r.id)
+  if (status === 'approved') markPaid(r.user_id, r.plan)
+  notify(r.user_id, status === 'approved' ? 'Your payment was approved. Thank you!' : 'Your payment request was rejected. Please contact support.', null)
+  log(req, status, 'payment_request', r.id, { user_id: r.user_id, plan: r.plan })
+  res.json({ ok: true })
+}
+app.post('/api/platform/payment-requests/:id/approve', platformOnly, decide('approved'))
+app.post('/api/platform/payment-requests/:id/reject', platformOnly, decide('rejected'))
+// Payment methods and invoice details live in the settings table like everything else configurable
+const INVOICE_KEYS = ['business_name', 'address', 'phone', 'footer']
+const platformSettings = () => ({ payment_methods: S('payment_methods') || [], invoice_details: { ...Object.fromEntries(INVOICE_KEYS.map(k => [k, ''])), ...S('invoice_details') } })
+app.get('/api/platform/settings', platformOnly, (_req, res) => res.json(platformSettings()))
+app.put('/api/platform/settings', platformOnly, (req, res) => {
+  const { payment_methods: pm, invoice_details: inv } = req.body
+  const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  if (pm !== undefined) {
+    if (!Array.isArray(pm) || pm.length > 20) throw err(400, 'Payment methods must be a list of up to 20')
+    putSetting('payment_methods', pm.map(m => ({ label: str(m?.label, 80), details: str(m?.details, 500) })).filter(m => m.label))
+  }
+  if (inv !== undefined) {
+    if (!inv || typeof inv !== 'object') throw err(400, 'Invoice details must be an object')
+    putSetting('invoice_details', Object.fromEntries(INVOICE_KEYS.map(k => [k, str(inv[k], 500)])))
+  }
+  log(req, 'platform_settings', 'setting', null)
+  res.json(platformSettings())
+})
+app.get('/api/payment-methods', (_req, res) => res.json(S('payment_methods') || []))
+// VACUUM INTO writes a consistent copy of a local database file; a remote (Turso) database is backed up on its own platform.
+app.get('/api/platform/backup', platformOnly, (req, res) => {
+  if (remote) throw err(501, 'This database is hosted remotely: take backups from the database provider')
+  const tmp = path.join(os.tmpdir(), `crm-backup-${crypto.randomBytes(6).toString('hex')}.db`)
+  try {
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`)
+    const data = fs.readFileSync(tmp)
+    log(req, 'backup', 'database', null)
+    res.set('content-disposition', `attachment; filename="crm-backup-${now().slice(0, 10)}.db"`).type('application/octet-stream').send(data)
+  } finally { fs.rmSync(tmp, { force: true }) }
 })
 // M3.7 / M22.7: offboarding — deactivate, kill sessions, redistribute open leads
 app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {

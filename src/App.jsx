@@ -399,7 +399,7 @@ export default function App() {
     ?? <p>Not found</p>
   const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
-  const home = isPlatform ? true : path === homePath
+  const home = path === homePath
 
   const logout = async () => { await api('/logout', { body: {} }).catch(() => {}); delete localStorage.token; go('/'); location.reload() }
   const toggleAvailable = async () => { await api('/me/available', { body: { available: !meta.me.available } }); reloadMeta() }
