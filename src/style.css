@@ -288,9 +288,9 @@ option { color: var(--text); font-size: 14px; }
 .plan-picker label:has(input:focus-visible) { outline: 2px solid var(--s1); outline-offset: 2px; }
 .plan-picker label > input { margin: 0; flex: none; }
 .plan-picker label > b { font-weight: 800; min-width: 0; }
-.plan-picker .plan-price { flex: 1 0 100%; margin: 2px 0 0; font-weight: 700; }
-.plan-picker .plan-price small { font-weight: 600; color: var(--muted); }
-.plan-picker label > small { flex: 1 0 100%; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.plan-picker .plan-price { flex: 1 0 100%; margin: 6px 0 0; font-size: 20px; font-weight: 800; color: var(--s1); }
+.plan-picker .plan-price small { font-size: 12px; font-weight: 500; color: var(--muted); }
+.plan-picker label > small { flex: 1 0 100%; min-width: 0; margin: 6px 0 0; font-size: 11px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .plan-picker .tag { font-style: normal; font-size: 11px; font-weight: 700; background: var(--s1); color: #fff; border-radius: 999px; padding: 2px 7px; }
 .plan-picker > small { grid-column: 1 / -1; }
 
