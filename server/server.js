@@ -615,11 +615,17 @@ async function importFbLead(id) {
   const fields = 'field_data,campaign_name,adset_name,ad_name,form_id,platform,created_time'
   const d = await graph(id, { fields, access_token: fbConf().page_token })
   const fd = Object.fromEntries((d.field_data || []).map(f => [f.name, f.values?.[0]]))
-  const phone = fd.phone_number || fd.whatsapp_number || null
+  const rawPhone = fd.phone_number || fd.whatsapp_number || null
+  const invalidPhone = rawPhone && !L.normalizePhone(rawPhone)
+  const phone = invalidPhone ? 'FB' + String(id).replace(/\D/g, '') : rawPhone
+  const remarks = [
+    Object.entries(fd).filter(([k]) => !['full_name', 'first_name', 'phone_number', 'whatsapp_number', 'email', 'city'].includes(k)).map(([k, v]) => `${k}: ${v}`).join('; '),
+    invalidPhone ? `phone given: ${rawPhone}` : '',
+  ].filter(Boolean).join('; ') || null
   createLead({
-    ext_id: 'fb:' + id, name: fd.full_name || fd.first_name || 'Facebook lead', phone: phone || 'FB' + String(id).replace(/\D/g, ''), email: fd.email, city: fd.city,
+    ext_id: 'fb:' + id, name: fd.full_name || fd.first_name || 'Facebook lead', phone, email: fd.email, city: fd.city,
     source: d.platform === 'ig' ? 'Instagram' : 'Facebook', campaign: d.campaign_name, adset: d.adset_name, ad: d.ad_name, form_id: d.form_id,
-    remarks: Object.entries(fd).filter(([k]) => !['full_name', 'first_name', 'phone_number', 'whatsapp_number', 'email', 'city'].includes(k)).map(([k, v]) => `${k}: ${v}`).join('; ') || null,
+    remarks,
   })
 }
 // Website forms, Zapier, portal email parsers, telephony "new caller" hooks all post here (M2.2-M2.6)
