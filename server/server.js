@@ -180,7 +180,7 @@ const DEFAULTS = {
   assignment_rules: [{ name: 'Default round robin', priority: 100, when: {}, method: 'round_robin', team_id: null }],
   permissions: {
     reassign: MGMT, approve_lost: MGMT, export: ['sales_head', 'admin'], import: ['marketing', 'sales_head', 'admin'],
-    view_phone: ['agent', ...MGMT, 'owner', 'accounts'], settings: ['sales_head', 'admin'], manage_users: ['admin'],
+    view_phone: ['agent', ...MGMT, 'owner', 'accounts'], settings: ['sales_head', 'admin'], manage_users: ['platform', 'admin'],
     audit: ['admin', 'owner'], delete: ['admin'],
     manage_inventory: ['inventory', 'sales_head', 'admin'], edit_pricing: ['sales_head', 'admin'],
     unit_status: ['inventory', 'accounts', 'sales_head', 'admin'],
@@ -189,10 +189,11 @@ const DEFAULTS = {
     properties: ['inventory', 'accounts', 'sales_head', 'admin'],
   },
 }
-// Roles: 9 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
+// Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
 const BUILT_IN_ROLES = [
   ['agent', 'Agent', 'own'], ['team_lead', 'Team lead', 'team'], ['branch_manager', 'Branch manager', 'branch'], ['sales_head', 'Sales head', 'all'],
   ['marketing', 'Marketing', 'all'], ['inventory', 'Inventory', 'none'], ['accounts', 'Accounts', 'none'], ['owner', 'Owner', 'all'], ['admin', 'Admin', 'all'],
+  ['platform', 'Platform', 'none'],
 ].map(([key, label, access]) => ({ key, label, access, built_in: true }))
 const ACCESS = ['own', 'team', 'branch', 'all', 'none']
 const roles = () => [...BUILT_IN_ROLES, ...(S('custom_roles') || [])]
@@ -1222,14 +1223,18 @@ app.post('/api/notifications/read', (req, res) => { run('UPDATE notifications SE
 
 // ---- users & org (M22) ----
 const USER_FIELDS = ['name', 'email', 'phone', 'role', 'team_id', 'branch_id', 'max_open', 'available', 'commission_rate']
-const checkRole = f => { if ('role' in f && !roles().some(r => r.key === f.role)) throw err(400, 'Unknown role') }
+const checkRole = (f, actor) => {
+  if (!('role' in f)) return
+  if (!roles().some(r => r.key === f.role)) throw err(400, 'Unknown role')
+  if (f.role === 'platform' && actor?.role !== 'platform') throw err(403, 'Only a platform owner can assign the platform role')
+}
 const checkRate = f => { if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%') }
 app.get('/api/users', guard('manage_users'), (_req, res) => res.json(all(`SELECT u.id, ${USER_FIELDS.map(f => 'u.' + f)}, u.active, u.totp_on,
   u.plan, u.trial_ends_at, u.paid_at,
   (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u ORDER BY u.active DESC, u.name`, closedJson())))
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
-  checkRate(f); checkRole(f)
+  checkRate(f); checkRole(f, req.user)
   const pass = typeof req.body.password === 'string' ? req.body.password : ''
   if (!f.name || !f.email || !f.role || !pass) throw err(400, 'Name, email, role and password are required')
   const problem = L.passwordProblem(pass)
@@ -1245,7 +1250,7 @@ app.post('/api/users', guard('manage_users'), (req, res) => {
 })
 app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
-  checkRate(f); checkRole(f)
+  checkRate(f); checkRole(f, req.user)
   if (req.body.password) {
     const pass = typeof req.body.password === 'string' ? req.body.password : ''
     const problem = L.passwordProblem(pass)

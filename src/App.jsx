@@ -297,6 +297,9 @@ const NAV = [
   ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more'],
 ]
 
+// The platform owner manages sign-ups only, so their whole app is the Users page
+const PLATFORM_NAV = [['/users', 'Accounts', 'users', null, 'all']]
+
 function MoreMenu({ items, path, home }) {
   const [open, setOpen] = useState(false)
   const box = useRef()
@@ -330,6 +333,8 @@ function MoreMenu({ items, path, home }) {
 export default function App() {
   const [route, setRoute] = useState(location.hash.slice(1) || '/')
   const searchInput = useRef()
+  const [meta, reloadMeta, metaError] = useApi(localStorage.token ? '/meta' : null)
+  const isPlatform = meta?.me?.role === 'platform'
 
   useEffect(() => {
     const f = () => setRoute(location.hash.slice(1) || '/')
@@ -338,6 +343,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (isPlatform) return
     const onKey = e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
@@ -350,9 +356,14 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [isPlatform])
 
-  const [meta, reloadMeta, metaError] = useApi(localStorage.token ? '/meta' : null)
+  // The platform owner has no CRM pages: anything that is not Accounts goes home
+  useEffect(() => {
+    if (!isPlatform) return
+    const special = route.startsWith('/reset') || route.startsWith('/map/') || route.startsWith('/portal/')
+    if (!special && (route.split('?')[0] || '/') !== '/users') go('/users')
+  }, [isPlatform, route])
 
   const resetToken = route.match(/^\/reset(?:\?token=([a-f0-9]{64}))?$/)?.[1]
   if (route.startsWith('/reset')) return <ResetPassword token={resetToken || ''} key={route} />
@@ -373,7 +384,10 @@ export default function App() {
   const formId = path.match(/^\/booking-form\/(\d+)/)?.[1]
   const propertyId = path.match(/^\/properties\/(\d+)/)?.[1]
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
-  const page = leadId ? <Lead id={leadId} key={leadId} />
+  const nav = isPlatform ? PLATFORM_NAV : NAV
+  const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
+  const page = isPlatform ? <Users />
+    : leadId ? <Lead id={leadId} key={leadId} />
     : propertyId ? <PropertyPage id={propertyId} key={propertyId} />
     : rentReceiptId ? <RentReceipt id={rentReceiptId} key={rentReceiptId} />
     : formId ? <BookingForm id={formId} key={formId} />
@@ -383,8 +397,9 @@ export default function App() {
     : allotmentId ? <AllotmentLetter id={allotmentId} key={allotmentId} />
     : { '/': <Dashboard />, '/leads': <Leads query={query} key={query} />, '/visits': <Visits />, '/projects': <Projects />, '/collections': <Collections />, '/commissions': <Commissions />, '/listings': <Listings />, '/properties': <Properties />, '/reports': <Reports />, '/campaigns': <Campaigns />, '/import': <Import />, '/users': <Users />, '/settings': <Settings query={query} key={query} />, '/audit': <Audit /> }[path]
     ?? <p>Not found</p>
-  const title = leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : NAV.find(n => n[0] === path)?.[1] ?? ''
-  const home = path === '/'
+  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
+  const homePath = isPlatform ? '/users' : '/'
+  const home = isPlatform ? true : path === homePath
 
   const logout = async () => { await api('/logout', { body: {} }).catch(() => {}); delete localStorage.token; go('/'); location.reload() }
   const toggleAvailable = async () => { await api('/me/available', { body: { available: !meta.me.available } }); reloadMeta() }
@@ -395,11 +410,11 @@ export default function App() {
       <div className="shell">
         <LogoIntro />
         <nav>
-          <a className="logo" href="#/" aria-label="Estate Centric home"><img src={markImg} alt="" /></a>
-          {NAV.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] !== 'more').map(([href, label, icon, , group]) => (
-            <a key={href} href={'#' + href} className={[(href === '/' ? home : path.startsWith(href)) ? 'active' : '', group === 'wide' ? 'nav-wide' : ''].filter(Boolean).join(' ')}><Icon name={icon} size={20} /><span>{label}</span></a>
+          <a className="logo" href={'#' + homePath} aria-label="Estate Centric home"><img src={markImg} alt="" /></a>
+          {nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] !== 'more').map(([href, label, icon, , group]) => (
+            <a key={href} href={'#' + href} className={[(href === homePath ? home : path.startsWith(href)) ? 'active' : '', group === 'wide' ? 'nav-wide' : ''].filter(Boolean).join(' ')}><Icon name={icon} size={20} /><span>{label}</span></a>
           ))}
-          <MoreMenu items={NAV.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')} path={path} home={home} />
+          {moreItems.length > 0 && <MoreMenu items={moreItems} path={path} home={home} />}
           <div className="spacer" />
           <a className="nav-logout" href="#" onClick={e => { e.preventDefault(); logout() }}><Icon name="logout" size={20} /><span>Log out</span></a>
           <a className="avatar" href="#/settings?tab=profile" title={`${meta.me.name} · ${meta.me.role.replace('_', ' ')} · Profile & settings`}>{meta.me.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</a>
@@ -415,25 +430,25 @@ export default function App() {
           <div className={'page-head' + (home ? ' home' : '')}>
             <div className="topbar">
               <MobileAccount me={meta.me} onLogout={logout} />
-              <form className="glass search" onSubmit={search}>
+              {!isPlatform && <form className="glass search" onSubmit={search}>
                 <Icon name="search" size={16} />
                 <input ref={searchInput} name="q" placeholder="Search leads…" defaultValue={new URLSearchParams(query).get('q') || ''} key={query} aria-label="Search leads" />
                 <kbd className="search-kbd" title="Press ⌘K or / to search">⌘K</kbd>
-              </form>
+              </form>}
               {meta.me.role === 'agent' && (
                 <button className={'avail glass' + (meta.me.available ? '' : ' paused')} onClick={toggleAvailable} title="Toggle receiving new leads">
                   {meta.me.available ? '● Available' : '○ Paused'}
                 </button>
               )}
-              <Bell />
+              {!isPlatform && <Bell />}
               <InstallPrompt />
-              <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>
+              {!isPlatform && <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>}
             </div>
             {!home && <h1 className="page-title">{title}</h1>}
           </div>
           <div className="content">{page}</div>
         </main>
-        <Assistant />
+        {!isPlatform && <Assistant />}
       </div>
     </Meta.Provider>
   )
