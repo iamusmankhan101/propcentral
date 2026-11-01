@@ -493,17 +493,18 @@ export default function App() {
               <MobileAccount me={meta.me} onLogout={logout} />
               {!isPlatform && <form className="glass search" onSubmit={search}>
                 <Icon name="search" size={16} />
-                <input ref={searchInput} name="q" placeholder="Search leads…" defaultValue={new URLSearchParams(query).get('q') || ''} key={query} aria-label="Search leads" />
+                <input ref={searchInput} name="q" placeholder={!propertyOn && eduOn ? 'Search students…' : 'Search leads…'} defaultValue={new URLSearchParams(query).get('q') || ''} key={query} aria-label={!propertyOn && eduOn ? 'Search students' : 'Search leads'} />
                 <kbd className="search-kbd" title="Press ⌘K or / to search">⌘K</kbd>
               </form>}
               {meta.me.role === 'agent' && (
-                <button className={'avail glass' + (meta.me.available ? '' : ' paused')} onClick={toggleAvailable} title="Toggle receiving new leads">
+                <button className={'avail glass' + (meta.me.available ? '' : ' paused')} onClick={toggleAvailable} title={!propertyOn && eduOn ? 'Toggle receiving new student inquiries' : 'Toggle receiving new leads'}>
                   {meta.me.available ? '● Available' : '○ Paused'}
                 </button>
               )}
               {!isPlatform && <Bell />}
               <InstallPrompt />
-              {!isPlatform && <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>}
+              {!isPlatform && propertyOn && <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>}
+              {!isPlatform && !propertyOn && eduOn && <a className="glass button" href="#/students?new=1"><Icon name="plus" size={16} /><span className="label">Add student</span></a>}
             </div>
             {!home && <h1 className="page-title">{title}</h1>}
           </div>

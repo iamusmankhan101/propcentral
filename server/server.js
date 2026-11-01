@@ -275,6 +275,13 @@ const DEFAULTS = {
   edu_application_statuses: ['Ready', 'Submitted', 'Under review', 'Interview', 'Conditional offer', 'Unconditional offer', 'Accepted', 'Rejected', 'Withdrawn'],
   edu_payment_types: ['tuition_deposit', 'visa_fee', 'ielts_fee', 'service_fee', 'scholarship', 'other'],
   edu_visa_outcomes: ['Approved', 'Refused', 'Pending', 'Withdrawn'],
+  edu_country_checklists: {
+    UK: ['passport', 'transcript', 'ielts', 'sop', 'lor', 'financial', 'offer_letter', 'visa'],
+    USA: ['passport', 'transcript', 'toefl', 'gre', 'sop', 'lor', 'financial', 'offer_letter', 'visa'],
+    Canada: ['passport', 'transcript', 'ielts', 'sop', 'lor', 'financial', 'offer_letter', 'visa'],
+    Australia: ['passport', 'transcript', 'ielts', 'sop', 'lor', 'financial', 'offer_letter', 'visa'],
+    Germany: ['passport', 'transcript', 'ielts', 'cv', 'sop', 'financial', 'offer_letter', 'visa'],
+  },
 }
 // Roles: 10 built in plus custom ones (Settings › Roles & permissions). access = which leads the role sees
 const BUILT_IN_ROLES = [
@@ -928,7 +935,8 @@ app.get('/api/meta', (req, res) => {
   const keys = ['commission', 'statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'sites', 'unit_statuses', 'listing_statuses', 'societies']
   const edu = eduOpen(u) ? { edu_stages: S('edu_stages'), edu_doc_types: S('edu_doc_types'), edu_levels: S('edu_levels'), edu_intakes: S('edu_intakes'),
     edu_countries: S('edu_countries'), edu_application_statuses: S('edu_application_statuses'),
-    edu_payment_types: S('edu_payment_types'), edu_visa_outcomes: S('edu_visa_outcomes') } : {}
+    edu_payment_types: S('edu_payment_types'), edu_visa_outcomes: S('edu_visa_outcomes'),
+    edu_country_checklists: S('edu_country_checklists') || DEFAULTS.edu_country_checklists } : {}
   res.json({
     me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
@@ -2721,10 +2729,18 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
   const countries = all(`SELECT json_each.value country, count(*) n FROM edu_students s, json_each('["' || replace(s.target_countries, ', ', '","') || '"]')
     WHERE ${w} AND s.target_countries IS NOT NULL AND s.target_countries!='' GROUP BY json_each.value ORDER BY n DESC`, ...p)
 
-  // Intake pipeline
+  // Intake pipeline & urgency alert
   const intakes = all(`SELECT s.intake, count(*) n, sum(s.stage='Enrolled') enrolled,
+    sum(s.stage NOT IN ('Enrolled', 'Visa Decision')) active_pipeline,
     (SELECT count(*) FROM edu_applications a WHERE a.student_id IN (SELECT id FROM edu_students WHERE intake=s.intake)) applications
     ${EDU_FROM} WHERE s.intake IS NOT NULL AND s.intake!='' AND ${w} GROUP BY s.intake ORDER BY s.intake`, ...p)
+
+  // Intake deadline urgency alerts: upcoming intakes with active students pending application or offers
+  const intakeAlerts = intakes.filter(i => i.active_pipeline > 0).map(i => ({
+    intake: i.intake,
+    pending_students: i.active_pipeline,
+    warning: `Intake ${i.intake} has ${i.active_pipeline} active student(s) still in counseling or application phase.`
+  }))
 
   // My follow-ups (for the logged-in user)
   const mine = all(`SELECT s.id, c.name, s.stage, ea.next_action, ea.next_action_at
@@ -2733,7 +2749,7 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
     AND ea.id=(SELECT max(id) FROM edu_activities WHERE student_id=s.id AND next_action_at IS NOT NULL)
     ORDER BY ea.next_action_at LIMIT 30`, req.user.id, new Date(Date.now() + 864e5).toISOString())
 
-  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, mine })
+  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, intakeAlerts, mine })
 })
 
 app.get('/api/edu/reports', eduGuard, (req, res) => {
@@ -2799,6 +2815,32 @@ app.get('/api/edu/reports', eduGuard, (req, res) => {
     GROUP BY ep.type, ep.currency ORDER BY total DESC`, from, to, ...p)
 
   res.json({ from: fromDay, to: toDay, counselors, byCountry, byUniversity, byIntake, stageAvg, daily, payments })
+})
+
+// ---------- Student Reassignment & Bulk Actions ----------
+app.post('/api/edu/students/bulk-assign', eduGuard, (req, res) => {
+  const ids = Array.isArray(req.body.student_ids) ? req.body.student_ids.map(Number).filter(Boolean) : []
+  if (!ids.length) throw err(400, 'Pick at least one student')
+  const counselorId = +req.body.counselor_id
+  const target = one(`SELECT * FROM users WHERE id=? AND active=1 AND role IN ('agent','team_lead')`, counselorId)
+  if (!target) throw err(400, 'Pick an active counselor')
+  const reason = req.body.reason?.trim() || 'Bulk reassignment'
+
+  const [w, p] = eduScope(req.user)
+  const accessible = all(`SELECT s.id, s.counselor_id, c.name FROM edu_students s JOIN contacts c ON c.id=s.contact_id
+    WHERE s.id IN (${ids.map(() => '?').join(',')}) AND ${w}`, ...ids, ...p)
+
+  let moved = 0
+  for (const s of accessible) {
+    if (s.counselor_id === target.id) continue
+    run('UPDATE edu_students SET counselor_id=?, updated_at=? WHERE id=?', target.id, now(), s.id)
+    eduActivity(s.id, req.user.id, 'system', `Reassigned to ${target.name} by ${req.user.name}: ${reason}`)
+    notify(target.id, `${s.name} was assigned to you by ${req.user.name} (${reason})`, null)
+    moved++
+  }
+
+  log(req, 'bulk_reassign', 'edu_students', null, { target_id: target.id, count: moved, total_requested: ids.length, reason })
+  res.json({ ok: true, moved, total: accessible.length })
 })
 
 // ---------- Student Import & Export ----------

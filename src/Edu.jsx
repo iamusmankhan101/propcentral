@@ -30,9 +30,15 @@ export default function Students({ query }) {
   const [data, reload] = useApi('/edu/students?' + qs)
   const [adding, setAdding] = useState(params.has('new'))
   const [importing, setImporting] = useState(false)
+  const [reassigning, setReassigning] = useState(false)
+  const [selected, setSelected] = useState([])
   const set = k => e => setF({ ...f, [k]: e.target.value, page: 0 })
   const counselors = m.users.filter(u => u.active && ['agent', 'team_lead'].includes(u.role)).map(u => [u.id, u.name])
   const hasFilters = !!(f.q || f.stage || f.counselor_id || f.missing_docs || f.followup)
+
+  const toggleSelect = id => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  const selectAll = () => setSelected(data?.rows ? data.rows.map(r => r.id) : [])
+  const clearSelect = () => setSelected([])
 
   const exportCsv = () => {
     const filterQs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== '')).toString()
@@ -57,10 +63,12 @@ export default function Students({ query }) {
           <div className="seg small">{[['board', 'Journey'], ['table', 'Table']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => pick(k)}>{l}</button>)}</div>
           <button className="ghost" onClick={exportCsv} disabled={!data?.total}>Export CSV</button>
           <button className="ghost" onClick={() => setImporting(!importing)}>{importing ? 'Close import' : 'Import CSV'}</button>
+          {m.can('reassign') && <button className={reassigning ? 'ghost' : ''} onClick={() => setReassigning(!reassigning)}>{reassigning ? 'Close reassign' : 'Bulk reassign'}</button>}
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ New student'}</button>
         </div>
       </div>
       {importing && <StudentImport counselors={counselors} onDone={() => { setImporting(false); reload() }} />}
+      {reassigning && <BulkReassign counselors={counselors} selected={selected} onDone={() => { setReassigning(false); clearSelect(); reload() }} />}
       {adding && <NewStudent counselors={counselors} onDone={() => { setAdding(false); reload() }} />}
       <div className="filters">
         <input placeholder="Search name, phone, email, college, passport…" value={f.q} onChange={set('q')} />
@@ -72,11 +80,24 @@ export default function Students({ query }) {
       </div>
       {board ? <Journey data={data} reload={reload} /> : <>
         <div className="card scroll">
+          {reassigning && (
+            <div className="row between" style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <span><b>{selected.length}</b> student(s) selected</span>
+              <span className="row">
+                <button className="ghost mini-btn" onClick={selectAll}>Select all {data?.rows?.length || 0}</button>
+                <button className="ghost mini-btn" onClick={clearSelect}>Clear</button>
+              </span>
+            </div>
+          )}
           <table>
-            <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Studied</th><th>Target</th><th>Docs</th><th>Cases</th><th>Counselor</th><th>Next follow-up</th><th>Added</th></tr></thead>
+            <thead><tr>
+              {reassigning && <th style={{ width: 30 }}></th>}
+              <th>Name</th><th>Phone</th><th>Stage</th><th>Studied</th><th>Target</th><th>Docs</th><th>Cases</th><th>Counselor</th><th>Next follow-up</th><th>Added</th>
+            </tr></thead>
             <tbody>
               {data?.rows.map(r => (
-                <tr key={r.id} onClick={() => go('/students/' + r.id)} className="link">
+                <tr key={r.id} onClick={() => reassigning ? toggleSelect(r.id) : go('/students/' + r.id)} className="link">
+                  {reassigning && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.includes(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td><div className="who"><span className="avatar sm">{r.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</span><div><b>{r.name}</b><small className="muted">{r.current_level || '—'}</small></div></div></td>
                   <td className="nowrap">{phone(r.phone)}</td>
                   <td><Status s={r.stage} /></td>
@@ -337,9 +358,37 @@ function Documents({ student, documents, reload }) {
     run(async () => { await api(`/edu/documents/${d.id}`, { method: 'DELETE', body: { reason } }); reload() })
   }
   const have = new Set(documents.map(d => d.type))
+  const targetCountry = student.target_countries?.split(',')[0]?.trim()
+  const checklist = (m.settings.edu_country_checklists || {})[targetCountry]
+
   return (
     <div className="card">
-      <h3>Documents <small className="muted">{documents.length} on file, {documents.filter(d => !d.verified).length} to verify</small></h3>
+      <div className="row between">
+        <h3>Documents <small className="muted">{documents.length} on file, {documents.filter(d => !d.verified).length} to verify</small></h3>
+        {targetCountry && checklist && (
+          <span className="chip-item">
+            {targetCountry} checklist: {checklist.filter(t => have.has(t)).length}/{checklist.length} completed
+          </span>
+        )}
+      </div>
+
+      {checklist && (
+        <div style={{ margin: '8px 0 14px 0', padding: '10px 12px', background: 'var(--bg-card-subtle, rgba(0,0,0,0.03))', borderRadius: 6 }}>
+          <small className="muted"><b>{targetCountry} Required Checklist:</b></small>
+          <div className="row" style={{ flexWrap: 'wrap', gap: '6px', marginTop: 6 }}>
+            {checklist.map(t => {
+              const present = have.has(t)
+              const verified = documents.some(d => d.type === t && d.verified)
+              return (
+                <span key={t} className={`status ${verified ? 'u-available' : present ? 'ok' : 'warn'}`} style={{ fontSize: '0.8rem' }}>
+                  {verified ? '✓' : present ? '•' : '○'} {docLabel(t)} {verified ? '(verified)' : present ? '(uploaded)' : '(needed)'}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {documents.map(d => (
         <p key={d.id}>
           <b>{docLabel(d.type)}</b> · <a href="#" onClick={e => { e.preventDefault(); open(d) }}>{d.name || 'open'}</a>
@@ -540,5 +589,40 @@ function StudentImport({ counselors, onDone }) {
         </div>
       )}
     </div>
+  )
+}
+
+
+function BulkReassign({ counselors, selected, onDone }) {
+  const [counselorId, setCounselorId] = useState('')
+  const [reason, setReason] = useState('')
+  const { run, error, busy } = useAction()
+
+  const submit = e => {
+    e.preventDefault()
+    if (!selected.length) return alert('Select students to reassign from the list below first')
+    if (!counselorId) return alert('Choose the target counselor')
+    run(async () => {
+      const res = await api('/edu/students/bulk-assign', {
+        body: { student_ids: selected, counselor_id: counselorId, reason }
+      })
+      alert(`Successfully reassigned ${res.moved} student(s)`)
+      onDone()
+    })
+  }
+
+  return (
+    <form className="card row between" onSubmit={submit} style={{ marginBottom: 16, background: 'var(--bg-card-subtle, rgba(0,0,0,0.02))' }}>
+      <div className="row" style={{ flex: 1, gap: 12 }}>
+        <b>Reassign {selected.length} student(s) to:</b>
+        <Select value={counselorId} onChange={e => setCounselorId(e.target.value)} options={counselors} blank="Select counselor" required />
+        <input placeholder="Reason for reassignment" value={reason} onChange={e => setReason(e.target.value)} style={{ flex: 1 }} />
+      </div>
+      <div className="row">
+        <button disabled={busy || !selected.length}>Confirm Reassignment</button>
+        <button type="button" className="ghost" onClick={onDone}>Cancel</button>
+      </div>
+      {error && <p className="error wide">{error}</p>}
+    </form>
   )
 }

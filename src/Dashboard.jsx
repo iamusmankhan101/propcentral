@@ -428,6 +428,18 @@ function EduDashboard({ period, filters }) {
         </div>
 
         <div>
+          {ed.intakeAlerts?.length > 0 && (
+            <div className="card" style={{ borderLeft: '4px solid var(--accent, #d97706)' }}>
+              <h3>Intake Urgency Alerts <span className="count warn">{ed.intakeAlerts.length}</span></h3>
+              {ed.intakeAlerts.map(a => (
+                <div key={a.intake} className="line-item" style={{ padding: '6px 0' }}>
+                  <span><b>{a.intake}</b>: {a.pending_students} active student(s)</span>
+                  <a className="button ghost mini-btn" href={`#/students?q=${encodeURIComponent(a.intake)}`}>View pipeline</a>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="card">
             <h3>Intake pipeline</h3>
             {ed.intakes.length ? (
