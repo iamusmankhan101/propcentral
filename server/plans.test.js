@@ -129,3 +129,15 @@ test('the acting account plan caps the whole company, not one branch', async t =
   assert.equal((await named(5)).status, 200, 'the project cap')
   assert.equal((await units(300)).status, 200, 'and the inventory cap')
 })
+
+test('platform owner is seeded from env, sees users but no CRM data, and cannot be created by an admin', async t => {
+  const base = await boot(t, 53000 + (process.pid % 2000), { PLATFORM_ADMIN_EMAIL: 'owner@example.com', PLATFORM_ADMIN_PASSWORD: 'OwnerPass12345' })
+  const token = await post(base, '/login', { email: 'owner@example.com', password: 'OwnerPass12345' }).then(r => r.json()).then(d => d.token)
+  assert.ok(token)
+  assert.equal((await get(base, '/users', token)).status, 200)
+  const leads = await get(base, '/leads', token)
+  assert.ok(leads.status === 403 || ((await leads.json()).rows ?? []).length === 0)
+  const admin = await login(base, 'admin@propcentral.local')
+  const r = await post(base, '/users', { name: 'X', email: 'x@example.com', role: 'platform' }, { authorization: 'Bearer ' + admin })
+  assert.equal(r.status, 403)
+})

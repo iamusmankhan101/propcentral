@@ -224,7 +224,7 @@ const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now(
 const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Date.now()) / 864e5))
 // A plan is sold per company, so every cap counts the whole database: no branch or project gets its own allowance.
 const COUNT = {
-  users: () => one('SELECT count(*) n FROM users WHERE active=1').n,
+  users: () => one("SELECT count(*) n FROM users WHERE active=1 AND role!='platform'").n,
   branches: () => one('SELECT count(*) n FROM branches').n,
   projects: () => one('SELECT count(*) n FROM projects').n,
   units: () => one('SELECT count(*) n FROM units').n,
@@ -831,7 +831,7 @@ app.get('/api/meta', (req, res) => {
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
-    users: all('SELECT id, name, role, team_id, branch_id, active, available FROM users ORDER BY name'),
+    users: all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' ORDER BY name"),
     branches: all('SELECT * FROM branches'), teams: all('SELECT * FROM teams'),
     dealers: all('SELECT id, name, company, active FROM dealers ORDER BY name'),
     roles: roles().map(r => ({ key: r.key, label: r.label })),
@@ -2917,6 +2917,14 @@ if (db && !one('SELECT 1 FROM users')) {
       n % 4 === 0 ? 10 : 5, 'marla', JSON.stringify(n === 1 || n === 20 ? ['Corner'] : []), now())
   run(`INSERT INTO price_lists(project_id,unit_type,rate,per,effective_from,created_at) VALUES(?,'Plot',1200000,'marla','2026-01-01',?)`, pid, now())
   console.log('Seeded demo users (password: password123): admin@propcentral.local, head@propcentral.local, lead@propcentral.local, agent1@propcentral.local, agent2@propcentral.local')
+}
+
+// Platform owner from env, idempotent and independent of the demo seed
+{
+  const em = (process.env.PLATFORM_ADMIN_EMAIL || '').trim().toLowerCase(), pw = process.env.PLATFORM_ADMIN_PASSWORD || ''
+  if (db && em && pw.length < 10) console.warn('PLATFORM_ADMIN_PASSWORD must be at least 10 characters; platform admin not seeded')
+  else if (db && em && !one('SELECT 1 FROM users WHERE email=?', em))
+    run(`INSERT INTO users(name,email,role,active,pass) VALUES('Platform Admin',?,'platform',1,?)`, em, hash(pw))
 }
 
 // Vercel imports this file as a serverless function: no timers and no listener there; /api/cron/tick replaces them

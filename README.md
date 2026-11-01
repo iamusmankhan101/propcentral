@@ -21,6 +21,7 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 | Variable | Purpose |
 |---|---|
 | `PORT`, `DB_PATH` | Server port, local database file (default `./crm.db`). Ignored when `TURSO_DATABASE_URL` is set |
+| `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` | Optional. Seeds a `platform` owner (sign-ups/accounts only, no CRM data) at boot if that email does not exist. Password must be 10+ characters |
 | `CRM_DATABASE_URL`, `CRM_DATABASE_TOKEN` | Turso database URL (`libsql://…`) and token. Take priority over the `TURSO_*` ones. Use these on Vercel: the Turso integration creates a new database branch per deployment and overwrites `TURSO_*` |
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database URL (`libsql://…`) and token. Required on Vercel unless `CRM_DATABASE_URL` is set |
 | `CRON_SECRET` | Bearer secret for `/api/cron/tick` (SLA, lease and weekly-report jobs) |
