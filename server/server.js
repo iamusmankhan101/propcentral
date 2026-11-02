@@ -2789,6 +2789,13 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
       FROM edu_payments WHERE paid_at >= date('now', '-12 months') GROUP BY ym ORDER BY ym`)
   } catch (e) { console.error('paymentsYear error:', e) }
 
+  // Placement commissions monthly breakdown
+  let commissionsYear = []
+  try {
+    commissionsYear = all(`SELECT strftime('%Y-%m', paid_on) ym, sum(amount) total, count(*) count
+      FROM edu_commissions WHERE status='paid' AND paid_on >= date('now', '-12 months') GROUP BY ym ORDER BY ym`)
+  } catch (e) { console.error('commissionsYear error:', e) }
+
   // Recent fee / commission transactions
   let recentTransactions = []
   try {
@@ -2811,13 +2818,13 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
 
   // Operations & Health
   const ops = {
-    docVerificationRate: unverified === 0 ? '100%' : `${Math.round(((totalStudents - unverified) / Math.max(1, totalStudents)) * 100)}%`,
+    docVerificationRate: totalStudents === 0 ? '100%' : `${Math.round(((totalStudents - unverified) / totalStudents) * 100)}%`,
     pendingDocs: unverified,
     followupsDue: followups,
     activeCounselors: counselors.length
   }
 
-  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, intakeAlerts, mine, paymentsYear, recentTransactions, studentActivity, ops })
+  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, intakeAlerts, mine, paymentsYear, commissionsYear, recentTransactions, studentActivity, ops })
 })
 
 app.get('/api/edu/reports', eduGuard, (req, res) => {

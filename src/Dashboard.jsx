@@ -404,7 +404,7 @@ function EduDashboard({ period, filters }) {
 
   const maxStage = Math.max(1, ...ed.stages.map(s => s.n))
 
-  // Months labels for graphs (last 7 or 12 months)
+  // Months labels for graphs (last 7 months)
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   const now = new Date()
   const pastMonths = Array.from({ length: 7 }, (_, i) => {
@@ -417,18 +417,14 @@ function EduDashboard({ period, filters }) {
     }
   })
 
-  // Map real payments data onto past months
+  // Map real payments data onto past months (strictly real data, 0 if none yet)
   const paymentsMap = Object.fromEntries((ed.paymentsYear || []).map(p => [p.ym, p.total]))
-  const revPoints = pastMonths.map((m, idx) => {
-    // If real payments exist for this month, use them; otherwise provide realistic sample curve
-    const realVal = paymentsMap[m.ym]
-    const sampleVal = [35000, 52000, 78000, 64000, 112000, 150250, 142000][idx]
-    return { ...m, val: realVal != null ? realVal : sampleVal }
-  })
+  const revPoints = pastMonths.map(m => ({ ...m, val: paymentsMap[m.ym] || 0 }))
+  const totalRev = revPoints.reduce((acc, p) => acc + p.val, 0)
+  const maxRev = Math.max(1000, ...revPoints.map(p => p.val))
 
-  const maxRev = Math.max(100000, ...revPoints.map(p => p.val))
   // Smooth SVG curve coordinates for Revenue Overview
-  const W_REV = 600, H_REV = 180, PAD_L = 45, PAD_R = 20, PAD_T = 20, PAD_B = 25
+  const W_REV = 600, H_REV = 180, PAD_L = 50, PAD_R = 20, PAD_T = 20, PAD_B = 25
   const xRev = i => PAD_L + (i * (W_REV - PAD_L - PAD_R)) / Math.max(1, revPoints.length - 1)
   const yRev = v => PAD_T + (H_REV - PAD_T - PAD_B) * (1 - v / maxRev)
   const pathD = revPoints.map((p, i) => {
@@ -440,20 +436,19 @@ function EduDashboard({ period, filters }) {
   }).join(' ')
   const areaD = `${pathD} L ${xRev(revPoints.length - 1)} ${H_REV - PAD_B} L ${PAD_L} ${H_REV - PAD_B} Z`
 
-  // MRR growth bar data
-  const mrrBars = pastMonths.map((m, idx) => {
-    const sample = [24000, 28000, 34000, 40000, 44000, 48000, 55000][idx]
-    return { ...m, val: sample }
-  })
-  const maxMrr = Math.max(...mrrBars.map(b => b.val))
+  // MRR / Placement commissions data (strictly real data, 0 if none yet)
+  const commMap = Object.fromEntries((ed.commissionsYear || []).map(c => [c.ym, c.total]))
+  const mrrBars = pastMonths.map(m => ({ ...m, val: commMap[m.ym] || 0 }))
+  const totalMrr = mrrBars.reduce((acc, b) => acc + b.val, 0)
+  const maxMrr = Math.max(1000, ...mrrBars.map(b => b.val))
 
-  // Student activity donut data
-  const act = ed.studentActivity || { active: 6345, inactive: 1823, enrolled: 588, total: 8756 }
-  const totalAct = Math.max(1, (act.active || 0) + (act.inactive || 0) + (act.enrolled || 0))
+  // Real Student activity donut data
+  const act = ed.studentActivity || { active: 0, inactive: 0, enrolled: 0, total: 0 }
+  const totalAct = (act.active || 0) + (act.inactive || 0) + (act.enrolled || 0)
   const actItems = [
-    { label: 'Active in Process', count: act.active || 0, color: '#4f46e5', pct: Math.round(((act.active || 0) / totalAct) * 100) },
-    { label: 'Inactive / Dropped', count: act.inactive || 0, color: '#3b82f6', pct: Math.round(((act.inactive || 0) / totalAct) * 100) },
-    { label: 'Enrolled', count: act.enrolled || 0, color: '#f59e0b', pct: Math.round(((act.enrolled || 0) / totalAct) * 100) },
+    { label: 'Active in Process', count: act.active || 0, color: '#4f46e5', pct: totalAct ? Math.round(((act.active || 0) / totalAct) * 100) : 0 },
+    { label: 'Inactive / Dropped', count: act.inactive || 0, color: '#3b82f6', pct: totalAct ? Math.round(((act.inactive || 0) / totalAct) * 100) : 0 },
+    { label: 'Enrolled', count: act.enrolled || 0, color: '#f59e0b', pct: totalAct ? Math.round(((act.enrolled || 0) / totalAct) * 100) : 0 },
   ]
   const circR = 54, circC = 2 * Math.PI * circR
   let actOffset = 0
@@ -475,7 +470,10 @@ function EduDashboard({ period, filters }) {
         {/* Revenue Overview Curve */}
         <div className="card" style={{ margin: 0, padding: '20px 22px' }}>
           <div className="row between" style={{ marginBottom: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 16 }}>Revenue Overview</h3>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Revenue Overview</h3>
+              <small className="muted">{totalRev > 0 ? `Total: PKR ${totalRev.toLocaleString()}` : 'Tracks all student fees and deposits'}</small>
+            </div>
             <select
               value={revPeriod}
               onChange={e => setRevPeriod(e.target.value)}
@@ -502,7 +500,7 @@ function EduDashboard({ period, filters }) {
                   <g key={i}>
                     <line x1={PAD_L} y1={y} x2={W_REV - PAD_R} y2={y} stroke="rgba(0,0,0,0.06)" strokeDasharray="3 3" />
                     <text x={PAD_L - 6} y={y + 3} textAnchor="end" fontSize="10" fill="#9ca3af">
-                      ${valLabel}k
+                      {valLabel > 0 ? `${valLabel}k` : '0'}
                     </text>
                   </g>
                 )
@@ -516,17 +514,17 @@ function EduDashboard({ period, filters }) {
               {/* Area & Line */}
               <path d={areaD} fill="url(#eduRevGrad)" />
               <path d={pathD} fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" />
-              {/* Peak highlight marker */}
-              {revPoints.map((p, i) => {
-                const isPeak = p.val === Math.max(...revPoints.map(x => x.val))
+              {/* Peak highlight marker if revenue recorded */}
+              {totalRev > 0 && revPoints.map((p, i) => {
+                const isPeak = p.val === Math.max(...revPoints.map(x => x.val)) && p.val > 0
                 if (!isPeak) return null
                 const cx = xRev(i), cy = yRev(p.val)
                 return (
                   <g key={i}>
                     <circle cx={cx} cy={cy} r="5" fill="#4f46e5" stroke="#fff" strokeWidth="2" />
-                    <rect x={cx - 32} y={cy - 28} width="64" height="20" rx="6" fill="#e0e7ff" />
+                    <rect x={cx - 36} y={cy - 28} width="72" height="20" rx="6" fill="#e0e7ff" />
                     <text x={cx} y={cy - 14} textAnchor="middle" fontSize="10" fontWeight="700" fill="#3730a3">
-                      ${(p.val).toLocaleString()}
+                      PKR {p.val.toLocaleString()}
                     </text>
                   </g>
                 )
@@ -538,7 +536,10 @@ function EduDashboard({ period, filters }) {
         {/* MRR / Commission Growth Bar Chart */}
         <div className="card" style={{ margin: 0, padding: '20px 22px' }}>
           <div className="row between" style={{ marginBottom: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 16 }}>MRR / Commissions Growth</h3>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Placement Commissions</h3>
+              <small className="muted">{totalMrr > 0 ? `Total: PKR ${totalMrr.toLocaleString()}` : 'Commissions paid on student placements'}</small>
+            </div>
             <select
               value={mrrPeriod}
               onChange={e => setMrrPeriod(e.target.value)}
@@ -565,7 +566,7 @@ function EduDashboard({ period, filters }) {
                   <g key={i}>
                     <line x1={PAD_L} y1={y} x2={W_REV - PAD_R} y2={y} stroke="rgba(0,0,0,0.06)" strokeDasharray="3 3" />
                     <text x={PAD_L - 6} y={y + 3} textAnchor="end" fontSize="10" fill="#9ca3af">
-                      ${valLabel}k
+                      {valLabel > 0 ? `${valLabel}k` : '0'}
                     </text>
                   </g>
                 )
@@ -578,7 +579,7 @@ function EduDashboard({ period, filters }) {
                 const y = H_REV - PAD_B - h
                 return (
                   <g key={b.ym}>
-                    <rect x={x} y={y} width={barW} height={h} rx="5" fill="url(#barGrad)" />
+                    <rect x={x} y={y} width={barW} height={Math.max(2, h)} rx="5" fill="url(#barGrad)" />
                     <text x={x + barW / 2} y={H_REV - 8} textAnchor="middle" fontSize="10" fill="#6b7280">
                       {b.label}
                     </text>
@@ -610,7 +611,7 @@ function EduDashboard({ period, filters }) {
                 {(ed.recentTransactions && ed.recentTransactions.length > 0) ? (
                   ed.recentTransactions.map(tx => (
                     <tr key={tx.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td style={{ padding: '8px' }}><b>{tx.student_name}</b></td>
+                      <td style={{ padding: '8px' }}><a href={`#/students/${tx.student_id}`}><b>{tx.student_name}</b></a></td>
                       <td style={{ padding: '8px', color: 'var(--muted)' }}>{tx.type.replace(/_/g, ' ')}</td>
                       <td style={{ padding: '8px' }}><b>{tx.currency || 'PKR'} {Number(tx.amount).toLocaleString()}</b></td>
                       <td style={{ padding: '8px' }}><span className="status ok" style={{ fontSize: 11, padding: '2px 8px' }}>Paid</span></td>
@@ -618,21 +619,11 @@ function EduDashboard({ period, filters }) {
                     </tr>
                   ))
                 ) : (
-                  [
-                    { name: 'Ayesha Malik', plan: 'Tuition Deposit', amount: '$3,200', status: 'Paid', date: '2h ago' },
-                    { name: 'Bilal Ahmed', plan: 'Service Fee', amount: '$599', status: 'Paid', date: '5h ago' },
-                    { name: 'Hamza Sheikh', plan: 'Visa Processing', amount: '$750', status: 'Paid', date: '1d ago' },
-                    { name: 'Sana Iqbal', plan: 'Tuition Deposit', amount: '$4,500', status: 'Paid', date: '2d ago' },
-                    { name: 'Usman Tariq', plan: 'Application Fee', amount: '$250', status: 'Paid', date: '3d ago' },
-                  ].map((smp, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td style={{ padding: '8px' }}><b>{smp.name}</b></td>
-                      <td style={{ padding: '8px', color: 'var(--muted)' }}>{smp.plan}</td>
-                      <td style={{ padding: '8px' }}><b>{smp.amount}</b></td>
-                      <td style={{ padding: '8px' }}><span className="status ok" style={{ fontSize: 11, padding: '2px 8px' }}>{smp.status}</span></td>
-                      <td style={{ padding: '8px', color: 'var(--muted)', fontSize: 11 }}>{smp.date}</td>
-                    </tr>
-                  ))
+                  <tr>
+                    <td colSpan="5" className="muted" style={{ textAlign: 'center', padding: '20px 0' }}>
+                      No transactions recorded yet. <a href="#/payments" style={{ color: 'var(--s1)', fontWeight: 700 }}>Log a fee payment</a>
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
