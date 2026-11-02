@@ -15,10 +15,19 @@ export function Users() {
   const isPlatform = m.me.role === 'platform'
   const done = text => { setMsg(text); reload(); m.reloadMeta() }
 
+  const [showCreate, setShowCreate] = useState(false)
   const create = e => {
     const form = e.target
     const body = formData(e)
-    run(async () => { await api('/users', { body }); form.reset(); done('User created') })
+    // If admin left password blank, generate a random one — they'll use the reset link to set their own
+    if (!body.password) body.password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + 'Aa1!'
+    run(async () => {
+      const { id } = await api('/users', { body })
+      const r = await api(`/users/${id}/reset-password`, { body: {} })
+      setResetLink(location.origin + '/#/reset?token=' + r.token)
+      setMsg(`${body.name} added. Share the set-password link below — it expires in 30 minutes.`)
+      form.reset(); setShowCreate(false); reload(); m.reloadMeta()
+    })
   }
   const patch = (u, body) => run(async () => { await api('/users/' + u.id, { method: 'PATCH', body }); done('Saved') })
   // The platform switches a product module on for a whole company; the setting lives on its main account
@@ -87,17 +96,31 @@ export function Users() {
         </table>
       </div>
 
-      <form className="card grid" onSubmit={create}>
-        <h3 className="wide">Add user</h3>
-        <label>Name<input name="name" required /></label>
-        <label>Email<input name="email" type="email" required /></label>
-        <label>Phone (for SMS alerts)<input name="phone" /></label>
-        <label>Role<Select name="role" options={m.roles.map(r => [r.key, r.label])} defaultValue="agent" blank={null} /></label>
-        <label>Team<Select name="team_id" options={teams} blank="—" /></label>
-        <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
-        <label>Password<input name="password" type="password" minLength="10" maxLength="200" placeholder="10+ characters, letters and numbers" required /></label>
-        <div className="wide"><button disabled={busy}>Add user</button></div>
-      </form>
+      {showCreate ? (
+        <form className="card grid" onSubmit={create}>
+          <div className="wide row between">
+            <h3 style={{margin:0}}>Create account</h3>
+            <button type="button" className="ghost" onClick={() => setShowCreate(false)}>✕ Cancel</button>
+          </div>
+          <label>Name<input name="name" required autoFocus /></label>
+          <label>Email<input name="email" type="email" required /></label>
+          <label>Phone (optional)<input name="phone" /></label>
+          <label>Role<Select name="role" options={m.roles.map(r => [r.key, r.label])} defaultValue="agent" blank={null} /></label>
+          <label>Team<Select name="team_id" options={teams} blank="—" /></label>
+          <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
+          <label title="Leave blank — a set-password link is generated automatically and shown after saving">
+            Password <small className="muted">(optional — leave blank to send a set-password link)</small>
+            <input name="password" type="password" minLength="10" maxLength="200" placeholder="Leave blank to auto-generate" />
+          </label>
+          <div className="wide"><button disabled={busy}>Create account &amp; get set-password link</button></div>
+        </form>
+      ) : (
+        <div style={{marginBottom:'16px'}}>
+          <button onClick={() => { setShowCreate(true); setMsg(''); setResetLink('') }}>
+            <Icon name="users" size={15} /> Create account
+          </button>
+        </div>
+      )}
 
       <div className="cols">
         <form className="card" onSubmit={e => { const b = formData(e); e.target.reset(); addOrg('/branches', b) }}>
