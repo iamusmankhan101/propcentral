@@ -684,7 +684,7 @@ app.use('/api', (req, res, next) => {
 
 // Login is throttled per IP (all attempts) and per account (failed attempts), so neither a single
 // address nor a single account can be hammered; a successful sign-in clears that account's failures.
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
   const password = typeof req.body.password === 'string' ? req.body.password : ''
   // scrypt cost scales with input, so refuse oversized credentials before hashing anything
