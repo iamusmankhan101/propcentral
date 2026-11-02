@@ -1420,7 +1420,8 @@ app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
 })
 
 // Company admins can toggle modules for their own workspace directly from Settings › Company modules
-app.post('/api/company/modules', guard('settings'), (req, res) => {
+app.post('/api/company/modules', (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'platform') throw err(403, 'Only company administrators can configure modules')
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}`)
@@ -2763,7 +2764,33 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
     AND ea.id=(SELECT max(id) FROM edu_activities WHERE student_id=s.id AND next_action_at IS NOT NULL)
     ORDER BY ea.next_action_at LIMIT 30`, req.user.id, new Date(Date.now() + 864e5).toISOString())
 
-  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, intakeAlerts, mine })
+  // Revenue & Payments Breakdown (Yearly and Monthly)
+  const paymentsYear = all(`SELECT strftime('%Y-%m', paid_at) ym, sum(amount) total, count(*) count
+    FROM edu_payments WHERE paid_at >= date('now', '-12 months') GROUP BY ym ORDER BY ym`)
+
+  // Recent fee / commission transactions
+  const recentTransactions = all(`SELECT p.id, p.student_id, c.name student_name, p.type, p.amount, p.currency, p.paid_at, p.method, 'Fee Payment' category
+    FROM edu_payments p JOIN edu_students s ON s.id=p.student_id JOIN contacts c ON c.id=s.contact_id
+    WHERE ${w.replace(/\bs\./g, 's.')}
+    ORDER BY p.paid_at DESC LIMIT 6`, ...p)
+
+  // Student Engagement & Status Activity (Active in progress vs Inactive/Dropped vs Enrolled/Completed)
+  const studentActivity = one(`SELECT
+    sum(s.stage NOT IN ('Enrolled', 'Visa Decision')) active,
+    sum(s.stage IN ('Visa Decision', 'Rejected', 'Withdrawn')) inactive,
+    sum(s.stage = 'Enrolled') enrolled,
+    count(*) total
+    ${EDU_FROM} WHERE ${w}`, ...p)
+
+  // Operations & Health
+  const ops = {
+    docVerificationRate: unverified === 0 ? '100%' : `${Math.round(((totalStudents - unverified) / Math.max(1, totalStudents)) * 100)}%`,
+    pendingDocs: unverified,
+    followupsDue: followups,
+    activeCounselors: counselors.length
+  }
+
+  res.json({ from: fromDay, to: toDay, stages, totalStudents, kpi, apps, enrolled, followups, unverified, counselors, countries, intakes, intakeAlerts, mine, paymentsYear, recentTransactions, studentActivity, ops })
 })
 
 app.get('/api/edu/reports', eduGuard, (req, res) => {

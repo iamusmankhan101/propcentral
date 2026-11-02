@@ -617,6 +617,15 @@ function CompanyModules() {
   const [msg, setMsg] = useState('')
   const currentModules = m.me.modules || []
 
+  if (m.me.role !== 'admin' && m.me.role !== 'platform') {
+    return (
+      <div className="card">
+        <h3>Active Company Modules</h3>
+        <p className="muted">Only workspace administrators can manage company modules.</p>
+      </div>
+    )
+  }
+
   const toggle = (id, on) => {
     let next
     if (on) next = [...new Set([...currentModules, id])]
