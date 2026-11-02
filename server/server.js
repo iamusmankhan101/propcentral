@@ -15,7 +15,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '12'
+const SCHEMA_VERSION = '13'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -225,6 +225,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       created_at TEXT NOT NULL)`)
     db.exec('CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id)')
     addColumn('users', 'email_verified', 'INTEGER DEFAULT 0')
+    addColumn('users', 'created_at', 'TEXT') // when the account was created; NULL for accounts that predate the column
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
 } catch (e) {
@@ -613,7 +614,7 @@ app.use((req, res, next) => {
 // giant payload cannot be used to burn memory or CPU on the API.
 const jsonParser = limit => express.json({ limit, verify: (req, _res, buf) => { req.rawBody = buf } })
 const smallJson = jsonParser('2mb'), bigJson = jsonParser('24mb')
-const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\/|^\/api\/edu\/students\/\d+\/documents$/
+const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\/|^\/api\/edu\/students\/\d+\/documents$|^\/api\/platform\/accounts\/\d+\/restore$/
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next()
   const parse = BIG_BODY.test(req.path) ? bigJson : smallJson
@@ -697,8 +698,8 @@ app.post('/api/register', async (req, res) => {
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const plan = pickPlan(req.body.plan)
   const trialEnds = trialEndsAt()
-  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at) VALUES(?,?,?,?,0,1,?,?,?)',
-    name, email, phone, 'agent', hash(pass), plan.id, trialEnds).lastInsertRowid
+  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,created_at) VALUES(?,?,?,?,0,1,?,?,?,?)',
+    name, email, phone, 'agent', hash(pass), plan.id, trialEnds, now()).lastInsertRowid
   audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
   // Generate and store a 32-byte verification token
   const rawToken = crypto.randomBytes(32).toString('hex')
@@ -1419,8 +1420,8 @@ app.post('/api/users', guard('manage_users'), (req, res) => {
   planCap(req.user, 'users')
   const plan = req.body.plan ? pickPlan(req.body.plan) : null
   const owner = req.user.role === 'platform' ? null : req.user.owner_id ?? req.user.id
-  const cols = [...Object.keys(f), 'pass', 'owner_id', ...(plan ? ['plan', 'trial_ends_at'] : [])]
-  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass), owner,
+  const cols = [...Object.keys(f), 'pass', 'owner_id', 'created_at', ...(plan ? ['plan', 'trial_ends_at'] : [])]
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass), owner, now(),
     ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
   log(req, 'create', 'user', id, { ...f, plan: plan?.id })
   res.json({ id })
@@ -1472,9 +1473,9 @@ app.post('/api/platform/accounts', platformOnly, (req, res) => {
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const plan = req.body.plan ? pickPlan(req.body.plan) : null
   const tempPass = crypto.randomBytes(16).toString('hex') + 'Aa1!'
-  const cols = ['name', 'email', 'phone', 'role', 'active', 'available', 'pass', ...(plan ? ['plan', 'trial_ends_at'] : [])]
+  const cols = ['name', 'email', 'phone', 'role', 'active', 'available', 'pass', 'created_at', ...(plan ? ['plan', 'trial_ends_at'] : [])]
   const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`,
-    name, email, phone, 'admin', 1, 1, hash(tempPass), ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
+    name, email, phone, 'admin', 1, 1, hash(tempPass), now(), ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
   const raw = crypto.randomBytes(32).toString('hex')
   run('INSERT INTO password_resets(token_hash,user_id,created_at) VALUES(?,?,?)',
     crypto.createHash('sha256').update(raw).digest('hex'), id, now())
@@ -1484,26 +1485,14 @@ app.post('/api/platform/accounts', platformOnly, (req, res) => {
 
 // Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
 app.get('/api/platform/accounts', platformOnly, (_req, res) => {
-  try {
-    const us = all(`SELECT u.id, u.name, u.email, u.phone, u.role, u.active, u.plan, u.trial_ends_at, u.paid_at, u.totp_on, u.owner_id, u.modules, u.created_at,
-      (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u WHERE u.role!='platform' ORDER BY u.active DESC, u.name`, closedJson())
-    const mains = us.filter(u => u.owner_id == null)
-    res.json(mains.map(m => ({
-      ...m,
-      subs: us.filter(u => u.owner_id === m.id),
-      open_leads: us.filter(u => u.id === m.id || u.owner_id === m.id).reduce((s, u) => s + (u.open_leads || 0), 0),
-    })))
-  } catch (e) {
-    console.error('[/api/platform/accounts error]:', e)
-    // Fallback without subquery if open_leads query failed
-    const us = all("SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules, created_at FROM users WHERE role!='platform' ORDER BY active DESC, name")
-    const mains = us.filter(u => u.owner_id == null)
-    res.json(mains.map(m => ({
-      ...m,
-      open_leads: 0,
-      subs: us.filter(u => u.owner_id === m.id),
-    })))
-  }
+  const us = all(`SELECT u.id, u.name, u.email, u.phone, u.role, u.active, u.plan, u.trial_ends_at, u.paid_at, u.totp_on, u.owner_id, u.modules, u.created_at,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u WHERE u.role!='platform' ORDER BY u.active DESC, u.name`, closedJson())
+  const mains = us.filter(u => u.owner_id == null)
+  res.json(mains.map(m => ({
+    ...m,
+    subs: us.filter(u => u.owner_id === m.id),
+    open_leads: us.filter(u => u.id === m.id || u.owner_id === m.id).reduce((s, u) => s + (u.open_leads || 0), 0),
+  })))
 })
 // Which product modules a company can use. Set on its main account so everyone under it inherits the same
 // navigation; who inside the company actually sees Edu is then the permission matrix's job.
@@ -1514,7 +1503,8 @@ app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}. Choose from ${MODULE_IDS.join(', ')}`)
-  const list = req.body.modules.length ? req.body.modules : ['property']
+  // the base CRM is never switched off, whatever the console sends: whole sections of the app key off it
+  const list = [...new Set(['property', ...req.body.modules])]
   run('UPDATE users SET modules=? WHERE id=?', JSON.stringify(list), acct.id)
   for (const u of all("SELECT id FROM users WHERE (id=? OR owner_id=?) AND role='admin' AND active=1", acct.id, acct.id))
     notify(u.id, list.includes('edu') ? 'The Student Consultancy module is now enabled for your account.' : 'The Student Consultancy module was disabled for your account.', null)
@@ -1528,8 +1518,7 @@ app.post('/api/company/modules', (req, res) => {
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}`)
-  const list = req.body.modules.filter(m => MODULE_IDS.includes(m))
-  if (!list.length) throw err(400, 'At least one module must remain enabled')
+  const list = [...new Set(['property', ...req.body.modules.filter(m => MODULE_IDS.includes(m))])]
 
   const targetId = req.user.owner_id ?? req.user.id
   run('UPDATE users SET modules=? WHERE id=? OR owner_id=?', JSON.stringify(list), targetId, targetId)
@@ -1621,6 +1610,178 @@ app.get('/api/platform/backup', platformOnly, (req, res) => {
     log(req, 'backup', 'database', null)
     res.set('content-disposition', `attachment; filename="crm-backup-${now().slice(0, 10)}.db"`).type('application/octet-stream').send(data)
   } finally { fs.rmSync(tmp, { force: true }) }
+})
+// ---- per-workspace backup and restore ----
+// A workspace owns its team and everything those people touched, so that is what a bundle carries.
+// Projects, units, the university catalogue and settings are not partitioned per company in the schema,
+// so they stay out: restoring one company's file can never overwrite another company's inventory.
+// The audit log is append-only by trigger, so it is neither exported nor deleted on restore.
+const WS_KIND = 'estate-centric-workspace'
+const marks = n => Array.from({ length: n }, () => '?').join(',')
+// column names here always come from this file, never from the request. No ORDER BY: targets and
+// allotment_docs have no id column, and every row carries its own key on the way back in
+const pick_by = (table, pairs) => {
+  const parts = [], params = []
+  for (const [col, ids] of pairs) {
+    if (!ids.length) continue
+    parts.push(`${col} IN (${marks(ids.length)})`); params.push(...ids)
+  }
+  return parts.length ? all(`SELECT * FROM ${table} WHERE ${parts.join(' OR ')}`, ...params) : []
+}
+const ids_of = rows => rows.map(r => r.id).filter(x => x != null)
+const uniq = list => [...new Set(list)]
+
+function workspaceRows(mainId) {
+  const main = one('SELECT * FROM users WHERE id=? AND owner_id IS NULL', mainId)
+  if (!main) throw err(404, 'Workspace not found')
+  const users = all('SELECT * FROM users WHERE id=? OR owner_id=? ORDER BY id', mainId, mainId)
+  const uid = ids_of(users)
+  const leads = pick_by('leads', [['agent_id', uid]])
+  const lid = ids_of(leads)
+  const students = pick_by('edu_students', [['counselor_id', uid]])
+  const sid = ids_of(students)
+  const cid = uniq([...leads.map(l => l.contact_id), ...students.map(s => s.contact_id)].filter(x => x != null))
+  const properties = pick_by('properties', [['agent_id', uid], ['created_by', uid], ['owner_contact_id', cid]])
+  // attribution only: a shared property or contact belongs to whoever entered it, not to every company that touches it
+  const leases = pick_by('leases', [['created_by', uid], ['tenant_contact_id', cid]])
+  const leaseId = ids_of(leases)
+  const allotments = pick_by('allotments', [['created_by', uid], ['agent_id', uid], ['lead_id', lid]])
+  const aid = ids_of(allotments)
+  const listings = pick_by('listings', [['agent_id', uid], ['created_by', uid], ['owner_lead_id', lid]])
+  // media rows are the only real BLOBs; files on leads, allotments and students live in their own tables as text
+  const listingMedia = all(`SELECT id FROM media WHERE entity='listing' AND entity_id IN (${marks(ids_of(listings).length || 1)})`,
+    ...(ids_of(listings).length ? ids_of(listings) : [0])).map(r => r.id)
+  const media = pick_by('media', [['created_by', uid], ['id', listingMedia]])
+  const data = {
+    users,
+    // an account's own pending links belong to it: they reference users(id), so they leave and come back with it
+    email_verifications: pick_by('email_verifications', [['user_id', uid]]),
+    contacts: pick_by('contacts', [['id', cid]]),
+    leads,
+    activities: pick_by('activities', [['lead_id', lid]]),
+    visits: pick_by('visits', [['lead_id', lid]]),
+    sla_breaches: pick_by('sla_breaches', [['lead_id', lid], ['user_id', uid]]),
+    notifications: pick_by('notifications', [['user_id', uid]]),
+    targets: pick_by('targets', [['user_id', uid]]),
+    export_requests: pick_by('export_requests', [['user_id', uid], ['decided_by', uid]]),
+    unit_history: pick_by('unit_history', [['lead_id', lid], ['user_id', uid]]),
+    allotments,
+    installments: pick_by('installments', [['allotment_id', aid]]),
+    payments: pick_by('payments', [['allotment_id', aid], ['lead_id', lid], ['created_by', uid]]),
+    commissions: pick_by('commissions', [['allotment_id', aid], ['user_id', uid], ['paid_by', uid]]),
+    allotment_docs: pick_by('allotment_docs', [['allotment_id', aid]]),
+    listings,
+    properties,
+    leases,
+    rent_payments: pick_by('rent_payments', [['lease_id', leaseId], ['created_by', uid]]),
+    maintenance: pick_by('maintenance', [['created_by', uid]]),
+    owner_payouts: pick_by('owner_payouts', [['created_by', uid]]),
+    edu_students: students,
+    edu_documents: pick_by('edu_documents', [['student_id', sid], ['uploaded_by', uid]]),
+    edu_activities: pick_by('edu_activities', [['student_id', sid]]),
+    edu_applications: pick_by('edu_applications', [['student_id', sid], ['created_by', uid]]),
+    edu_payments: pick_by('edu_payments', [['student_id', sid], ['created_by', uid]]),
+    edu_commissions: pick_by('edu_commissions', [['student_id', sid], ['user_id', uid], ['created_by', uid]]),
+    media,
+  }
+  return { main, data }
+}
+// media holds real BLOBs, which JSON cannot carry: they travel as base64 and are marked so the
+// restore knows to hand the bytes back to the driver rather than a string
+const encodeBlobs = data => ({
+  ...data,
+  media: data.media.map(m => ({ ...m, data: m.data == null ? null : Buffer.from(m.data).toString('base64'), data_b64: m.data != null })),
+})
+function decodeBlobs(rows) {
+  return rows.map(r => {
+    if (r.data_b64 !== true || typeof r.data !== 'string') return r
+    const { data_b64, ...rest } = r
+    return { ...rest, data: new Uint8Array(Buffer.from(r.data, 'base64')) }
+  })
+}
+// children first: the same order the restore re-inserts in is parents first
+const WS_ORDER = ['users', 'email_verifications', 'contacts', 'leads', 'activities', 'visits', 'sla_breaches', 'notifications', 'targets', 'export_requests',
+  'unit_history', 'allotments', 'installments', 'payments', 'commissions', 'allotment_docs', 'listings', 'properties', 'leases',
+  'rent_payments', 'maintenance', 'owner_payouts', 'edu_students', 'edu_documents', 'edu_activities', 'edu_applications',
+  'edu_payments', 'edu_commissions', 'media']
+const WS_DELETE_ORDER = [...WS_ORDER].reverse()
+
+app.get('/api/platform/accounts/:id/backup', platformOnly, (req, res) => {
+  const { main, data } = workspaceRows(+req.params.id)
+  const counts = Object.fromEntries(WS_ORDER.map(k => [k, (data[k] || []).length]))
+  log(req, 'backup', 'workspace', main.id, counts)
+  res.set('content-disposition', `attachment; filename="workspace-${main.id}-${String(main.email).split('@')[0]}-${now().slice(0, 10)}.json"`)
+    .type('application/json')
+    .send(JSON.stringify({ kind: WS_KIND, version: 1, generated_at: now(),
+      account: { id: main.id, name: main.name, email: main.email, plan: main.plan, modules: parseModules(main.modules) },
+      counts, data: encodeBlobs(data) }))
+})
+
+// Restore replaces the workspace's own rows with the file's. The account id must match, the email must be
+// typed back, and the current state is read first so a failed insert leaves the caller the numbers to check.
+app.post('/api/platform/accounts/:id/restore', platformOnly, (req, res) => {
+  const id = +req.params.id
+  const bundle = req.body.bundle
+  if (!bundle || bundle.kind !== WS_KIND) throw err(400, `This is not a workspace backup file (expected ${WS_KIND})`)
+  if (bundle.account?.id !== id) throw err(400, `That file belongs to workspace ${bundle.account?.id}, not ${id}`)
+  const email = typeof req.body.confirm === 'string' ? req.body.confirm.trim().toLowerCase() : ''
+  if (email !== String(bundle.account.email).toLowerCase()) throw err(400, 'Type the account email exactly to confirm the restore')
+  const { main } = workspaceRows(id)
+  if (email !== String(main.email).toLowerCase()) throw err(400, 'The file and the workspace no longer match on email')
+  const data = bundle.data
+  if (!data || !Array.isArray(data.users)) throw err(400, 'The backup file has no team rows in it')
+  const tables = Object.keys(data).filter(k => WS_ORDER.includes(k))
+  const unknown = Object.keys(data).filter(k => !WS_ORDER.includes(k))
+  if (unknown.length) throw err(400, `This build cannot restore ${unknown.join(', ')}`)
+  const rows = { ...data, media: decodeBlobs(data.media || []) }
+  // wipe what the workspace holds *now*, not the ids in the file: rows created since the backup would
+  // otherwise survive a restore and sit next to the older copies of the same people
+  const current = workspaceRows(id).data
+  // one phone entered by two companies is one contact row, so a contact another workspace still points
+  // at stays behind even though this workspace's copy of it is being replaced
+  const stillReferenced = (table, col, ids, keep) => !ids.length ? []
+    : all(`SELECT DISTINCT ${col} id FROM ${table} WHERE ${col} IN (${marks(ids.length)})${keep.length ? ` AND id NOT IN (${marks(keep.length)})` : ''}`, ...ids, ...keep).map(r => r.id)
+  const contactIds = ids_of(current.contacts)
+  const sharedContacts = new Set([
+    ...stillReferenced('leads', 'contact_id', contactIds, ids_of(current.leads)),
+    ...stillReferenced('edu_students', 'contact_id', contactIds, ids_of(current.edu_students)),
+  ])
+  const wipe = (table, list) => {
+    let idc = ids_of(list)
+    if (table === 'contacts') idc = idc.filter(x => !sharedContacts.has(x))
+    if (!idc.length) return
+    if (table === 'allotment_docs') return run(`DELETE FROM allotment_docs WHERE allotment_id IN (${marks(idc.length)})`, ...idc)
+    if (table === 'targets') return run(`DELETE FROM targets WHERE user_id IN (${marks(idc.length)})`, ...idc)
+    run(`DELETE FROM ${table} WHERE id IN (${marks(idc.length)})`, ...idc)
+  }
+  const uid = ids_of(current.users)
+  const keep = { contacts: sharedContacts }
+  const restored = tx(() => {
+    // another company can still point at these people (an agent assigned a lead across the room); SQLite
+    // refuses the delete, so unassign them first the same way deleting a user does
+    if (uid.length) {
+      const m = marks(uid.length)
+      run(`UPDATE leads SET agent_id=NULL WHERE agent_id IN (${m})`, ...uid)
+      run(`UPDATE edu_students SET counselor_id=NULL WHERE counselor_id IN (${m})`, ...uid)
+      run(`UPDATE edu_commissions SET user_id=NULL WHERE user_id IN (${m})`, ...uid)
+    }
+    for (const table of WS_DELETE_ORDER) {
+      if (!tables.includes(table)) continue
+      wipe(table, table === 'allotment_docs' ? current.allotments : table === 'targets' ? current.users : current[table] || [])
+    }
+    for (const table of WS_ORDER) {
+      if (!tables.includes(table)) continue
+      for (const r of rows[table] || []) {
+        if (keep[table]?.has(r.id)) continue
+        insert(table, Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined)))
+      }
+    }
+    return Object.fromEntries(WS_ORDER.filter(k => tables.includes(k))
+      .map(k => [k, (rows[k] || []).filter(r => !keep[k]?.has(r.id)).length]))
+  })()
+  if (uid.length) run(`DELETE FROM sessions WHERE user_id IN (${marks(uid.length)})`, ...uid)
+  log(req, 'restore', 'workspace', id, restored)
+  res.json({ ok: true, restored, generated_at: bundle.generated_at })
 })
 // Platform deletes an entire company account / tenant workspace and all its users
 app.delete('/api/platform/accounts/:id', platformOnly, (req, res) => {

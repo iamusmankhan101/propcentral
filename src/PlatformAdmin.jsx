@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api, useApi, fmt } from './api.js'
 import { PLANS, MODULES, parseModules } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
@@ -40,6 +40,17 @@ const ADMIN_TABS = [
   { key: 'users', label: 'Users', title: 'All Users', sub: 'Every user across all tenant companies.', Icon: UsersIcon },
   { key: 'backups', label: 'Backups', title: 'Backups', sub: 'Download or review database backups.', Icon: Archive },
 ]
+
+// Files download through fetch, not window.open: the API reads the token from the Authorization header only
+async function saveFile(path, fallbackName) {
+  const r = await fetch('/api' + path, { headers: { authorization: 'Bearer ' + (localStorage.token || '') } })
+  if (!r.ok) throw new Error(r.status === 403 ? 'Only the platform owner can do this.' : `The server refused (${r.status})`)
+  const cd = r.headers.get('content-disposition') || ''
+  const name = cd.match(/filename="?([^";]+)"?/)?.[1] || fallbackName
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await r.blob()), download: name })
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 
 export default function PlatformAdmin() {
   const [tab, setTab] = useState('dashboard')
@@ -390,6 +401,8 @@ function WorkspacesPanel() {
   const [showCreate, setShowCreate] = useState(false)
   const [resetLink, setResetLink] = useState('')
   const [busy, setBusy] = useState(false)
+  const fileInput = useRef(null)
+  const restoreFor = useRef(null)
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -423,6 +436,26 @@ function WorkspacesPanel() {
     if (!confirm(`PERMANENTLY DELETE workspace "${u.name}" and all its team members? This cannot be undone.`)) return
     await api(`/platform/accounts/${u.id}`, { method: 'DELETE' })
     reload()
+  }
+
+  const backupWs = async (u) => {
+    try { await saveFile(`/platform/accounts/${u.id}/backup`, `workspace-${u.id}.json`) }
+    catch (e) { alert('Backup failed: ' + e.message) }
+  }
+
+  const restoreWs = async (u, file) => {
+    let bundle
+    try { bundle = JSON.parse(await file.text()) } catch { return alert('That file is not a backup I can read.') }
+    if (bundle.kind !== 'estate-centric-workspace') return alert('This is not a workspace backup file.')
+    if (bundle.account?.id !== u.id) return alert(`That file belongs to ${bundle.account?.email || 'another workspace'}, not ${u.email}.`)
+    const typed = prompt(`Restore ${u.name} from the file taken on ${fmt(bundle.generated_at)}?\n\nEverything this workspace holds today is replaced with it. Other companies are not touched.\n\nType the account email to confirm:`)
+    if (String(typed || '').trim().toLowerCase() !== String(u.email).toLowerCase()) return
+    try {
+      const r = await api(`/platform/accounts/${u.id}/restore`, { body: { bundle, confirm: typed } })
+      const n = Object.entries(r.restored).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
+      alert(`Restored ${n.length ? n.join(', ') : 'nothing'}.\n\nThat workspace is signed out now.`)
+      reload()
+    } catch (e) { alert('Restore failed: ' + e.message) }
   }
 
   const list = (accounts || []).filter(a => {
@@ -547,6 +580,12 @@ function WorkspacesPanel() {
                           Mark Paid
                         </button>
                       )}
+                      <button type="button" onClick={() => backupWs(u)} title="Download this company's own data as a file" style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
+                        <Archive size={12} style={{ verticalAlign: -2 }} /> Backup
+                      </button>
+                      <button type="button" onClick={() => { restoreFor.current = u; fileInput.current.click() }} title="Replace this company's data with a backup file" style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e9e9f2', background: '#fafafa', color: '#4b5563', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
+                        <RotateCcw size={12} style={{ verticalAlign: -2 }} /> Restore
+                      </button>
                       <button type="button" onClick={() => deleteAcct(u)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
                         Delete
                       </button>
@@ -558,6 +597,17 @@ function WorkspacesPanel() {
           </tbody>
         </table>
       </div>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/json,.json"
+        style={{ display: 'none' }}
+        onChange={e => {
+          const f = e.target.files?.[0]
+          if (f && restoreFor.current) restoreWs(restoreFor.current, f)
+          e.target.value = ''
+        }}
+      />
     </div>
   )
 }
@@ -834,8 +884,9 @@ function AllUsersPanel() {
    7. BACKUPS PANEL
 ───────────────────────────────────────────────────────────────────────────── */
 function BackupsPanel() {
-  const downloadBackup = () => {
-    window.open('/api/platform/backup', '_blank')
+  const downloadBackup = async () => {
+    try { await saveFile('/platform/backup', 'crm-backup.db') }
+    catch (e) { alert('Backup failed: ' + e.message) }
   }
 
   return (
@@ -851,6 +902,7 @@ function BackupsPanel() {
       </div>
       <p style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.6 }}>
         Download a complete SQLite database dump containing all accounts, leads, students, payments, and system configurations.
+        To take or put back a single company's own data, use <b>Backup</b> and <b>Restore</b> on its row under Workspaces — that file never touches another company.
       </p>
       <button
         type="button"

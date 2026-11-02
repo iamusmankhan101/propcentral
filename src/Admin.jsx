@@ -696,7 +696,7 @@ function CompanyModules() {
   return (
     <div className="card">
       <h3>Active Company Modules</h3>
-      <p className="muted">Turn modules on or off for this CRM workspace. If real estate is disabled, all leads, projects, plot listings, visits, and property sales are hidden.</p>
+      <p className="muted">Turn modules on or off for this workspace. The Property CRM is the base and always stays on; the switch that matters here is Student Consultancy.</p>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error">{error}</p>}
       <div className="grid" style={{ marginTop: 12 }}>
@@ -709,7 +709,7 @@ function CompanyModules() {
             <input
               type="checkbox"
               checked={currentModules.includes(mod.id)}
-              disabled={busy}
+              disabled={busy || mod.id === 'property'}
               onChange={e => toggle(mod.id, e.target.checked)}
               style={{ width: 20, height: 20 }}
             />

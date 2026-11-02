@@ -120,3 +120,79 @@ test('the platform switches product modules on for one company at a time', async
   assert.ok(permissions.edu.includes('agent') && permissions.edu.includes('admin'), 'counselors and admins get the Edu nav')
   assert.ok(!permissions.edu.includes('inventory') && !permissions.edu.includes('platform'), 'and the roles that counsel nobody do not')
 })
+
+test('a workspace backup carries one company and restoring it leaves the others alone', async t => {
+  const base = await boot(t)
+  const boss = await login(base, PLATFORM.email, PLATFORM.password)
+  const otherAdmin = await login(base, 'admin@propcentral.local', 'password123')
+
+  // a workspace is a main account plus the people it added; a lead belongs to whoever entered it
+  const company = async (name, email, agentEmail) => {
+    await fetch(base + '/register', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, email, password: 'Passw0rd12345', plan: 'starter' }) })
+    const co = (await (await call(base, 'GET', '/platform/accounts', boss)).json()).find(a => a.email === email)
+    await call(base, 'POST', `/users/${co.id}/activate`, boss)
+    await call(base, 'PATCH', `/users/${co.id}`, boss, { role: 'admin' })
+    const adminTok = await login(base, email, 'Passw0rd12345')
+    const agent = await call(base, 'POST', '/users', adminTok, { name: 'Counselor', email: agentEmail, role: 'agent', password: 'Passw0rd12345' })
+    const agentId = (await agent.json()).id
+    await call(base, 'POST', `/users/${agentId}/activate`, adminTok)
+    return { id: co.id, agentId, adminTok, agentTok: await login(base, agentEmail, 'Passw0rd12345') }
+  }
+  const A = await company('Alpha Realty', 'alpha@example.com', 'ali@alpha.test')
+  const B = await company('Beta Homes', 'beta@example.com', 'sam@beta.test')
+
+  const lead = async (tok, name, phone) => (await call(base, 'POST', '/leads', tok, { name, phone, source: 'Walk-in', lead_type: 'buyer' })).json()
+  const a1 = await lead(A.agentTok, 'Ali Trivedi', '03001112233')
+  await lead(B.agentTok, 'Beta Buyer', '03004445566')
+  // closing A's lead frees the same phone for B: one contacts row, two companies pointing at it
+  assert.equal((await call(base, 'POST', `/leads/${a1.lead_id}/status`, A.adminTok, { status: 'Lost', reason: 'Not interested', note: 'went elsewhere' })).status, 200)
+  const b2 = await lead(B.agentTok, 'Ali Trivedi', '03001112233')
+  const listing = await (await call(base, 'POST', '/listings', A.agentTok, { purpose: 'Sale', property_type: 'Plot', price: 5000000, city: 'Lahore' })).json()
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  assert.equal((await call(base, 'POST', '/media', A.agentTok, { entity: 'listing', entity_id: listing.id, kind: 'photo', name: 'front.png', data: 'data:image/png;base64,' + png })).status, 200)
+
+  const bk = await call(base, 'GET', `/platform/accounts/${A.id}/backup`, boss)
+  assert.equal(bk.status, 200)
+  assert.match(bk.headers.get('content-disposition') || '', /^attachment; filename="workspace-/)
+  const file = await bk.json()
+  assert.equal(file.kind, 'estate-centric-workspace')
+  assert.equal(file.account.email, 'alpha@example.com')
+  assert.deepEqual(file.data.users.map(u => u.email).sort(), ['ali@alpha.test', 'alpha@example.com'])
+  for (const [table, n] of [['users', 2], ['contacts', 1], ['leads', 1], ['listings', 1], ['media', 1], ['properties', 0], ['allotments', 0], ['edu_students', 0]])
+    assert.equal(file.counts[table], n, table)
+  const wire = JSON.stringify(file)
+  assert.ok(!wire.includes('beta@example.com') && !wire.includes('Beta Buyer'), "company B is not in company A's file")
+  assert.equal(file.data.media[0].data_b64, true, 'BLOBs travel as base64')
+
+  assert.equal((await call(base, 'GET', `/platform/accounts/${A.id}/backup`, otherAdmin)).status, 403, 'a company admin has no backup rights')
+  assert.equal((await call(base, 'GET', `/platform/accounts/${A.agentId}/backup`, boss)).status, 404, 'a sub-account is not a workspace')
+
+  const fileB = await (await call(base, 'GET', `/platform/accounts/${B.id}/backup`, boss)).json()
+  const restore = (id, bundle, confirm) => call(base, 'POST', `/platform/accounts/${id}/restore`, boss, { bundle, confirm })
+  assert.equal((await restore(A.id, file)).status, 400, 'nothing restores without the email typed back')
+  assert.equal((await restore(A.id, fileB, 'alpha@example.com')).status, 400, 'B file into A')
+  assert.equal((await restore(A.id, file, 'beta@example.com')).status, 400, 'the file and the confirmation must agree')
+  assert.equal((await restore(A.id, { ...file, data: { ...file.data, tax_returns: [] } }, 'alpha@example.com')).status, 400, 'a table this build cannot restore')
+
+  await lead(A.agentTok, 'Late Entry', '03007778899')
+  assert.equal((await (await call(base, 'GET', '/leads?q=Late', A.agentTok)).json()).total, 1)
+
+  const rs = await restore(A.id, file, 'alpha@example.com')
+  assert.equal(rs.status, 200)
+  const out = await rs.json()
+  assert.equal(out.restored.leads, 1)
+  assert.equal(out.restored.contacts, 0, 'the contact company B still points at is left in place')
+
+  assert.equal((await call(base, 'GET', '/leads', A.agentTok)).status, 401, 'a restore signs that workspace out')
+  const agentTok = await login(base, 'ali@alpha.test', 'Passw0rd12345')
+  assert.equal((await (await call(base, 'GET', '/leads?q=Late', agentTok)).json()).total, 0, 'the lead added after the backup is gone')
+  assert.equal((await (await call(base, 'GET', '/leads', agentTok)).json()).total, 1)
+  const [kept] = await (await call(base, 'GET', `/media?entity=listing&entity_id=${listing.id}`, agentTok)).json()
+  const bytes = await call(base, 'GET', `/files/${kept.token}`, agentTok).then(r => r.arrayBuffer())
+  assert.equal(Buffer.from(bytes).toString('base64'), png, 'the photo comes back byte for byte')
+
+  assert.equal((await (await call(base, 'GET', '/leads', B.agentTok)).json()).total, 2, "company B's leads are untouched")
+  const shared = await (await call(base, 'GET', `/leads/${b2.lead_id}`, B.agentTok)).json()
+  assert.equal(shared.lead.name, 'Ali Trivedi', 'and the shared contact row still stands')
+})
