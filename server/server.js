@@ -8,6 +8,34 @@ import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
 import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
+// ---- email sending (Resend REST API) ----
+const sendEmail = async (to, subject, html) => {
+  const recipients = Array.isArray(to) ? to : [to]
+  const apiKey = process.env.RESEND_API_KEY
+  const fromEmail = process.env.EMAIL_FROM || 'onboarding@resend.dev'
+  if (!apiKey) {
+    console.warn(`[sendEmail] RESEND_API_KEY missing! Cannot deliver email to: ${recipients.join(', ')}`)
+    return { ok: false, error: 'RESEND_API_KEY missing' }
+  }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromEmail, to: recipients, subject, html })
+    })
+    const bodyText = await res.text()
+    if (!res.ok) {
+      console.error('[Resend API Error]', res.status, bodyText)
+      return { ok: false, status: res.status, error: bodyText }
+    }
+    console.log('[Resend API Success]', bodyText)
+    return { ok: true, data: bodyText }
+  } catch (err) {
+    console.error('[Resend Network Error]', err.message)
+    return { ok: false, error: err.message }
+  }
+}
+
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const clean = v => v?.trim().replace(/^(['"])(.*)\1$/, '$2') || undefined
 const dbUrl = clean(process.env.CRM_DATABASE_URL) || clean(process.env.TURSO_DATABASE_URL) || clean(process.env.DB_PATH) || path.join(root, 'crm.db')
@@ -627,7 +655,15 @@ app.get('/api/health', (req, res) => {
   const mode = remote ? 'turso' : 'file'
   const host = dbHost ? { host: dbHost } : {}
   if (!db) return res.status(503).json({ ok: false, db: mode, ...host, error: String(dbError?.message || 'Database unavailable').slice(0, 300) })
-  res.json({ ok: true, db: mode, ...host, schema: SCHEMA_VERSION })
+  res.json({
+    ok: true,
+    db: mode,
+    ...host,
+    schema: SCHEMA_VERSION,
+    has_resend_key: !!process.env.RESEND_API_KEY,
+    email_from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
+    site_url: process.env.SITE_URL || 'https://app.estatecentric.com'
+  })
 })
 
 // Without this, a failed database init becomes an opaque FUNCTION_INVOCATION_FAILED on every route
@@ -706,16 +742,19 @@ app.post('/api/register', async (req, res) => {
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
   const expiresAt = Date.now() + 24 * 3600e3 // 24 hours
   run('INSERT INTO email_verifications(user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)', id, tokenHash, expiresAt, now())
-  const siteUrl = process.env.SITE_URL || 'https://propcentral.vercel.app'
+  const siteUrl = process.env.SITE_URL || 'https://app.estatecentric.com'
   const verifyUrl = `${siteUrl}/#/verify-email?token=${rawToken}`
-  const html = `<div style="font-family:Arial,sans-serif;max-width:520px">
-<h2 style="margin:0 0 8px">Verify your email</h2>
-<p>Hi ${name},</p>
-<p>Thanks for signing up! Click the button below to verify your email and activate your account:</p>
-<a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
-<p style="color:#888;font-size:13px">This link expires in 24 hours. If you didn't create an account, ignore this email.</p>
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;padding:20px;border:1px solid #eee;border-radius:10px">
+<h2 style="margin:0 0 12px;color:#1a1a2e">Verify your email</h2>
+<p style="color:#4a4a6a;line-height:1.6">Hi ${name},</p>
+<p style="color:#4a4a6a;line-height:1.6">Thanks for signing up for Estate Centric! Click the button below to verify your email and activate your account:</p>
+<div style="margin:24px 0">
+  <a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#ea580c;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Verify Email</a>
+</div>
+<p style="color:#888;font-size:12px">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color:#ea580c">${verifyUrl}</a></p>
+<p style="color:#888;font-size:12px">This link expires in 24 hours. If you didn't create an account, ignore this email.</p>
 </div>`
-  sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[register email]', e.message))
+  await sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[register email error]', e))
   res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds })
 })
 
@@ -744,16 +783,19 @@ app.post('/api/resend-verification', async (req, res) => {
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
     const expiresAt = Date.now() + 24 * 3600e3
     run('INSERT INTO email_verifications(user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)', u.id, tokenHash, expiresAt, now())
-    const siteUrl = process.env.SITE_URL || 'https://propcentral.vercel.app'
+    const siteUrl = process.env.SITE_URL || 'https://app.estatecentric.com'
     const verifyUrl = `${siteUrl}/#/verify-email?token=${rawToken}`
-    const html = `<div style="font-family:Arial,sans-serif;max-width:520px">
-<h2 style="margin:0 0 8px">Verify your email</h2>
-<p>Hi ${u.name},</p>
-<p>Click the button below to verify your email and activate your account:</p>
-<a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
-<p style="color:#888;font-size:13px">This link expires in 24 hours.</p>
+    const html = `<div style="font-family:Arial,sans-serif;max-width:520px;padding:20px;border:1px solid #eee;border-radius:10px">
+<h2 style="margin:0 0 12px;color:#1a1a2e">Verify your email</h2>
+<p style="color:#4a4a6a;line-height:1.6">Hi ${u.name},</p>
+<p style="color:#4a4a6a;line-height:1.6">Click the button below to verify your email and activate your account:</p>
+<div style="margin:24px 0">
+  <a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#ea580c;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Verify Email</a>
+</div>
+<p style="color:#888;font-size:12px">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color:#ea580c">${verifyUrl}</a></p>
+<p style="color:#888;font-size:12px">This link expires in 24 hours.</p>
 </div>`
-    sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[resend-verify email]', e.message))
+    await sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[resend-verify email error]', e))
   }
   res.json({ ok: true }) // always succeeds — don't reveal if email exists
 })
@@ -3652,24 +3694,7 @@ app.delete('/api/roles/:key', adminOnly, (req, res) => {
   res.json({ ok: true })
 })
 
-// ---- email sending (Resend REST API) ----
-const RESEND_API_KEY = process.env.RESEND_API_KEY
-const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev'
-async function sendEmail(to, subject, html) {
-  const recipients = Array.isArray(to) ? to : [to]
-  if (!RESEND_API_KEY) {
-    console.log(`[EMAIL stub -> ${recipients.join(', ')}] ${subject} (${html.length} chars)`)
-    return
-  }
-  try {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: EMAIL_FROM, to: recipients, subject, html })
-    })
-    if (!r.ok) console.error('[Resend error]', await r.text())
-  } catch (e) { console.error('[Resend fetch error]', e.message) }
-}
+// ---- weekly email report ----
 function weeklyReport() {
   const to = today(), from = new Date(Date.parse(to) - 7 * 864e5).toISOString().slice(0, 10), fromTs = from + 'T00:00:00'
   const n = (sql, ...p) => one(sql, ...p).n
