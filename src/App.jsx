@@ -6,6 +6,7 @@ import Lead from './Lead.jsx'
 import Visits from './Visits.jsx'
 import Projects, { Project, AllotmentLetter, PublicMap } from './Projects.jsx'
 import { Users, Settings, Audit } from './Admin.jsx'
+import PlatformAdmin from './PlatformAdmin.jsx'
 import { Ledger, Receipt, Collections } from './Payments.jsx'
 import Commissions from './Commissions.jsx'
 import Listings from './Listings.jsx'
@@ -510,6 +511,8 @@ export default function App() {
     if (!propertyOn && eduOn) go('/students?q=' + encodeURIComponent(q))
     else go('/leads?q=' + encodeURIComponent(q))
   }
+
+  if (isPlatform) return <PlatformAdmin />
 
   return (
     <Meta.Provider value={{ ...meta, can: p => meta.perms.includes(p), reloadMeta }}>
