@@ -46,6 +46,15 @@ export function Users() {
     const r = await api(`/users/${u.id}/deactivate`, { body: {} })
     done(`${u.name} deactivated. ${r.reassigned} of ${r.open} open leads reassigned.`)
   })
+  const deleteAccount = u => run(async () => {
+    if (isPlatform && u.owner_id == null) {
+      await api(`/platform/accounts/${u.id}`, { method: 'DELETE' })
+      done(`Workspace "${u.name}" and its associated accounts were deleted.`)
+    } else {
+      await api(`/users/${u.id}`, { method: 'DELETE' })
+      done(`User "${u.name}" was permanently deleted.`)
+    }
+  })
   // Hand out a one-time link instead of choosing the password for them
   const resetPw = u => run(async () => {
     const r = await api(`/users/${u.id}/reset-password`, { body: {} })
@@ -96,6 +105,9 @@ export function Users() {
                 {u.active
                   ? <button className="ghost danger" disabled={busy} onClick={() => confirm(`Deactivate ${u.name}? Their sessions end and open leads are reassigned.`) && deactivate(u)}>Offboard</button>
                   : <button className="ghost" onClick={() => run(async () => { await api(`/users/${u.id}/activate`, { body: {} }); done('Activated') })}>Activate</button>}
+                {(!u.active || isPlatform) && u.id !== m.me.id && (
+                  <button className="ghost danger" disabled={busy} title="Permanently delete account" onClick={() => confirm(`Are you sure you want to permanently delete "${u.name}"? This cannot be undone.`) && deleteAccount(u)}>Delete</button>
+                )}
               </td>
             </tr>
           ))}</tbody>

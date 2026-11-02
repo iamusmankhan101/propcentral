@@ -1611,6 +1611,59 @@ app.get('/api/platform/backup', platformOnly, (req, res) => {
     res.set('content-disposition', `attachment; filename="crm-backup-${now().slice(0, 10)}.db"`).type('application/octet-stream').send(data)
   } finally { fs.rmSync(tmp, { force: true }) }
 })
+// Platform deletes an entire company account / tenant workspace and all its users
+app.delete('/api/platform/accounts/:id', platformOnly, (req, res) => {
+  const id = +req.params.id
+  if (id === req.user.id) throw err(400, 'You cannot delete yourself')
+  const target = one('SELECT * FROM users WHERE id=?', id)
+  if (!target) throw err(404, 'Account not found')
+
+  // Find all sub-users under this tenant
+  const userIds = all('SELECT id FROM users WHERE id=? OR owner_id=?', id, id).map(u => u.id)
+  const qMarks = userIds.map(() => '?').join(',')
+
+  // Clean up sessions & reset tokens
+  db.exec(`DELETE FROM sessions WHERE user_id IN (${userIds.join(',')})`)
+  db.exec(`DELETE FROM password_resets WHERE user_id IN (${userIds.join(',')})`)
+  db.exec(`DELETE FROM email_verifications WHERE user_id IN (${userIds.join(',')})`)
+
+  // Unassign or nullify references from leads, students, etc.
+  db.exec(`UPDATE leads SET agent_id=NULL WHERE agent_id IN (${userIds.join(',')})`)
+  db.exec(`UPDATE edu_students SET counselor_id=NULL WHERE counselor_id IN (${userIds.join(',')})`)
+
+  // Delete all users under this tenant
+  db.exec(`DELETE FROM users WHERE id IN (${userIds.join(',')})`)
+
+  log(req, 'delete_account', 'user', id, { name: target.name, email: target.email, deleted_users_count: userIds.length })
+  res.json({ ok: true, deleted_count: userIds.length })
+})
+
+// Delete a single user under the company
+app.delete('/api/users/:id', guard('manage_users'), (req, res) => {
+  const id = +req.params.id
+  if (id === req.user.id) throw err(400, 'You cannot delete yourself')
+  const target = one('SELECT * FROM users WHERE id=?', id)
+  if (!target) throw err(404, 'User not found')
+
+  // Normal company admins cannot delete other companies' users
+  if (req.user.role !== 'platform') {
+    const owner = req.user.owner_id ?? req.user.id
+    if (target.id !== owner && target.owner_id !== owner) throw err(403, 'Permission denied')
+    if (target.owner_id == null && target.id === owner) throw err(400, 'Cannot delete the workspace owner account')
+  }
+
+  // Clean up sessions, tokens, lead assignments
+  run('DELETE FROM sessions WHERE user_id=?', id)
+  run('DELETE FROM password_resets WHERE user_id=?', id)
+  run('DELETE FROM email_verifications WHERE user_id=?', id)
+  run('UPDATE leads SET agent_id=NULL WHERE agent_id=?', id)
+  run('UPDATE edu_students SET counselor_id=NULL WHERE counselor_id=?', id)
+  run('DELETE FROM users WHERE id=?', id)
+
+  log(req, 'delete', 'user', id, { name: target.name, email: target.email })
+  res.json({ ok: true })
+})
+
 // M3.7 / M22.7: offboarding — deactivate, kill sessions, redistribute open leads
 app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {
   const id = +req.params.id
