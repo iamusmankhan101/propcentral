@@ -1459,6 +1459,29 @@ app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
 
 // ---- platform admin panel (role 'platform' only) ----
 const platformOnly = (req, _res, next) => (req.user.role === 'platform' ? next() : next(err(403, 'Platform admins only')))
+
+// Platform creates a brand-new company account (owner_id = NULL, active = 1, role = admin)
+app.post('/api/platform/accounts', platformOnly, (req, res) => {
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : ''
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
+  const rawPhone = typeof req.body.phone === 'string' ? req.body.phone.trim() : ''
+  const phone = rawPhone ? L.normalizePhone(rawPhone) : null
+  if (!name) throw err(400, 'Name is required')
+  if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email')
+  if (rawPhone && !phone) throw err(400, 'Enter a valid phone number')
+  if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
+  const plan = req.body.plan ? pickPlan(req.body.plan) : null
+  const tempPass = crypto.randomBytes(16).toString('hex') + 'Aa1!'
+  const cols = ['name', 'email', 'phone', 'role', 'active', 'available', 'pass', ...(plan ? ['plan', 'trial_ends_at'] : [])]
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`,
+    name, email, phone, 'admin', 1, 1, hash(tempPass), ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
+  const raw = crypto.randomBytes(32).toString('hex')
+  run('INSERT INTO password_resets(token_hash,user_id,created_at) VALUES(?,?,?)',
+    crypto.createHash('sha256').update(raw).digest('hex'), id, now())
+  log(req, 'create_account', 'user', id, { email, plan: plan?.id })
+  res.json({ id, token: raw })
+})
+
 // Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
 app.get('/api/platform/accounts', platformOnly, (_req, res) => {
   const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules, created_at,

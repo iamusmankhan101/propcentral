@@ -19,13 +19,19 @@ export function Users() {
   const create = e => {
     const form = e.target
     const body = formData(e)
-    // If admin left password blank, generate a random one — they'll use the reset link to set their own
-    if (!body.password) body.password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + 'Aa1!'
     run(async () => {
-      const { id } = await api('/users', { body })
-      const r = await api(`/users/${id}/reset-password`, { body: {} })
-      setResetLink(location.origin + '/#/reset?token=' + r.token)
-      setMsg(`${body.name} added. Share the set-password link below — it expires in 30 minutes.`)
+      if (isPlatform) {
+        const r = await api('/platform/accounts', { body })
+        setResetLink(location.origin + '/#/reset?token=' + r.token)
+        setMsg(`Company workspace account for ${body.name} created! Share the setup link below — it expires in 30 minutes.`)
+      } else {
+        // If admin left password blank, generate a random one — they'll use the reset link to set their own
+        if (!body.password) body.password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + 'Aa1!'
+        const { id } = await api('/users', { body })
+        const r = await api(`/users/${id}/reset-password`, { body: {} })
+        setResetLink(location.origin + '/#/reset?token=' + r.token)
+        setMsg(`${body.name} added. Share the set-password link below — it expires in 30 minutes.`)
+      }
       form.reset(); setShowCreate(false); reload(); m.reloadMeta()
     })
   }
@@ -98,26 +104,38 @@ export function Users() {
 
       {showCreate ? (
         <form className="card grid" onSubmit={create}>
-          <div className="wide row between">
-            <h3 style={{margin:0}}>Create account</h3>
+          <div className="wide row space-between between">
+            <h3 style={{margin:0}}>{isPlatform ? 'Create new company workspace' : 'Create account'}</h3>
             <button type="button" className="ghost" onClick={() => setShowCreate(false)}>✕ Cancel</button>
           </div>
-          <label>Name<input name="name" required autoFocus /></label>
-          <label>Email<input name="email" type="email" required /></label>
-          <label>Phone (optional)<input name="phone" /></label>
-          <label>Role<Select name="role" options={m.roles.map(r => [r.key, r.label])} defaultValue="agent" blank={null} /></label>
-          <label>Team<Select name="team_id" options={teams} blank="—" /></label>
-          <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
-          <label title="Leave blank — a set-password link is generated automatically and shown after saving">
-            Password <small className="muted">(optional — leave blank to send a set-password link)</small>
-            <input name="password" type="password" minLength="10" maxLength="200" placeholder="Leave blank to auto-generate" />
-          </label>
-          <div className="wide"><button disabled={busy}>Create account &amp; get set-password link</button></div>
+          <label>Company / Admin Name<input name="name" placeholder={isPlatform ? 'e.g. Apex Real Estate' : 'Full name'} required autoFocus /></label>
+          <label>Admin Email<input name="email" type="email" placeholder="admin@company.com" required /></label>
+          <label>Phone (optional)<input name="phone" placeholder="03xx xxxxxxx" /></label>
+          {isPlatform ? (
+            <label>Plan
+              <Select name="plan" options={PLANS.map(p => [p.id, `${p.name} (PKR ${p.monthly.toLocaleString('en-PK')}/mo)`])} defaultValue="solo" blank={null} />
+            </label>
+          ) : (
+            <>
+              <label>Role<Select name="role" options={m.roles.map(r => [r.key, r.label])} defaultValue="agent" blank={null} /></label>
+              <label>Team<Select name="team_id" options={teams} blank="—" /></label>
+              <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
+              <label title="Leave blank — a set-password link is generated automatically and shown after saving">
+                Password <small className="muted">(optional — leave blank to send a set-password link)</small>
+                <input name="password" type="password" minLength="10" maxLength="200" placeholder="Leave blank to auto-generate" />
+              </label>
+            </>
+          )}
+          <div className="wide">
+            <button disabled={busy}>
+              {isPlatform ? 'Create Workspace & Generate Setup Link' : 'Create account & get set-password link'}
+            </button>
+          </div>
         </form>
       ) : (
         <div style={{marginBottom:'16px'}}>
           <button onClick={() => { setShowCreate(true); setMsg(''); setResetLink('') }}>
-            <Icon name="users" size={15} /> Create account
+            <Icon name="users" size={15} /> {isPlatform ? 'Create new company workspace' : 'Create account'}
           </button>
         </div>
       )}
