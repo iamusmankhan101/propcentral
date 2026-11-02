@@ -1484,15 +1484,26 @@ app.post('/api/platform/accounts', platformOnly, (req, res) => {
 
 // Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
 app.get('/api/platform/accounts', platformOnly, (_req, res) => {
-  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules, created_at,
-    (SELECT count(*) FROM leads l WHERE l.agent_id=users.id AND ${OPEN}) open_leads FROM users WHERE role!='platform' ORDER BY active DESC, name`, closedJson())
-  const mains = us.filter(u => u.owner_id == null)
-  res.json(mains.map(m => ({
-    ...m,
-    subs: us.filter(u => u.owner_id === m.id),
-    // the company's own lead count is spread over its whole team, not just whoever signed up
-    open_leads: us.filter(u => u.id === m.id || u.owner_id === m.id).reduce((s, u) => s + u.open_leads, 0),
-  })))
+  try {
+    const us = all(`SELECT u.id, u.name, u.email, u.phone, u.role, u.active, u.plan, u.trial_ends_at, u.paid_at, u.totp_on, u.owner_id, u.modules, u.created_at,
+      (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u WHERE u.role!='platform' ORDER BY u.active DESC, u.name`, closedJson())
+    const mains = us.filter(u => u.owner_id == null)
+    res.json(mains.map(m => ({
+      ...m,
+      subs: us.filter(u => u.owner_id === m.id),
+      open_leads: us.filter(u => u.id === m.id || u.owner_id === m.id).reduce((s, u) => s + (u.open_leads || 0), 0),
+    })))
+  } catch (e) {
+    console.error('[/api/platform/accounts error]:', e)
+    // Fallback without subquery if open_leads query failed
+    const us = all("SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules, created_at FROM users WHERE role!='platform' ORDER BY active DESC, name")
+    const mains = us.filter(u => u.owner_id == null)
+    res.json(mains.map(m => ({
+      ...m,
+      open_leads: 0,
+      subs: us.filter(u => u.owner_id === m.id),
+    })))
+  }
 })
 // Which product modules a company can use. Set on its main account so everyone under it inherits the same
 // navigation; who inside the company actually sees Edu is then the permission matrix's job.
