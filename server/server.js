@@ -15,7 +15,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '11'
+const SCHEMA_VERSION = '12'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -215,6 +215,16 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       type TEXT NOT NULL DEFAULT 'counselor', amount INTEGER NOT NULL, currency TEXT DEFAULT 'PKR',
       status TEXT NOT NULL DEFAULT 'pending', paid_on TEXT, ref TEXT, note TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
     db.exec('CREATE INDEX IF NOT EXISTS edu_commissions_student ON edu_commissions(student_id)')
+    // Email verification
+    db.exec(`CREATE TABLE IF NOT EXISTS email_verifications(
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL)`)
+    db.exec('CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id)')
+    addColumn('users', 'email_verified', 'INTEGER DEFAULT 0')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
 } catch (e) {
@@ -640,7 +650,7 @@ app.post('/api/login', (req, res) => {
   const u = one('SELECT * FROM users WHERE email=? AND active=1', email)
   if (!u || !checkPw(password, u.pass)) {
     const pending = one('SELECT * FROM users WHERE email=? AND active=0', email)
-    if (pending && checkPw(password, pending.pass)) throw err(403, 'Your account is waiting for an admin to activate it')
+    if (pending && checkPw(password, pending.pass)) throw err(403, 'Please verify your email address. Check your inbox for the verification link.', { need_verify: true, email: pending.email })
     rateHit(userKey, 5, 15 * 60e3)
     audit(u?.id, 'login_failed', 'user', u?.id, { email }, req.ip)
     throw err(401, 'Wrong email or password')
@@ -665,8 +675,8 @@ app.post('/api/login', (req, res) => {
   res.json({ token })
 })
 
-// Self-service sign-up: creates an inactive agent account that an admin activates under Users.
-app.post('/api/register', (req, res) => {
+// Self-service sign-up: creates an inactive account; email verification activates it.
+app.post('/api/register', async (req, res) => {
   const ip = req.ip || 'local'
   rateHit(rateKey('register-ip', ip), 5, 3600e3, 'Too many sign-ups from this address')
   // A global ceiling stops a botnet rotating addresses from flooding the approval queue and audit log
@@ -689,10 +699,62 @@ app.post('/api/register', (req, res) => {
   const trialEnds = trialEndsAt()
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at) VALUES(?,?,?,?,0,1,?,?,?)',
     name, email, phone, 'agent', hash(pass), plan.id, trialEnds).lastInsertRowid
-  for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
-    notify(u.id, `New sign-up: ${name} (${email}) chose ${plan.name}, waiting for approval`, null)
   audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
+  // Generate and store a 32-byte verification token
+  const rawToken = crypto.randomBytes(32).toString('hex')
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
+  const expiresAt = Date.now() + 24 * 3600e3 // 24 hours
+  run('INSERT INTO email_verifications(user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)', id, tokenHash, expiresAt, now())
+  const siteUrl = process.env.SITE_URL || 'https://propcentral.vercel.app'
+  const verifyUrl = `${siteUrl}/#/verify-email?token=${rawToken}`
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px">
+<h2 style="margin:0 0 8px">Verify your email</h2>
+<p>Hi ${name},</p>
+<p>Thanks for signing up! Click the button below to verify your email and activate your account:</p>
+<a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
+<p style="color:#888;font-size:13px">This link expires in 24 hours. If you didn't create an account, ignore this email.</p>
+</div>`
+  sendEmail(email, 'Verify your ARK CRM email', html).catch(e => console.error('[register email]', e.message))
   res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds })
+})
+
+// Email verification: called by the frontend with the raw token from the link
+app.post('/api/verify-email', (req, res) => {
+  rateHit(rateKey('verify-ip', req.ip || 'local'), 10, 15 * 60e3, 'Too many verification attempts')
+  const token = typeof req.body.token === 'string' ? req.body.token.trim() : ''
+  if (!token) throw err(400, 'Verification token is required')
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
+  const row = one('SELECT * FROM email_verifications WHERE token_hash=?', tokenHash)
+  if (!row || row.used_at || row.expires_at <= Date.now()) throw err(400, 'This verification link has expired or already been used. Request a new one.')
+  run('UPDATE users SET active=1, email_verified=1 WHERE id=?', row.user_id)
+  run('UPDATE email_verifications SET used_at=? WHERE token_hash=?', now(), tokenHash)
+  audit(row.user_id, 'email_verified', 'user', row.user_id, null, req.ip)
+  res.json({ ok: true })
+})
+
+// Resend verification email
+app.post('/api/resend-verification', async (req, res) => {
+  rateHit(rateKey('resend-verify-ip', req.ip || 'local'), 3, 3600e3, 'Too many resend requests. Try again in an hour.')
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
+  const u = email && one('SELECT * FROM users WHERE email=? AND active=0', email)
+  if (u) {
+    run('DELETE FROM email_verifications WHERE user_id=?', u.id)
+    const rawToken = crypto.randomBytes(32).toString('hex')
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
+    const expiresAt = Date.now() + 24 * 3600e3
+    run('INSERT INTO email_verifications(user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)', u.id, tokenHash, expiresAt, now())
+    const siteUrl = process.env.SITE_URL || 'https://propcentral.vercel.app'
+    const verifyUrl = `${siteUrl}/#/verify-email?token=${rawToken}`
+    const html = `<div style="font-family:Arial,sans-serif;max-width:520px">
+<h2 style="margin:0 0 8px">Verify your email</h2>
+<p>Hi ${u.name},</p>
+<p>Click the button below to verify your email and activate your account:</p>
+<a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
+<p style="color:#888;font-size:13px">This link expires in 24 hours.</p>
+</div>`
+    sendEmail(email, 'Verify your ARK CRM email', html).catch(e => console.error('[resend-verify email]', e.message))
+  }
+  res.json({ ok: true }) // always succeeds — don't reveal if email exists
 })
 
 // "Forgot password": the answer never reveals whether the email exists, and no reset secret is emailed
@@ -1399,8 +1461,15 @@ app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
 const platformOnly = (req, _res, next) => (req.user.role === 'platform' ? next() : next(err(403, 'Platform admins only')))
 // Main accounts (no owner) with the users added under them. Pre-hierarchy users have no owner, so they count as main accounts.
 app.get('/api/platform/accounts', platformOnly, (_req, res) => {
-  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules FROM users WHERE role!='platform' ORDER BY active DESC, name`)
-  res.json(us.filter(u => u.owner_id == null).map(m => ({ ...m, subs: us.filter(u => u.owner_id === m.id) })))
+  const us = all(`SELECT id, name, email, phone, role, active, plan, trial_ends_at, paid_at, totp_on, owner_id, modules, created_at,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=users.id AND ${OPEN}) open_leads FROM users WHERE role!='platform' ORDER BY active DESC, name`, closedJson())
+  const mains = us.filter(u => u.owner_id == null)
+  res.json(mains.map(m => ({
+    ...m,
+    subs: us.filter(u => u.owner_id === m.id),
+    // the company's own lead count is spread over its whole team, not just whoever signed up
+    open_leads: us.filter(u => u.id === m.id || u.owner_id === m.id).reduce((s, u) => s + u.open_leads, 0),
+  })))
 })
 // Which product modules a company can use. Set on its main account so everyone under it inherits the same
 // navigation; who inside the company actually sees Edu is then the permission matrix's job.
@@ -3318,9 +3387,24 @@ app.delete('/api/roles/:key', adminOnly, (req, res) => {
   res.json({ ok: true })
 })
 
-// ---- weekly email report ----
-// ponytail: email is a console stub like SMS. Plug SMTP or an email API (e.g. Resend, SES) in here
-const sendEmail = (to, subject, html) => console.log(`[EMAIL -> ${to.join(', ')}] ${subject} (${html.length} chars)`)
+// ---- email sending (Resend REST API) ----
+const RESEND_API_KEY = process.env.RESEND_API_KEY
+const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev'
+async function sendEmail(to, subject, html) {
+  const recipients = Array.isArray(to) ? to : [to]
+  if (!RESEND_API_KEY) {
+    console.log(`[EMAIL stub -> ${recipients.join(', ')}] ${subject} (${html.length} chars)`)
+    return
+  }
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: EMAIL_FROM, to: recipients, subject, html })
+    })
+    if (!r.ok) console.error('[Resend error]', await r.text())
+  } catch (e) { console.error('[Resend fetch error]', e.message) }
+}
 function weeklyReport() {
   const to = today(), from = new Date(Date.parse(to) - 7 * 864e5).toISOString().slice(0, 10), fromTs = from + 'T00:00:00'
   const n = (sql, ...p) => one(sql, ...p).n

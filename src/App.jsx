@@ -33,8 +33,9 @@ function Login() {
   const [notice, setNotice] = useState('')
   const [email, setEmail] = useState('')
   const [trial, setTrial] = useState(null)
+  const [needVerify, setNeedVerify] = useState('')
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTrial(null) }
+  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTrial(null); setNeedVerify('') }
   const submit = e => {
     const body = formData(e)
     run(async () => {
@@ -46,13 +47,23 @@ function Login() {
       if (signup) {
         await api('/register', { body })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
-        setNotice(`Account created on the ${planName(body.plan)} plan. An admin has to activate it before you can sign in.`)
+        setNotice(`Account created! Check ${body.email} for a verification link.`)
         return
       }
       let r
-      try { r = await api('/login', { body }) } catch (e) { if (e.data?.trial_ended) setTrial(e.data); throw e }
+      try { r = await api('/login', { body }) } catch (e) {
+        if (e.data?.trial_ended) setTrial(e.data)
+        if (e.data?.need_verify) setNeedVerify(e.data.email || body.email)
+        throw e
+      }
       if (r.need_code) return setNeedCode(true)
       localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
+    })
+  }
+  const resendVerification = () => {
+    run(async () => {
+      await api('/resend-verification', { body: { email: needVerify } })
+      setNotice('Verification email resent! Check your inbox.')
     })
   }
   return (
@@ -65,7 +76,7 @@ function Login() {
       <div className="login-side">
         <form className="login" onSubmit={submit}>
           <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Pick the plan that fits your team — every plan starts with a 7-day free trial. An admin activates new accounts.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Pick the plan that fits your team — every plan starts with a 7-day free trial.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
           {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
           {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
           <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
@@ -85,7 +96,13 @@ function Login() {
           {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
           {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
           {notice && <p className="ok">{notice}</p>}
-          {error && <p className="error">{error}</p>}
+          {error && !needVerify && <p className="error">{error}</p>}
+          {needVerify && (
+            <div className="card banner" style={{marginBottom:'8px'}}>
+              <p style={{margin:'0 0 8px'}}>Please verify your email at <b>{needVerify}</b> before signing in.</p>
+              <button type="button" className="button" style={{fontSize:'13px',padding:'6px 14px'}} onClick={resendVerification} disabled={busy}>Resend verification email</button>
+            </div>
+          )}
           {trial && <div className="card banner trial-ended">
             <b>Your {planName(trial.plan)} free trial ended on {String(trial.trial_ends_at).slice(0, 10)}.</b>
             <p className="muted">Nothing is deleted — activate the plan and sign straight back in.</p>
@@ -138,6 +155,29 @@ function ResetPassword({ token }) {
       </form>
     </div>
   )
+}
+
+function VerifyEmail({ token }) {
+  const { run, error, busy } = useAction()
+  const [done, setDone] = useState(false)
+  useEffect(() => { run(async () => { await api('/verify-email', { body: { token } }); setDone(true) }) }, [token])
+  if (busy) return <div className="login-page"><div className="login-side"><div className="login"><p className="muted">Verifying your email…</p></div></div></div>
+  if (error) return (
+    <div className="login-page"><div className="login-side"><div className="login">
+      <h1>Verification failed</h1>
+      <p className="error">{error}</p>
+      <p className="muted">The link may have expired. Sign in to request a new one.</p>
+      <a className="button" href="#/">Back to sign in</a>
+    </div></div></div>
+  )
+  if (done) return (
+    <div className="login-page"><div className="login-side"><div className="login">
+      <h1>Email verified ✓</h1>
+      <p className="ok">Your account is active. You can now sign in.</p>
+      <a className="button" href="#/">Sign in</a>
+    </div></div></div>
+  )
+  return null
 }
 
 // Plays the mark once, on the first render after signing in; the flag is consumed so a
@@ -372,12 +412,15 @@ export default function App() {
   // The platform owner has no CRM pages: anything that is not Accounts goes home
   useEffect(() => {
     if (!isPlatform) return
-    const special = route.startsWith('/reset') || route.startsWith('/map/') || route.startsWith('/portal/')
+    const special = route.startsWith('/reset') || route.startsWith('/map/') || route.startsWith('/portal/') || route.startsWith('/verify-email')
     if (!special && (route.split('?')[0] || '/') !== '/users') go('/users')
   }, [isPlatform, route])
 
   const resetToken = route.match(/^\/reset(?:\?token=([a-f0-9]{64}))?$/)?.[1]
   if (route.startsWith('/reset')) return <ResetPassword token={resetToken || ''} key={route} />
+  const verifyToken = route.startsWith('/verify-email') ? new URLSearchParams(route.split('?')[1] || '').get('token') : null
+  if (verifyToken) return <VerifyEmail token={verifyToken} key={verifyToken} />
+  if (route.startsWith('/verify-email')) return <div className="login-page"><div className="login-side"><div className="login"><h1>Invalid link</h1><p className="error">No verification token found.</p><a href="#/">Back to sign in</a></div></div></div>
   const shared = route.match(/^\/map\/([\w-]+)$/)?.[1]
   if (shared) return <PublicMap token={shared} /> // client link: no login
   const portal = route.match(/^\/portal\/([a-f0-9]+)(?:\/receipts\/(\d+))?$/)
