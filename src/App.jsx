@@ -13,7 +13,7 @@ import Reports from './Reports.jsx'
 import Campaigns from './Campaigns.jsx'
 import Assistant from './Assistant.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
-import Students, { Student } from './Edu.jsx'
+import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
@@ -407,6 +407,7 @@ export default function App() {
           ['/', 'Dashboard', 'dashboard', null, 'all'],
           ['/students', 'Students', 'cap', null, 'all'],
           ['/applications', 'Applications', 'send', null, 'all'],
+          ['/payments', 'Payments', 'receipt', null, 'all'],
           ['/universities', 'Universities', 'book', null, 'wide'],
           ['/courses', 'Courses', 'layers', null, 'wide'],
           ['/reports', 'Reports', 'calendar', null, 'wide'],
@@ -449,6 +450,7 @@ export default function App() {
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
           '/applications': <Applications query={query} key={query} />,
+          '/payments': <EduPayments query={query} key={query} />,
           '/universities': <Universities query={query} key={query} />,
           '/courses': <Courses query={query} key={query} />,
         } : {})

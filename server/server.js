@@ -2661,6 +2661,24 @@ app.delete('/api/edu/applications/:id', eduGuard, (req, res) => {
 })
 
 // ---------- Student payments ----------
+app.get('/api/edu/payments', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  const q = req.query
+  const where = [w.replace(/\bs\./g, 's.')], params = [...p]
+  if (q.type) { where.push('p.type=?'); params.push(q.type) }
+  if (q.student_id) { where.push('p.student_id=?'); params.push(+q.student_id) }
+  if (q.q) {
+    where.push('(c.name LIKE ? OR c.phone LIKE ? OR p.reference LIKE ? OR p.note LIKE ?)')
+    const like = `%${q.q}%`
+    params.push(like, like, like, like)
+  }
+  const rows = all(`SELECT p.*, c.name student_name, c.phone student_phone, u.name created_by_name
+    FROM edu_payments p JOIN edu_students s ON s.id=p.student_id JOIN contacts c ON c.id=s.contact_id
+    LEFT JOIN users u ON u.id=p.created_by
+    WHERE ${where.join(' AND ')}
+    ORDER BY p.paid_at DESC, p.id DESC LIMIT 100`, ...params)
+  res.json({ rows, total: rows.length })
+})
 app.get('/api/edu/students/:id/payments', eduGuard, (req, res) => {
   const s = scopedEdu(req.user, +req.params.id)
   res.json(all(`SELECT p.*, u.name created_by_name FROM edu_payments p LEFT JOIN users u ON u.id=p.created_by

@@ -626,3 +626,94 @@ function BulkReassign({ counselors, selected, onDone }) {
     </form>
   )
 }
+
+export function EduPayments({ query = '' }) {
+  const m = useMeta()
+  const params = new URLSearchParams(query)
+  const [f, setF] = useState({ q: params.get('q') || '', type: '' })
+  const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== '')).toString()
+  const [data, reload] = useApi('/edu/payments' + (qs ? '?' + qs : ''))
+  const paymentTypes = m.settings.edu_payment_types || ['tuition_deposit', 'visa_fee', 'ielts_fee', 'service_fee', 'scholarship', 'other']
+
+  const rows = data?.rows || []
+  const total = rows.reduce((s, r) => s + (r.amount || 0), 0)
+
+  return (
+    <section>
+      <div className="row between" style={{ marginBottom: 18 }}>
+        <div>
+          <h2>Fee Payments & Receipts</h2>
+          <p className="muted">Student consultancy fee collections, deposits, and service fees</p>
+        </div>
+        <a className="button" href="#/students">+ Record from student</a>
+      </div>
+
+      <div className="card ledger-tiles">
+        <div><small>Total Payments Logged</small><b>{rows.length}</b></div>
+        <div><small>Total Volume</small><b className="ok">PKR {total.toLocaleString('en-PK')}</b></div>
+        <div><small>Latest Record</small><b>{rows[0]?.paid_at ? fmt(rows[0].paid_at) : '—'}</b></div>
+      </div>
+
+      <div className="card scroll">
+        <div className="filters row" style={{ marginBottom: 14 }}>
+          <input
+            placeholder="Search student, phone, ref, or notes…"
+            value={f.q}
+            onChange={e => setF({ ...f, q: e.target.value })}
+            style={{ minWidth: 260 }}
+          />
+          <Select
+            value={f.type}
+            onChange={e => setF({ ...f, type: e.target.value })}
+            options={paymentTypes.map(t => [t, docLabel(t)])}
+            blank="All payment types"
+          />
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Method / Ref</th>
+              <th>Paid On</th>
+              <th>Recorded By</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(p => (
+              <tr key={p.id}>
+                <td>
+                  <a href={'#/students/' + p.student_id}><b>{p.student_name}</b></a>
+                  {p.student_phone && <small className="muted"><br />{p.student_phone}</small>}
+                </td>
+                <td><span className="status ok">{docLabel(p.type)}</span></td>
+                <td><b>{p.currency || 'PKR'} {Number(p.amount).toLocaleString('en-PK')}</b></td>
+                <td>
+                  {p.method || '—'}
+                  {p.reference && <small className="muted"><br />Ref: {p.reference}</small>}
+                </td>
+                <td className="nowrap">{p.paid_at ? fmt(p.paid_at) : '—'}</td>
+                <td>{p.created_by_name || 'System'}</td>
+                <td style={{ maxWidth: 220, fontSize: 12 }}>{p.note || '—'}</td>
+                <td>
+                  <a className="button ghost mini-btn" href={'#/students/' + p.student_id}>View Student</a>
+                </td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan="8" className="muted" style={{ textAlign: 'center', padding: '24px 0' }}>
+                  No fee payment records found. To record a payment, open any student profile and use "+ Record payment".
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
