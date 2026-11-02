@@ -15,7 +15,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '10'
+const SCHEMA_VERSION = '11'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -2765,22 +2765,31 @@ app.get('/api/edu/dashboard', eduGuard, (req, res) => {
     ORDER BY ea.next_action_at LIMIT 30`, req.user.id, new Date(Date.now() + 864e5).toISOString())
 
   // Revenue & Payments Breakdown (Yearly and Monthly)
-  const paymentsYear = all(`SELECT strftime('%Y-%m', paid_at) ym, sum(amount) total, count(*) count
-    FROM edu_payments WHERE paid_at >= date('now', '-12 months') GROUP BY ym ORDER BY ym`)
+  let paymentsYear = []
+  try {
+    paymentsYear = all(`SELECT strftime('%Y-%m', paid_at) ym, sum(amount) total, count(*) count
+      FROM edu_payments WHERE paid_at >= date('now', '-12 months') GROUP BY ym ORDER BY ym`)
+  } catch (e) { console.error('paymentsYear error:', e) }
 
   // Recent fee / commission transactions
-  const recentTransactions = all(`SELECT p.id, p.student_id, c.name student_name, p.type, p.amount, p.currency, p.paid_at, p.method, 'Fee Payment' category
-    FROM edu_payments p JOIN edu_students s ON s.id=p.student_id JOIN contacts c ON c.id=s.contact_id
-    WHERE ${w.replace(/\bs\./g, 's.')}
-    ORDER BY p.paid_at DESC LIMIT 6`, ...p)
+  let recentTransactions = []
+  try {
+    recentTransactions = all(`SELECT p.id, p.student_id, c.name student_name, p.type, p.amount, p.currency, p.paid_at, p.method, 'Fee Payment' category
+      FROM edu_payments p JOIN edu_students s ON s.id=p.student_id JOIN contacts c ON c.id=s.contact_id
+      WHERE ${w.replace(/\bs\./g, 's.')}
+      ORDER BY p.paid_at DESC LIMIT 6`, ...p)
+  } catch (e) { console.error('recentTransactions error:', e) }
 
   // Student Engagement & Status Activity (Active in progress vs Inactive/Dropped vs Enrolled/Completed)
-  const studentActivity = one(`SELECT
-    sum(s.stage NOT IN ('Enrolled', 'Visa Decision')) active,
-    sum(s.stage IN ('Visa Decision', 'Rejected', 'Withdrawn')) inactive,
-    sum(s.stage = 'Enrolled') enrolled,
-    count(*) total
-    ${EDU_FROM} WHERE ${w}`, ...p)
+  let studentActivity = { active: 0, inactive: 0, enrolled: 0, total: 0 }
+  try {
+    studentActivity = one(`SELECT
+      COALESCE(sum(s.stage NOT IN ('Enrolled', 'Visa Decision')), 0) active,
+      COALESCE(sum(s.stage IN ('Visa Decision', 'Rejected', 'Withdrawn')), 0) inactive,
+      COALESCE(sum(s.stage = 'Enrolled'), 0) enrolled,
+      count(*) total
+      ${EDU_FROM} WHERE ${w}`, ...p) || studentActivity
+  } catch (e) { console.error('studentActivity error:', e) }
 
   // Operations & Health
   const ops = {
