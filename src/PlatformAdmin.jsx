@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { api, useApi, fmt } from './api.js'
 import { PLANS, MODULES, parseModules } from '../shared/plans.js'
+import logoImg from './assets/logo.png'
+import markImg from './assets/mark.png'
 import {
   LayoutDashboard,
   Clock,
@@ -61,17 +63,15 @@ export default function PlatformAdmin() {
         gap: 14, flexWrap: 'wrap', position: 'sticky', top: 0, zIndex: 60,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 8, background: '#7C3AED', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 900, fontSize: 14 }}>
-            EC
-          </div>
-          <span style={{ fontSize: 15, fontWeight: 850, color: '#fff', letterSpacing: '-0.02em' }}>Estate Centric</span>
+          <img src={markImg} alt="Estate Centric" style={{ width: 30, height: 30, objectFit: 'contain' }} />
+          <span style={{ fontSize: 16, fontWeight: 850, color: '#fff', letterSpacing: '-0.02em' }}>Estate Centric</span>
         </div>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 20,
-          background: 'rgba(124,58,237,0.18)', border: '1px solid rgba(167,139,250,0.4)',
+          background: 'rgba(234,88,12,0.18)', border: '1px solid rgba(249,115,22,0.4)',
         }}>
-          <Shield size={12} color="#c4b5fd" />
-          <span style={{ fontSize: 10.5, fontWeight: 800, color: "#c4b5fd", letterSpacing: "0.07em" }}>PLATFORM ADMIN CONSOLE</span>
+          <Shield size={12} color="#fdba74" />
+          <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fdba74", letterSpacing: "0.07em" }}>PLATFORM ADMIN CONSOLE</span>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -127,8 +127,8 @@ export default function PlatformAdmin() {
                 style={{
                   border: 'none', background: 'transparent', cursor: 'pointer', padding: '10px 14px', flexShrink: 0,
                   display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
-                  fontWeight: 800, color: isCurrent ? '#6D28D9' : '#8b8ba3',
-                  borderBottom: isCurrent ? '2px solid #7C3AED' : '2px solid transparent',
+                  fontWeight: 800, color: isCurrent ? '#ea580c' : '#8b8ba3',
+                  borderBottom: isCurrent ? '2px solid #ea580c' : '2px solid transparent',
                   marginBottom: -1,
                 }}
               >
@@ -169,7 +169,7 @@ function AdminDashboardPanel({ onNavigate }) {
 
   const stats = [
     { label: 'Workspaces', value: data.accounts, sub: `${data.paid} on paid plan · ${data.in_trial} in trial`, Icon: Store, color: '#0284c7' },
-    { label: 'Total Users', value: (data.accounts || 0) + (data.sub_users || 0), sub: `${data.sub_users} team members across workspaces`, Icon: UsersIcon, color: '#7C3AED' },
+    { label: 'Total Users', value: (data.accounts || 0) + (data.sub_users || 0), sub: `${data.sub_users} team members across workspaces`, Icon: UsersIcon, color: '#ea580c' },
     { label: 'Pending Payments', value: data.requests?.pending || 0, sub: data.requests?.pending_amount ? `≈ PKR ${Number(data.requests.pending_amount).toLocaleString('en-PK')} awaiting review` : 'All clear', Icon: Clock, color: '#d97706' },
     { label: 'Monthly Recurring', value: `PKR ${(data.monthly_revenue || 0).toLocaleString('en-PK')}`, sub: `${data.paid} paying accounts`, Icon: Banknote, color: '#059669' },
   ]
@@ -206,8 +206,8 @@ function AdminDashboardPanel({ onNavigate }) {
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b6b8a' }} />
           {data.new_this_week || 0} sign-ups this week
         </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: '#fff', border: '1px solid #ebebf0', fontSize: 12, fontWeight: 700, color: '#7C3AED' }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#7C3AED' }} />
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: '#fff', border: '1px solid #ebebf0', fontSize: 12, fontWeight: 700, color: '#ea580c' }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ea580c' }} />
           {data.with_edu || 0} workspaces with Student Consultancy
         </span>
       </div>
@@ -224,7 +224,7 @@ function AdminDashboardPanel({ onNavigate }) {
                 <span style={{ fontSize: 12.5, fontWeight: 800, color: '#1a1a2e' }}>{p.count} accounts <span style={{ color: '#9898b0', fontWeight: 500 }}>(PKR {p.monthly.toLocaleString('en-PK')}/mo)</span></span>
               </div>
               <div style={{ height: 6, background: '#f0f0f5', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(100, (p.count / Math.max(1, data.paid || 1)) * 100)}%`, height: '100%', background: '#7C3AED', borderRadius: 3 }} />
+                <div style={{ width: `${Math.min(100, (p.count / Math.max(1, data.paid || 1)) * 100)}%`, height: '100%', background: '#ea580c', borderRadius: 3 }} />
               </div>
             </div>
           ))}
@@ -234,7 +234,7 @@ function AdminDashboardPanel({ onNavigate }) {
         <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #ebebf0', padding: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.03)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: '#1a1a2e' }}>Recent Workspace Signups</div>
-            <button type="button" onClick={() => onNavigate('salons')} style={{ background: 'none', border: 'none', color: '#7C3AED', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>View all →</button>
+            <button type="button" onClick={() => onNavigate('salons')} style={{ background: 'none', border: 'none', color: '#ea580c', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>View all →</button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(data.recent || []).slice(0, 5).map(u => (
@@ -288,7 +288,7 @@ function PaymentRequestsPanel({ requests, reload }) {
       {/* Filter Tabs */}
       <div style={{ display: 'flex', gap: 8 }}>
         {[
-          { key: 'all', label: 'All', color: '#7C3AED', bg: '#f5f3ff' },
+          { key: 'all', label: 'All', color: '#ea580c', bg: '#fff7ed' },
           { key: 'pending', label: 'Pending', color: '#d97706', bg: '#fffbeb' },
           { key: 'approved', label: 'Approved', color: '#059669', bg: '#ecfdf5' },
           { key: 'rejected', label: 'Rejected', color: '#dc2626', bg: '#fef2f2' },
@@ -321,7 +321,7 @@ function PaymentRequestsPanel({ requests, reload }) {
             <div key={r.id} style={{ background: '#fff', borderRadius: 14, border: `1px solid ${r.status === 'pending' ? '#fde68a' : '#ebebf0'}`, padding: 18, boxShadow: '0 1px 4px rgba(0,0,0,0.03)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 12, background: '#f0f0f8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: '#7C3AED' }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: '#f0f0f8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: '#ea580c' }}>
                     {(r.user_name || 'U').charAt(0).toUpperCase()}
                   </div>
                   <div>
@@ -334,7 +334,7 @@ function PaymentRequestsPanel({ requests, reload }) {
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 16, fontWeight: 900, color: '#7C3AED' }}>PKR {Number(r.amount).toLocaleString('en-PK')}</div>
+                    <div style={{ fontSize: 16, fontWeight: 900, color: '#ea580c' }}>PKR {Number(r.amount).toLocaleString('en-PK')}</div>
                     <div style={{ fontSize: 11, color: '#9898b0' }}>{PLANS.find(p => p.id === r.plan)?.name || r.plan} Plan</div>
                   </div>
                   <span style={{
@@ -455,7 +455,7 @@ function WorkspacesPanel() {
         <button
           type="button"
           onClick={() => setShowCreate(s => !s)}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10, border: 'none', background: '#7C3AED', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10, border: 'none', background: '#ea580c', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}
         >
           <Store size={15} /> Create Workspace
         </button>
@@ -463,7 +463,7 @@ function WorkspacesPanel() {
 
       {/* Creation Modal / Inline Form */}
       {showCreate && (
-        <form onSubmit={handleCreate} style={{ background: '#fff', borderRadius: 14, border: '1px solid #ddd6fe', padding: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+        <form onSubmit={handleCreate} style={{ background: '#fff', borderRadius: 14, border: '1px solid #fed7aa', padding: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0, fontSize: 15, fontWeight: 900 }}>Create New Company Workspace</h3>
             <button type="button" onClick={() => setShowCreate(false)} style={{ background: 'none', border: 'none', color: '#8b8ba3', cursor: 'pointer' }}><X size={16} /></button>
@@ -487,7 +487,7 @@ function WorkspacesPanel() {
             </select>
           </label>
           <div style={{ gridColumn: '1 / -1', marginTop: 4 }}>
-            <button disabled={busy} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#7C3AED', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
+            <button disabled={busy} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#ea580c', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
               Create Workspace &amp; Get Setup Link
             </button>
           </div>
@@ -599,7 +599,7 @@ function PaymentMethodsPanel() {
         <button
           type="button"
           onClick={() => setModal({ label: '', details: '' })}
-          style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10, border: 'none', background: '#7C3AED', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+          style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10, border: 'none', background: '#ea580c', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
         >
           <Landmark size={14} /> Add Bank Account
         </button>
@@ -616,7 +616,7 @@ function PaymentMethodsPanel() {
                 <div style={{ fontSize: 12, color: '#6b6b8a', marginTop: 4, whiteSpace: 'pre-wrap' }}>{m.details}</div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" onClick={() => setModal(m)} style={{ background: 'none', border: 'none', color: '#7C3AED', cursor: 'pointer' }}><Pencil size={15} /></button>
+                <button type="button" onClick={() => setModal(m)} style={{ background: 'none', border: 'none', color: '#ea580c', cursor: 'pointer' }}><Pencil size={15} /></button>
                 <button type="button" onClick={() => remove(m.label)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer' }}><Trash2 size={15} /></button>
               </div>
             </div>
@@ -648,7 +648,7 @@ function PaymentMethodsPanel() {
             </label>
             <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
               <button type="button" onClick={() => setModal(null)} style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid #e4e4ee', background: '#fff', fontWeight: 700, cursor: 'pointer' }}>Cancel</button>
-              <button disabled={busy} style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#7C3AED', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Save</button>
+              <button disabled={busy} style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#ea580c', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Save</button>
             </div>
           </form>
         </div>
@@ -708,7 +708,7 @@ function InvoiceDetailsPanel() {
           <input name="footer" defaultValue={inv.footer} placeholder="Thank you for choosing Estate Centric" style={{ width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 8, border: '1px solid #e4e4ee' }} />
         </label>
 
-        <button disabled={busy} style={{ alignSelf: 'flex-start', marginTop: 8, padding: '10px 20px', borderRadius: 10, border: 'none', background: '#7C3AED', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
+        <button disabled={busy} style={{ alignSelf: 'flex-start', marginTop: 8, padding: '10px 20px', borderRadius: 10, border: 'none', background: '#ea580c', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
           Save Invoice Details
         </button>
       </form>
@@ -763,7 +763,7 @@ function AllUsersPanel() {
             <p style={{ margin: '0 0 12px', fontSize: 12.5, color: '#6b6b8a' }}>Share this link with {resetModal.user.name}. It works once and expires in 30 minutes.</p>
             <input readOnly value={resetModal.link} style={{ width: '100%', padding: '9px 12px', fontSize: 12, borderRadius: 8, border: '1px solid #e4e4ee', background: '#fafafa' }} onFocus={e => e.target.select()} />
             <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-              <button type="button" onClick={() => { navigator.clipboard.writeText(resetModal.link); alert('Copied!') }} style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: 'none', background: '#7C3AED', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Copy Link</button>
+              <button type="button" onClick={() => { navigator.clipboard.writeText(resetModal.link); alert('Copied!') }} style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: 'none', background: '#ea580c', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Copy Link</button>
               <button type="button" onClick={() => setResetModal(null)} style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: '1px solid #e4e4ee', background: '#fff', fontWeight: 700, cursor: 'pointer' }}>Close</button>
             </div>
           </div>
@@ -797,7 +797,7 @@ function AllUsersPanel() {
                   <div style={{ fontSize: 11, color: '#9898b0' }}>{u.email} {u.phone && `· ${u.phone}`}</div>
                 </td>
                 <td style={{ padding: '12px 16px' }}>
-                  <span style={{ padding: '3px 9px', borderRadius: 16, background: '#f5f3ff', color: '#7C3AED', fontSize: 11, fontWeight: 800, textTransform: 'capitalize' }}>
+                  <span style={{ padding: '3px 9px', borderRadius: 16, background: '#fff7ed', color: '#ea580c', fontSize: 11, fontWeight: 800, textTransform: 'capitalize' }}>
                     {u.role}
                   </span>
                 </td>
@@ -811,7 +811,7 @@ function AllUsersPanel() {
                 </td>
                 <td style={{ padding: '12px 16px' }}>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button type="button" onClick={() => resetPw(u)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #ddd6fe', background: '#f5f3ff', color: '#7C3AED', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
+                    <button type="button" onClick={() => resetPw(u)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #fed7aa', background: '#fff7ed', color: '#ea580c', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
                       Reset link
                     </button>
                     {u.role !== 'platform' && (
@@ -855,7 +855,7 @@ function BackupsPanel() {
       <button
         type="button"
         onClick={downloadBackup}
-        style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: 'none', background: '#7C3AED', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}
+        style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: 'none', background: '#ea580c', color: '#fff', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}
       >
         <Archive size={15} /> Download Database Backup (.db)
       </button>
