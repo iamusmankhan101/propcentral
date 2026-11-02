@@ -299,8 +299,9 @@ function Security() {
   const { run, error, busy } = useAction()
   const [setup, setSetup] = useState(null)
   const [pwOk, setPwOk] = useState(false)
-  const start = () => run(async () => setSetup(await api('/me/2fa/setup', { body: {} })))
-  const enable = e => { const { code } = formData(e); run(async () => { await api('/me/2fa/enable', { body: { code } }); setSetup(null); m.reloadMeta() }) }
+  const startTotp = () => run(async () => setSetup(await api('/me/2fa/setup', { body: {} })))
+  const enableTotp = e => { const { code } = formData(e); run(async () => { await api('/me/2fa/enable', { body: { code } }); setSetup(null); m.reloadMeta() }) }
+  const enableEmail2fa = () => run(async () => { await api('/me/2fa/email/enable', { body: {} }); m.reloadMeta() })
   const disable = e => { const { password } = formData(e); run(async () => { await api('/me/2fa/disable', { body: { password } }); m.reloadMeta() }) }
   const changePw = e => {
     const form = e.target, b = formData(e)
@@ -310,24 +311,39 @@ function Security() {
   return (
     <>
       <div className="card">
-        <h3>Two-factor login {m.me.totp_on ? <span className="status u-available">On</span> : <span className="status">Off</span>}</h3>
+        <h3>Two-factor login {m.me.totp_on ? <span className="status u-available">On ({m.me.two_factor_method === 'email' ? 'Email Code' : 'Authenticator App'})</span> : <span className="status">Off</span>}</h3>
         {m.me.totp_on ? (
           <form className="row between" onSubmit={disable}>
-            <p className="muted">You enter a code from your authenticator app each time you log in.</p>
+            <p className="muted">
+              {m.me.two_factor_method === 'email'
+                ? `You receive a 6-digit code at ${m.me.email} each time you sign in.`
+                : 'You enter a code from your authenticator app each time you log in.'}
+            </p>
             <span className="row"><input name="password" type="password" placeholder="Your password" required /><button className="ghost danger" disabled={busy}>Turn off</button></span>
           </form>
         ) : setup ? (
-          <form onSubmit={enable}>
+          <form onSubmit={enableTotp}>
             <ol>
               <li>Open Google Authenticator, Authy or 1Password and choose <b>Add account › Enter a setup key</b>.</li>
               <li>Account: <b>{m.me.email}</b>. Key (time based): <code className="secret">{setup.secret.match(/.{1,4}/g).join(' ')}</code></li>
               <li>On a phone, you can tap <a href={setup.uri}>this link</a> instead.</li>
               <li>Type the 6-digit code the app shows:</li>
             </ol>
-            <div className="row"><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required autoFocus /><button disabled={busy}>Turn on</button></div>
+            <div className="row"><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required autoFocus /><button disabled={busy}>Turn on</button> <button type="button" className="ghost" onClick={() => setSetup(null)}>Cancel</button></div>
           </form>
         ) : (
-          <div className="row between"><p className="muted">Protect your account with a code from your phone, on top of your password.</p><button onClick={start} disabled={busy}>Set up</button></div>
+          <div className="cols" style={{marginTop:'12px'}}>
+            <div style={{padding:'14px',border:'1px solid var(--line)',borderRadius:'10px'}}>
+              <h4 style={{margin:'0 0 6px'}}>Email verification code</h4>
+              <p className="muted" style={{fontSize:'12.5px',marginBottom:'12px'}}>Receive a 6-digit code on <b>{m.me.email}</b> each time you log in.</p>
+              <button onClick={enableEmail2fa} disabled={busy} className="button">Enable Email 2FA</button>
+            </div>
+            <div style={{padding:'14px',border:'1px solid var(--line)',borderRadius:'10px'}}>
+              <h4 style={{margin:'0 0 6px'}}>Authenticator App</h4>
+              <p className="muted" style={{fontSize:'12.5px',marginBottom:'12px'}}>Use Google Authenticator, Authy, or 1Password.</p>
+              <button onClick={startTotp} disabled={busy} className="ghost">Set up App 2FA</button>
+            </div>
+          </div>
         )}
       </div>
       <form className="card grid" onSubmit={changePw} onChange={() => setPwOk(false)}>

@@ -31,12 +31,13 @@ function Login() {
   const { run, error, busy, setError } = useAction()
   const [mode, setMode] = useState('signin')
   const [needCode, setNeedCode] = useState(false)
+  const [twoFactorInfo, setTwoFactorInfo] = useState(null)
   const [notice, setNotice] = useState('')
   const [email, setEmail] = useState('')
   const [trial, setTrial] = useState(null)
   const [needVerify, setNeedVerify] = useState('')
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTrial(null); setNeedVerify('') }
+  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify('') }
   const submit = e => {
     const body = formData(e)
     run(async () => {
@@ -57,7 +58,14 @@ function Login() {
         if (e.data?.need_verify) setNeedVerify(e.data.email || body.email)
         throw e
       }
-      if (r.need_code) return setNeedCode(true)
+      if (r.need_code) {
+        setNeedCode(true)
+        setTwoFactorInfo({ method: r.method, email: r.email })
+        if (r.method === 'email') {
+          setNotice(`A 6-digit verification code has been sent to your email (${r.email}).`)
+        }
+        return
+      }
       localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
     })
   }
@@ -95,7 +103,22 @@ function Login() {
             <small className="muted">7-day free trial on every plan. No card.</small>
           </fieldset>}
           {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
-          {needCode && <label>Authenticator code<span className="field"><Icon name="key" size={16} /><input name="code" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code from your app" required autoFocus /></span></label>}
+          {needCode && (
+            <label>
+              {twoFactorInfo?.method === 'email' ? 'Email verification code' : 'Authenticator code'}
+              <span className="field">
+                <Icon name="key" size={16} />
+                <input
+                  name="code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder={twoFactorInfo?.method === 'email' ? '6-digit code sent to your email' : '6-digit code from your app'}
+                  required
+                  autoFocus
+                />
+              </span>
+            </label>
+          )}
           {notice && <p className="ok">{notice}</p>}
           {error && !needVerify && <p className="error">{error}</p>}
           {needVerify && (

@@ -43,7 +43,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '13'
+const SCHEMA_VERSION = '14'
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -254,6 +254,16 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     db.exec('CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id)')
     addColumn('users', 'email_verified', 'INTEGER DEFAULT 0')
     addColumn('users', 'created_at', 'TEXT') // when the account was created; NULL for accounts that predate the column
+    addColumn('users', 'two_factor_method', "TEXT DEFAULT 'email'") // 'email' | 'totp' | null
+    // 2FA login email verification codes
+    db.exec(`CREATE TABLE IF NOT EXISTS login_email_codes(
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL)`)
+    db.exec('CREATE INDEX IF NOT EXISTS login_email_codes_user ON login_email_codes(user_id)')
     db.prepare(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(SCHEMA_VERSION)
   }
 } catch (e) {
@@ -698,11 +708,46 @@ app.post('/api/login', (req, res) => {
       { trial_ended: true, plan: u.plan, trial_ends_at: u.trial_ends_at, support: SUPPORT_WHATSAPP })
   }
   if (u.totp_on) {
-    if (!req.body.code) return res.json({ need_code: true }) // password was right; ask for the authenticator code
-    if (!checkTotp(u.totp_secret, req.body.code)) {
-      rateHit(userKey, 5, 15 * 60e3)
-      audit(u.id, 'login_failed', 'user', u.id, { email, reason: '2fa' }, req.ip)
-      throw err(401, 'Wrong authenticator code')
+    const method = u.two_factor_method || 'email'
+    if (!req.body.code) {
+      if (method === 'email') {
+        // Generate 6-digit random code and email it to the user
+        const code = String(crypto.randomInt(100000, 999999))
+        const expiresAt = Date.now() + 10 * 60e3 // 10 minutes
+        // Invalidate older codes
+        run('DELETE FROM login_email_codes WHERE user_id=?', u.id)
+        run('INSERT INTO login_email_codes(user_id,code,expires_at,created_at) VALUES(?,?,?,?)', u.id, code, expiresAt, now())
+        const html = `<div style="font-family:Arial,sans-serif;max-width:520px;padding:20px;border:1px solid #eee;border-radius:10px">
+<h2 style="margin:0 0 12px;color:#1a1a2e">Your Login Verification Code</h2>
+<p style="color:#4a4a6a;line-height:1.6">Hi ${u.name},</p>
+<p style="color:#4a4a6a;line-height:1.6">Here is your two-factor login verification code for Estate Centric:</p>
+<div style="margin:20px 0;padding:16px;background:#fff7ed;border:1px dashed #fed7aa;border-radius:8px;text-align:center">
+  <span style="font-size:32px;font-weight:900;letter-spacing:6px;color:#ea580c">${code}</span>
+</div>
+<p style="color:#888;font-size:12px">This code is valid for 10 minutes. If you did not attempt to sign in, change your password immediately.</p>
+</div>`
+        await sendEmail(u.email, `Your Estate Centric Login Code: ${code}`, html).catch(e => console.error('[2fa email]', e))
+        return res.json({ need_code: true, method: 'email', email: u.email })
+      } else {
+        return res.json({ need_code: true, method: 'totp' })
+      }
+    }
+
+    if (method === 'email') {
+      const match = one('SELECT * FROM login_email_codes WHERE user_id=? AND code=? AND used_at IS NULL AND expires_at>?',
+        u.id, String(req.body.code).trim(), Date.now())
+      if (!match) {
+        rateHit(userKey, 5, 15 * 60e3)
+        audit(u.id, 'login_failed', 'user', u.id, { email, reason: '2fa_email' }, req.ip)
+        throw err(401, 'Invalid or expired verification code')
+      }
+      run('UPDATE login_email_codes SET used_at=? WHERE id=?', now(), match.id)
+    } else {
+      if (!checkTotp(u.totp_secret, req.body.code)) {
+        rateHit(userKey, 5, 15 * 60e3)
+        audit(u.id, 'login_failed', 'user', u.id, { email, reason: '2fa_totp' }, req.ip)
+        throw err(401, 'Wrong authenticator code')
+      }
     }
   }
   rateClear(userKey)
@@ -999,28 +1044,33 @@ app.post('/api/me/password', (req, res) => {
   res.json({ ok: true })
 })
 
-// ---- two-factor login (TOTP authenticator app) ----
+// ---- two-factor login (Email code or TOTP app) ----
+app.post('/api/me/2fa/email/enable', async (req, res) => {
+  run("UPDATE users SET totp_on=1, two_factor_method='email', totp_secret=NULL WHERE id=?", req.user.id)
+  log(req, '2fa_email_on', 'user', req.user.id)
+  res.json({ ok: true, method: 'email' })
+})
 app.post('/api/me/2fa/setup', (req, res) => {
-  if (req.user.totp_on) throw err(400, 'Two-factor login is already on')
+  if (req.user.totp_on && req.user.two_factor_method === 'totp') throw err(400, 'Two-factor authenticator app is already on')
   const secret = newSecret()
   run('UPDATE users SET totp_secret=? WHERE id=?', secret, req.user.id)
-  res.json({ secret, uri: `otpauth://totp/Prop%20Central:${encodeURIComponent(req.user.email)}?secret=${secret}&issuer=Prop%20Central` })
+  res.json({ secret, uri: `otpauth://totp/Estate%20Centric:${encodeURIComponent(req.user.email)}?secret=${secret}&issuer=Estate%20Centric` })
 })
 app.post('/api/me/2fa/enable', (req, res) => {
   if (!checkTotp(req.user.totp_secret, req.body.code)) throw err(400, 'That code is not right. Check the time on your phone and try the newest code.')
-  run('UPDATE users SET totp_on=1 WHERE id=?', req.user.id)
+  run("UPDATE users SET totp_on=1, two_factor_method='totp' WHERE id=?", req.user.id)
   run('DELETE FROM sessions WHERE user_id=? AND token<>?', req.user.id, req.token) // other devices must log in again with a code
   log(req, '2fa_on', 'user', req.user.id)
-  res.json({ ok: true })
+  res.json({ ok: true, method: 'totp' })
 })
 app.post('/api/me/2fa/disable', (req, res) => {
   if (!checkPw(String(req.body.password || ''), req.user.pass)) throw err(400, 'Wrong password')
-  run('UPDATE users SET totp_on=0, totp_secret=NULL WHERE id=?', req.user.id)
+  run('UPDATE users SET totp_on=0, totp_secret=NULL, two_factor_method=NULL WHERE id=?', req.user.id)
   log(req, '2fa_off', 'user', req.user.id)
   res.json({ ok: true })
 })
-app.post('/api/users/:id/reset-2fa', guard('manage_users'), (req, res) => { // lost phone
-  run('UPDATE users SET totp_on=0, totp_secret=NULL WHERE id=?', req.params.id)
+app.post('/api/users/:id/reset-2fa', guard('manage_users'), (req, res) => { // reset
+  run('UPDATE users SET totp_on=0, totp_secret=NULL, two_factor_method=NULL WHERE id=?', req.params.id)
   run('DELETE FROM sessions WHERE user_id=?', req.params.id)
   log(req, '2fa_reset', 'user', +req.params.id)
   res.json({ ok: true })
@@ -1043,7 +1093,7 @@ app.get('/api/meta', (req, res) => {
     edu_payment_types: S('edu_payment_types'), edu_visa_outcomes: S('edu_visa_outcomes'),
     edu_country_checklists: S('edu_country_checklists') || DEFAULTS.edu_country_checklists } : {}
   res.json({
-    me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on,
+    me: { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, team_id: u.team_id, branch_id: u.branch_id, available: u.available, totp_on: !!u.totp_on, two_factor_method: u.two_factor_method || 'email',
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
