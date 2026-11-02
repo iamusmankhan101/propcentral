@@ -714,7 +714,7 @@ app.post('/api/register', async (req, res) => {
 <a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
 <p style="color:#888;font-size:13px">This link expires in 24 hours. If you didn't create an account, ignore this email.</p>
 </div>`
-  sendEmail(email, 'Verify your ARK CRM email', html).catch(e => console.error('[register email]', e.message))
+  sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[register email]', e.message))
   res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds })
 })
 
@@ -752,7 +752,7 @@ app.post('/api/resend-verification', async (req, res) => {
 <a href="${verifyUrl}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin:8px 0">Verify Email</a>
 <p style="color:#888;font-size:13px">This link expires in 24 hours.</p>
 </div>`
-    sendEmail(email, 'Verify your ARK CRM email', html).catch(e => console.error('[resend-verify email]', e.message))
+    sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[resend-verify email]', e.message))
   }
   res.json({ ok: true }) // always succeeds — don't reveal if email exists
 })
