@@ -1506,12 +1506,29 @@ app.get('/api/platform/dashboard', platformOnly, (_req, res) => {
   const mains = all("SELECT * FROM users WHERE role!='platform' AND owner_id IS NULL"), t = now(), soon = new Date(Date.now() + 3 * 864e5).toISOString()
   const trial = mains.filter(u => !u.paid_at && u.trial_ends_at && u.trial_ends_at >= t)
   const paid = mains.filter(u => u.paid_at)
+  const week = new Date(Date.now() - 7 * 864e5).toISOString()
+  const subs = id => mains.find(m => m.id === id) ? all('SELECT id FROM users WHERE owner_id=?', id).length : 0
+  const counts = one("SELECT sum(status='pending') pending, sum(status='approved') approved, sum(status='rejected') rejected FROM payment_requests")
+  const pending = all(`SELECT r.*, u.name user_name, u.email user_email FROM payment_requests r LEFT JOIN users u ON u.id=r.user_id
+    WHERE r.status='pending' ORDER BY r.id DESC LIMIT 5`)
   res.json({
     accounts: mains.length, in_trial: trial.length, expiring_soon: trial.filter(u => u.trial_ends_at <= soon).length, paid: paid.length,
     inactive: mains.filter(u => !u.active).length,
+    // a trial that ran out without anyone marking it paid: the account cannot sign in, so it is work to do
+    locked_out: mains.filter(u => !u.paid_at && u.trial_ends_at && u.trial_ends_at < t).length,
+    new_this_week: mains.filter(u => u.created_at >= week).length,
+    with_edu: mains.filter(u => parseModules(u.modules).includes('edu')).length,
     sub_users: one("SELECT count(*) n FROM users WHERE role!='platform' AND owner_id IS NOT NULL").n,
     revenue: PLANS.map(p => { const n = paid.filter(u => u.plan === p.id).length; return { plan: p.id, name: p.name, count: n, monthly: n * p.monthly } }),
     monthly_revenue: paid.reduce((s, u) => s + (planOf(u.plan)?.monthly || 0), 0),
+    requests: {
+      pending: counts.pending || 0, approved: counts.approved || 0, rejected: counts.rejected || 0,
+      pending_amount: pending.reduce((s, r) => s + (planOf(r.plan)?.monthly || r.amount || 0), 0),
+      latest: pending,
+    },
+    recent: mains.slice().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 8)
+      .map(u => ({ id: u.id, name: u.name, email: u.email, plan: u.plan, active: u.active, created_at: u.created_at,
+        trial_ends_at: u.trial_ends_at, paid_at: u.paid_at, modules: parseModules(u.modules), subs: subs(u.id) })),
   })
 })
 // A main account reports an off-platform payment (bank transfer etc.); the platform approves or rejects it.
