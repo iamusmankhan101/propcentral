@@ -44,7 +44,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       try {
         m.addSource('maptiler_buildings', { type: 'vector', url: `https://api.maptiler.com/tiles/buildings/tiles.json?key=${key}` })
         m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_buildings', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
-          'fill-extrusion-color': ['coalesce', ['get', 'facade_color'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'height'], ['get', 'render_height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'height_min'], ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
+          'fill-extrusion-color': ['coalesce', ['get', 'facade_color'], ['get', 'roof_color'], ['interpolate', ['linear'], ['coalesce', ['get', 'height'], ['get', 'render_height'], 0], 0, '#d7c7b5', 30, '#c5b8aa', 90, '#9aabbc', 220, '#627d97']], 'fill-extrusion-height': ['coalesce', ['get', 'height'], ['get', 'render_height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'height_min'], ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.95,
         } }, 'area-fill')
       } catch (e) { console.warn('MapTiler 3D buildings unavailable', e) }
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
