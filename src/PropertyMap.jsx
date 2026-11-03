@@ -28,7 +28,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     if (!key) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     mapboxgl.accessToken = key
-    const m = new mapboxgl.Map({ container: box.current, style: 'mapbox://styles/mapbox/standard-satellite', config: { basemap: { lightPreset: 'day', show3dObjects: mode === '3d', show3dBuildings: mode === '3d', show3dLandmarks: mode === '3d', show3dTrees: mode === '3d', show3dFacades: mode === '3d' } }, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
+    const m = new mapboxgl.Map({ container: box.current, style: 'mapbox://styles/mapbox/standard-satellite', config: { basemap: { lightPreset: 'day', show3dObjects: mode === '3d', show3dBuildings: mode === '3d', show3dLandmarks: mode === '3d', show3dTrees: mode === '3d', show3dFacades: mode === '3d', showPlaceLabels: false, showPointOfInterestLabels: false, showRoadLabels: false, showTransitLabels: false } }, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
     m.addControl(new mapboxgl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
@@ -37,7 +37,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       for (const l of m.getStyle().layers) {
         if (l.type !== 'symbol') continue
         font ??= l.layout?.['text-font']
-        if (JSON.stringify(l.layout?.['text-field'] ?? '').includes('name')) m.setLayoutProperty(l.id, 'text-field', english)
+        m.setLayoutProperty(l.id, 'visibility', 'none')
       }
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
