@@ -16,7 +16,7 @@ const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
-export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode }) {
+export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
   const { maptiler_key: key, me } = useMeta()
   const box = useRef(), map = useRef(), live = useRef({})
   const [ready, setReady] = useState(false)
@@ -221,7 +221,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       <div ref={box} className="prop-map-canvas" />
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
       {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
-      {!placing && <div className="map-controls">
+      {!clean && !placing && <div className="map-controls">
         <label>Location<select value={city} onChange={e => onCity?.(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
         <div className="seg small"><button className={mode === '2d' ? 'on' : ''} onClick={() => onMode?.('2d')}>2D</button><button className={mode === '3d' ? 'on' : ''} onClick={() => onMode?.('3d')}>3D</button></div>
       </div>}
@@ -235,11 +235,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
           <button className="ghost" onClick={onCancel}>Cancel</button>
         </div>
       )}
-      <div className="prop-legend">
+      {!clean && <div className="prop-legend">
         {layer === 'societies'
           ? Object.entries(AREA_COLOR).map(([k, c]) => <span key={k}><i className="ring" style={{ borderColor: c === '#ffffff' ? '#555' : c }} />{k}</span>)
           : Object.entries(STATUS_COLOR).filter(([k]) => k !== 'Rent overdue').map(([k, c]) => <span key={k}><i style={{ background: c }} />{k === 'Ending soon' ? 'Ending soon / rent overdue' : k}</span>)}
-      </div>
+      </div>}
     </div>
   )
 }

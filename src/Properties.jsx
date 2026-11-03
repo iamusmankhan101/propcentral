@@ -40,6 +40,7 @@ export default function Properties() {
     && (!f.q || [propLabel(p), p.owner_name, p.lease?.tenant_name, p.address].join(' ').toLowerCase().includes(f.q.toLowerCase())))
   const counts = (rows || []).reduce((c, p) => ({ ...c, [p.status]: (c[p.status] || 0) + 1 }), {})
   const hasMap = !!m.maptiler_key
+  const mapFull = !draft && (view === 'map' || layer === 'societies')
   const startAdd = () => { setSel(null); setLayer('properties'); if (hasMap) { setView('map'); setPlacing({ mode: 'pin', target: 'new' }) } else setDraft({ kind: 'property' }) }
   const place = pos => {
     const t = placing.target
@@ -68,7 +69,8 @@ export default function Properties() {
         : sel ? <PropertyPanel id={sel} key={sel + String(rows?.length)} placing={placing} onPlace={target => { setView('map'); setPlacing({ mode: target === 'plot' ? 'outline' : 'pin', target }) }} />
           : <div className="card muted">{hasMap ? 'Click a pin to see the owner, tenant and lease. Use “Add property” and click the map to add one.' : 'Select a property to see the owner, tenant and lease.'}</div>
   return (
-    <section>
+    <section className={mapFull ? 'properties-map-screen' : ''}>
+      {!mapFull && <>
       <div className="row between">
         <h2>Properties {rows && <span className="count">{rows.length}</span>}</h2>
         <div className="row">
@@ -86,10 +88,11 @@ export default function Properties() {
         </div>
       </div>}
       {error && <p className="error">{error}</p>}
-      <div className={'inv' + (view === 'map' || layer === 'societies' ? ' map-inv' : '')}>
+      </>}
+      <div className={'inv' + (mapFull ? ' map-inv full-map' : '')}>
         {view === 'map' || layer === 'societies'
           ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
-            onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} /></Suspense>
+            onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
           : <div className="card scroll">
             <table>
               <thead><tr><th></th><th>Property</th><th>Owner</th><th>Tenant</th><th>Rent</th><th>Lease ends</th><th>Overdue</th></tr></thead>
@@ -109,10 +112,24 @@ export default function Properties() {
               </tbody>
             </table>
           </div>}
-        <div className="inv-panel">{panel}</div>
+        {!mapFull && <div className="inv-panel">{panel}</div>}
       </div>
+      {mapFull && <MapBottomNav layer={layer} view={view} city={city} mode={mapMode} onLayer={k => { setLayer(k); setPlacing(null); setDraft(null) }} onView={setView} onCity={setCity} onMode={setMapMode} onAdd={startAdd} disabled={!!placing} />}
     </section>
   )
+}
+
+function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode, onAdd, disabled }) {
+  return <div className="map-bottom-nav">
+    <button className={layer === 'properties' ? 'on' : ''} onClick={() => onLayer('properties')}>Properties</button>
+    <button className={layer === 'societies' ? 'on' : ''} onClick={() => onLayer('societies')}>Societies</button>
+    <span className="map-nav-divider" />
+    <label>Location<select value={city} onChange={e => onCity(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
+    <button className={mode === '2d' ? 'on' : ''} onClick={() => onMode('2d')}>2D</button>
+    <button className={mode === '3d' ? 'on' : ''} onClick={() => onMode('3d')}>3D</button>
+    {layer === 'properties' && <button onClick={onAdd} disabled={disabled}>+ Add property</button>}
+    <button className={view === 'list' ? 'on' : ''} onClick={() => onView('list')}>List</button>
+  </div>
 }
 
 function PropertyPanel({ id, onPlace, placing }) {
