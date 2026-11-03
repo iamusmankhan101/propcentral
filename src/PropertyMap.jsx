@@ -88,24 +88,29 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
 
   useEffect(() => {
     if (!ready) return
+    const m = map.current
+    if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    map.current.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: city === 'Dubai' ? 11 : 11, duration: 700 })
-    if (map.current.getLayer('building-3d')) map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
+    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: 11, duration: 700 })
+    if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
   }, [ready, city, mode])
 
   useEffect(() => {
     if (!ready) return
-    map.current.getSource('areas').setData({ type: 'FeatureCollection', features: (areas || []).map(a => ({
+    const m = map.current
+    if (!m || !m.getSource('areas')) return
+    m.getSource('areas').setData({ type: 'FeatureCollection', features: (areas || []).map(a => ({
       type: 'Feature', geometry: polygon(a.outline),
       properties: { id: a.id, name: a.name, kind: a.kind, color: AREA_COLOR[a.kind], sel: layer === 'societies' && a.id === selArea, active: layer === 'societies' },
     })) })
-    for (const l of ['pins', 'plot-fill', 'plot-line']) map.current.setPaintProperty(l, l === 'pins' ? 'circle-opacity' : l === 'plot-fill' ? 'fill-opacity' : 'line-opacity', layer === 'societies' ? 0.35 : 1)
-    if (layer === 'societies') map.current.setPaintProperty('pins', 'circle-stroke-opacity', 0.35)
-    else map.current.setPaintProperty('pins', 'circle-stroke-opacity', 1)
+    for (const l of ['pins', 'plot-fill', 'plot-line']) if (m.getLayer(l)) m.setPaintProperty(l, l === 'pins' ? 'circle-opacity' : l === 'plot-fill' ? 'fill-opacity' : 'line-opacity', layer === 'societies' ? 0.35 : 1)
+    if (m.getLayer('pins')) m.setPaintProperty('pins', 'circle-stroke-opacity', layer === 'societies' ? 0.35 : 1)
   }, [ready, areas, layer, selArea])
 
   useEffect(() => {
     if (!ready) return
+    const m = map.current
+    if (!m || !m.getSource('props')) return
     const features = rows.filter(p => p.lat != null).flatMap(p => {
       const props = { id: p.id, color: STATUS_COLOR[p.status], sel: p.id === sel }
       return [
@@ -113,7 +118,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
         ...(p.outline ? [{ type: 'Feature', properties: props, geometry: polygon(p.outline) }] : []),
       ]
     })
-    map.current.getSource('props').setData({ type: 'FeatureCollection', features })
+    m.getSource('props').setData({ type: 'FeatureCollection', features })
   }, [ready, rows, sel])
 
   // first load: fit to everything drawn or pinned
@@ -143,9 +148,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   }, [ready, placing])
   useEffect(() => {
     if (!ready) return
+    const m = map.current
+    if (!m || !m.getSource('draft')) return
     const match = placing?.mode === 'match', ring = points.length > 2 ? [...points, points[0]] : points
     const pt = (c, color) => ({ type: 'Feature', properties: { c: color }, geometry: { type: 'Point', coordinates: c } })
-    map.current.getSource('draft').setData({ type: 'FeatureCollection', features: match
+    m.getSource('draft').setData({ type: 'FeatureCollection', features: match
       ? points.flatMap((c, i) => [pt(c, i % 2 ? '#2ee66b' : '#ff8a00'), ...(i % 2 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [points[i - 1], c] } }] : [])])
       : [...points.map(c => pt(c)), ...(points.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: ring } }] : [])] })
   }, [ready, points, placing])
