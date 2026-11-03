@@ -747,11 +747,12 @@ button.link:hover { filter: none; color: var(--text); }
 .properties-map-screen { position: fixed; inset: 0; z-index: 30; background: #111318; }
 .properties-map-screen .full-map, .properties-map-screen .prop-map { width: 100%; height: 100dvh; min-height: 0; border-radius: 0; }
 .properties-map-screen .full-map { position: relative; }
-.properties-map-screen .map-hint { top: 18px; left: 18px; right: 18px; }
+.properties-map-screen .map-hint { top: 18px; left: 140px; right: 18px; z-index: 20; }
 .properties-map-screen .map-search { top: auto; bottom: 86px; left: 50%; transform: translateX(-50%); width: min(460px, calc(100% - 32px)); }
 .map-bottom-nav { position: absolute; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); z-index: 8; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; max-width: calc(100% - 32px); padding: 8px; background: rgba(255,255,255,.95); border: 1px solid rgba(255,255,255,.7); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.3); backdrop-filter: blur(12px); }
 .map-bottom-nav button { padding: 9px 13px; border-color: transparent; background: transparent; color: var(--text); white-space: nowrap; }
 .map-bottom-nav button.on { background: var(--ink); color: #fff; }
+.map-bottom-nav .rotate-button { width: 36px; padding: 8px 0; font-size: 19px; line-height: 1; }
 .map-bottom-nav button:disabled { opacity: .45; }
 .map-bottom-nav label { display: flex; flex-direction: row; align-items: center; gap: 5px; padding: 0 4px; white-space: nowrap; }
 .map-bottom-nav select { padding: 8px 28px 8px 9px; border: 1px solid var(--line); background: #fff; border-radius: 9px; }

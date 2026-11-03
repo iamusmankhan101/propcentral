@@ -16,7 +16,7 @@ const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
-export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
+export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', bearing = -15, onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
   const { maptiler_key: key, me } = useMeta()
   const box = useRef(), map = useRef(), live = useRef({})
   const [ready, setReady] = useState(false)
@@ -26,7 +26,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   useEffect(() => {
     if (!key) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
+    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? bearing : 0, maxPitch: 85, attributionControl: { compact: true } })
     m.addControl(new maplibregl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
@@ -93,8 +93,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const m = map.current
     if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
-  }, [ready, city, mode])
+    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? bearing : 0, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
+  }, [ready, city, mode, bearing])
 
   useEffect(() => {
     if (!ready || !map.current?.getLayer('building-3d')) return

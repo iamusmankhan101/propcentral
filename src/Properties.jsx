@@ -27,6 +27,7 @@ export default function Properties() {
   const [view, setView] = useState('map')
   const [city, setCity] = useState('Lahore')
   const [mapMode, setMapMode] = useState('2d')
+  const [mapBearing, setMapBearing] = useState(-15)
   const [layer, setLayer] = useState('properties')
   const [f, setF] = useState({ status: '', area: '', q: '' })
   const [sel, setSel] = useState(null)
@@ -42,6 +43,7 @@ export default function Properties() {
   const hasMap = !!m.maptiler_key
   const mapFull = !draft && (view === 'map' || layer === 'societies')
   const startAdd = () => { setSel(null); setLayer('properties'); if (hasMap) { setView('map'); setPlacing({ mode: 'pin', target: 'new' }) } else setDraft({ kind: 'property' }) }
+  const startDrawSociety = () => { setLayer('societies'); setView('map'); setSelArea(null); setDraft(null); setPlacing({ mode: 'outline', target: 'area' }) }
   const place = pos => {
     const t = placing.target
     if (t === 'new') { setPlacing(null); return setDraft({ kind: 'property', city, lat: pos.lat, lng: pos.lng }) }
@@ -60,7 +62,7 @@ export default function Properties() {
   const panel = draft?.kind === 'property' ? <NewProperty at={draft} areas={areas || []} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reload(); setSel(id) }} />
     : draft?.kind === 'area' ? <NewArea outline={draft.outline} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reloadAreas(); reload(); setSelArea(id) }} />
       : layer === 'societies' ? <Societies areas={areas || []} rows={rows || []} sel={selArea} onSel={setSelArea} placing={placing}
-        onDraw={() => { setView('map'); setSelArea(null); setPlacing({ mode: 'outline', target: 'area' }) }}
+        onDraw={startDrawSociety}
         onRedraw={() => setPlacing({ mode: 'outline', target: 'area-redraw' })}
         onShow={a => { setF({ ...f, area: String(a.id) }); setLayer('properties') }}
         onChange={() => { reloadAreas(); reload() }}
@@ -91,7 +93,7 @@ export default function Properties() {
       </>}
       <div className={'inv' + (mapFull ? ' map-inv full-map' : '')}>
         {view === 'map' || layer === 'societies'
-          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
+          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
             onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
           : <div className="card scroll">
             <table>
@@ -114,12 +116,12 @@ export default function Properties() {
           </div>}
         {!mapFull && <div className="inv-panel">{panel}</div>}
       </div>
-      {mapFull && <MapBottomNav layer={layer} view={view} city={city} mode={mapMode} onLayer={k => { setLayer(k); setPlacing(null); setDraft(null) }} onView={setView} onCity={setCity} onMode={setMapMode} onAdd={startAdd} disabled={!!placing} />}
+      {mapFull && <MapBottomNav layer={layer} view={view} city={city} mode={mapMode} onLayer={k => { setLayer(k); setPlacing(null); setDraft(null) }} onView={setView} onCity={setCity} onMode={setMapMode} onRotate={delta => setMapBearing(b => (b + delta + 360) % 360)} onAdd={startAdd} onDraw={startDrawSociety} disabled={!!placing} />}
     </section>
   )
 }
 
-function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode, onAdd, disabled }) {
+function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode, onRotate, onAdd, onDraw, disabled }) {
   return <div className="map-bottom-nav">
     <button className={layer === 'properties' ? 'on' : ''} onClick={() => onLayer('properties')}>Properties</button>
     <button className={layer === 'societies' ? 'on' : ''} onClick={() => onLayer('societies')}>Societies</button>
@@ -127,7 +129,8 @@ function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode
     <label>Location<select value={city} onChange={e => onCity(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
     <button className={mode === '2d' ? 'on' : ''} onClick={() => onMode('2d')}>2D</button>
     <button className={mode === '3d' ? 'on' : ''} onClick={() => onMode('3d')}>3D</button>
-    {layer === 'properties' && <button onClick={onAdd} disabled={disabled}>+ Add property</button>}
+    {mode === '3d' && <><button className="rotate-button" onClick={() => onRotate(-30)} title="Rotate left" aria-label="Rotate left">↺</button><button className="rotate-button" onClick={() => onRotate(30)} title="Rotate right" aria-label="Rotate right">↻</button></>}
+    {layer === 'properties' ? <button onClick={onAdd} disabled={disabled}>+ Add property</button> : <button onClick={onDraw} disabled={disabled}>+ Add society</button>}
     <button className={view === 'list' ? 'on' : ''} onClick={() => onView('list')}>List</button>
   </div>
 }
