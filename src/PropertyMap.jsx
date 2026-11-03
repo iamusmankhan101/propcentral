@@ -42,9 +42,9 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
       try {
-        m.addSource('maptiler_planet', { type: 'vector', url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` })
-        m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
-          'fill-extrusion-color': ['coalesce', ['get', 'colour'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
+        m.addSource('maptiler_buildings', { type: 'vector', url: `https://api.maptiler.com/tiles/buildings/tiles.json?key=${key}` })
+        m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_buildings', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
+          'fill-extrusion-color': ['coalesce', ['get', 'facade_color'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'height'], ['get', 'render_height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'height_min'], ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
         } }, 'area-fill')
       } catch (e) { console.warn('MapTiler 3D buildings unavailable', e) }
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
@@ -100,6 +100,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
   }, [ready, city, mode])
+
+  useEffect(() => {
+    if (!ready || !map.current?.getLayer('building-3d')) return
+    map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
+  }, [ready, mode])
 
   useEffect(() => {
     if (!ready) return
