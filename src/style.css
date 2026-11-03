@@ -495,7 +495,7 @@ details[open] summary { margin-bottom: 10px; }
 .map-inv { display: block; position: relative; }
 .map-inv .prop-map { height: max(700px, calc(100dvh - 220px)); min-height: 620px; }
 .map-inv .inv-panel { position: absolute; top: 16px; right: 16px; z-index: 3; width: min(380px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; }
-.map-inv .map-controls { right: 420px; z-index: 4; }
+.map-inv .map-controls { left: 50%; right: auto; transform: translateX(-50%); z-index: 4; }
 .unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 6px; }
 .unit { background: var(--bg); color: var(--t); border: 1.5px solid var(--c); border-radius: 10px; padding: 7px 2px; display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
 .unit b { font-size: 14px; }
@@ -523,7 +523,7 @@ details[open] summary { margin-bottom: 10px; }
   .inv { grid-template-columns: minmax(0, 1fr); }
   .inv-panel { position: static; }
   .map-inv .inv-panel { position: absolute; top: 74px; width: min(380px, calc(100% - 32px)); max-height: calc(100% - 90px); }
-  .map-inv .map-controls { right: 60px; z-index: 4; }
+  .map-inv .map-controls { left: 50%; right: auto; transform: translateX(-50%); z-index: 4; }
 }
 table.sizes td, table.sizes th { white-space: nowrap; }
 table.sizes tfoot td { border-top: 2px solid var(--line); border-bottom: 0; }
