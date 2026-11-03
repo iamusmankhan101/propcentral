@@ -26,7 +26,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   useEffect(() => {
     if (!key) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: city === 'Dubai' ? 11 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
+    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: mode === '3d' ? 14.2 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
     m.addControl(new maplibregl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
@@ -40,6 +40,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
+      if (!m.getSource('maptiler_planet')) m.addSource('maptiler_planet', { type: 'vector', url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` })
       m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
@@ -53,9 +54,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#ffcc00', 'line-width': 2, 'line-dasharray': [2, 1] } })
       m.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
-      const building = m.getStyle().layers.find(l => l.type === 'fill' && /building/i.test(`${l.id} ${l['source-layer'] || ''}`))
-      if (building && !m.getLayer('building-3d')) m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: building.source, 'source-layer': building['source-layer'], minzoom: 14, paint: {
-        'fill-extrusion-color': '#b9c2cc', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 0], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.72,
+      if (!m.getLayer('building-3d')) m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], paint: {
+        'fill-extrusion-color': '#b9c2cc', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.82,
       } }, 'area-fill')
       m.setTerrain({ source: 'terrain', exaggeration: 1 })
       if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
@@ -91,7 +91,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const m = map.current
     if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: 11, duration: 700 })
+    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 14.2 : 11, duration: 700 })
     if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
   }, [ready, city, mode])
 
