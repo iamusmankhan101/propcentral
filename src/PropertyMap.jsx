@@ -31,10 +31,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
       const english = ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name_int'], ['get', 'name:latin'], ['get', 'name']]
-      let font
+      let font, labelLayerId
       for (const l of m.getStyle().layers) {
         if (l.type !== 'symbol') continue
         font ??= l.layout?.['text-font']
+        labelLayerId ??= l.id
         if (JSON.stringify(l.layout?.['text-field'] ?? '').includes('name')) m.setLayoutProperty(l.id, 'text-field', english)
       }
       m.addSource('areas', { type: 'geojson', data: EMPTY })
@@ -55,8 +56,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
       if (!m.getLayer('building-3d')) m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], paint: {
-        'fill-extrusion-color': '#b9c2cc', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.82,
-      } }, 'area-fill')
+        'fill-extrusion-color': ['coalesce', ['get', 'colour'], '#d4d9e0'], 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.96,
+      } }, labelLayerId || 'area-fill')
       m.setTerrain({ source: 'terrain', exaggeration: 1 })
       if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
       setReady(true)
