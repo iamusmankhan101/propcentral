@@ -757,6 +757,10 @@ button.link:hover { filter: none; color: var(--text); }
 .map-bottom-nav label { display: flex; flex-direction: row; align-items: center; gap: 5px; padding: 0 4px; white-space: nowrap; }
 .map-bottom-nav select { padding: 8px 28px 8px 9px; border: 1px solid var(--line); background: #fff; border-radius: 9px; }
 .map-nav-divider { width: 1px; height: 28px; background: var(--line); }
+.map-tools-panel { position: fixed; top: 76px; right: 24px; z-index: 35; width: min(430px, calc(100vw - 48px)); max-height: calc(100dvh - 170px); overflow: auto; padding: 22px; background: rgba(255,255,255,.97); border-radius: 18px; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+.map-tools-panel .society-maps { margin: 0; }
+.map-tools-close { position: absolute; top: 8px; right: 10px; z-index: 1; width: 30px; height: 30px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 24px; }
+.map-tools-close:hover { filter: none; color: var(--text); }
 .map-search ul { list-style: none; margin: 6px 0 0; padding: 6px; background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.25); max-height: 340px; overflow-y: auto; }
 .map-search li { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
 .map-search li.on { background: var(--field); }

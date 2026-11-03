@@ -27,7 +27,8 @@ export default function Properties() {
   const [view, setView] = useState('map')
   const [city, setCity] = useState('Lahore')
   const [mapMode, setMapMode] = useState('2d')
-  const [mapBearing, setMapBearing] = useState(-15)
+  const [mapBearing, setMapBearing] = useState(0)
+  const [showMapTools, setShowMapTools] = useState(false)
   const [layer, setLayer] = useState('properties')
   const [f, setF] = useState({ status: '', area: '', q: '' })
   const [sel, setSel] = useState(null)
@@ -116,12 +117,17 @@ export default function Properties() {
           </div>}
         {!mapFull && <div className="inv-panel">{panel}</div>}
       </div>
-      {mapFull && <MapBottomNav layer={layer} view={view} city={city} mode={mapMode} onLayer={k => { setLayer(k); setPlacing(null); setDraft(null) }} onView={setView} onCity={setCity} onMode={setMapMode} onRotate={delta => setMapBearing(b => (b + delta + 360) % 360)} onAdd={startAdd} onDraw={startDrawSociety} disabled={!!placing} />}
+      {mapFull && <MapBottomNav layer={layer} view={view} city={city} mode={mapMode} onLayer={k => { setLayer(k); setPlacing(null); setDraft(null); setShowMapTools(false) }} onView={setView} onCity={setCity} onMode={setMapMode} onRotate={delta => setMapBearing(b => (b + delta + 360) % 360)} onAdd={startAdd} onDraw={startDrawSociety} onUpload={() => setShowMapTools(true)} disabled={!!placing} />}
+      {mapFull && layer === 'societies' && showMapTools && <div className="map-tools-panel">
+        <button className="map-tools-close" onClick={() => setShowMapTools(false)} aria-label="Close map tools">×</button>
+        <SocietyMaps overlays={overlays || []} areas={areas || []} area={areas?.find(a => a.id === selArea)} placing={placing} reload={reloadOverlays}
+          setOpacity={(id, v) => setOpacity({ ...opacity, [id]: v })} onAlign={(o, mode) => { setShowMapTools(false); setView('map'); setPlacing({ mode, target: 'overlay', id: o.id }) }} />
+      </div>}
     </section>
   )
 }
 
-function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode, onRotate, onAdd, onDraw, disabled }) {
+function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode, onRotate, onAdd, onDraw, onUpload, disabled }) {
   return <div className="map-bottom-nav">
     <button className={layer === 'properties' ? 'on' : ''} onClick={() => onLayer('properties')}>Properties</button>
     <button className={layer === 'societies' ? 'on' : ''} onClick={() => onLayer('societies')}>Societies</button>
@@ -129,8 +135,8 @@ function MapBottomNav({ layer, view, city, mode, onLayer, onView, onCity, onMode
     <label>Location<select value={city} onChange={e => onCity(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
     <button className={mode === '2d' ? 'on' : ''} onClick={() => onMode('2d')}>2D</button>
     <button className={mode === '3d' ? 'on' : ''} onClick={() => onMode('3d')}>3D</button>
-    {mode === '3d' && <><button className="rotate-button" onClick={() => onRotate(-30)} title="Rotate left" aria-label="Rotate left">↺</button><button className="rotate-button" onClick={() => onRotate(30)} title="Rotate right" aria-label="Rotate right">↻</button></>}
-    {layer === 'properties' ? <button onClick={onAdd} disabled={disabled}>+ Add property</button> : <button onClick={onDraw} disabled={disabled}>+ Add society</button>}
+    <button className="rotate-button" onClick={() => onRotate(-30)} title="Rotate left" aria-label="Rotate left">↺</button><button className="rotate-button" onClick={() => onRotate(30)} title="Rotate right" aria-label="Rotate right">↻</button>
+    {layer === 'properties' ? <button onClick={onAdd} disabled={disabled}>+ Add property</button> : <><button onClick={onDraw} disabled={disabled}>+ Add society</button><button onClick={onUpload} disabled={disabled}>Upload map</button></>}
     <button className={view === 'list' ? 'on' : ''} onClick={() => onView('list')}>List</button>
   </div>
 }
