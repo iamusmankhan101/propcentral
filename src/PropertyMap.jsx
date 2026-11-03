@@ -84,7 +84,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     }
     map.current = m
     return () => { m.remove(); map.current = null; setReady(false) }
-  }, [key, city])
+  }, [key])
 
   useEffect(() => {
     if (!ready) return
