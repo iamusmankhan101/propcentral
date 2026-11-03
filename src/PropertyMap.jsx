@@ -34,7 +34,6 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       for (const l of m.getStyle().layers) {
         if (l.type !== 'symbol') continue
         font ??= l.layout?.['text-font']
-        m.setLayoutProperty(l.id, 'visibility', 'none')
       }
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
@@ -61,11 +60,6 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
         m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
         m.setTerrain({ source: 'terrain', exaggeration: 1 })
       } catch (e) { console.warn('MapTiler terrain unavailable', e) }
-      const hideBasemapLabels = () => {
-        for (const l of m.getStyle().layers || []) if (l.type === 'symbol' && l.source !== 'areas') m.setLayoutProperty(l.id, 'visibility', 'none')
-      }
-      hideBasemapLabels()
-      m.once('idle', hideBasemapLabels)
       setReady(true)
     })
     m.on('click', e => {
@@ -105,6 +99,14 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     if (!ready || !map.current?.getLayer('building-3d')) return
     map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
   }, [ready, mode])
+
+  useEffect(() => {
+    if (!ready || !map.current) return
+    const showLabels = city === 'Lahore'
+    for (const l of map.current.getStyle().layers || []) {
+      if (l.type === 'symbol' && l.source !== 'areas') map.current.setLayoutProperty(l.id, 'visibility', showLabels ? 'visible' : 'none')
+    }
+  }, [ready, city])
 
   useEffect(() => {
     if (!ready) return
