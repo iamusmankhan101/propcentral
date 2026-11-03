@@ -258,7 +258,7 @@ function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
     if (t.length < 3) return setPlaces([])
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     const ctl = new AbortController(), timer = setTimeout(() =>
-      fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q.trim())}.json?access_token=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
+      fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q.trim())}.json?key=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
         .then(r => r.json()).then(d => setPlaces(d.features || [])).catch(() => {}), 300)
     return () => { clearTimeout(timer); ctl.abort() }
   }, [q, city]) // eslint-disable-line react-hooks/exhaustive-deps
