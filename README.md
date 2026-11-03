@@ -22,7 +22,7 @@ Put these in a `.env` file in the project folder (loaded automatically, never co
 |---|---|
 | `PORT`, `DB_PATH` | Server port, local database file (default `./crm.db`). Ignored when `TURSO_DATABASE_URL` is set |
 | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` | Optional. Seeds a `platform` owner (sign-ups/accounts only, no CRM data) at boot if that email does not exist. Password must be 10+ characters |
-| `CRM_DATABASE_URL`, `CRM_DATABASE_TOKEN` | Turso database URL (`libsql://…`) and token. Take priority over the `TURSO_*` ones. Use these on Vercel: the Turso integration creates a new database branch per deployment and overwrites `TURSO_*` |
+| `CRM_DATABASE_URL`, `CRM_DATABASE_TOKEN` | Fixed Turso database URL (`libsql://…`) and token. Take priority over the `TURSO_*` ones. Use these on Vercel when deployments must share one existing database |
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database URL (`libsql://…`) and token. Required on Vercel unless `CRM_DATABASE_URL` is set |
 | `CRON_SECRET` | Bearer secret for `/api/cron/tick` (SLA, lease and weekly-report jobs) |
 | `FB_VERIFY_TOKEN`, `FB_APP_SECRET`, `FB_PAGE_TOKEN` | Optional fallback. Normally an admin connects Facebook in **Settings › Facebook** (paste app secret + Graph API Explorer token; the CRM makes a permanent Page token, registers the webhook at `/api/webhooks/facebook` and subscribes the Page) |
@@ -40,7 +40,7 @@ The assistant only sees what the signed-in user already sees — the same branch
 The API runs as one serverless function (`api/[...path].js`) and the Vite build is served statically. The database lives in Turso, so nothing is written to the function's filesystem.
 
 1. Create the database with the [Turso CLI](https://docs.turso.tech/cli/introduction): `turso db create propcentral`, then copy `turso db show propcentral --url` and `turso db tokens create propcentral`.
-2. In the Vercel project, add `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `CRON_SECRET`, `GROQ_API_KEY` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
+2. In the Vercel project, disable Turso's per-deployment database-branch provisioning, then add the fixed database credentials as `CRM_DATABASE_URL`, `CRM_DATABASE_TOKEN`, `CRON_SECRET`, and `GROQ_API_KEY` (plus the Facebook / inbound variables if used) under **Settings › Environment Variables**, for Production and Preview.
 3. Deploy. Tables, migrations and the demo seed run automatically on the first request.
 4. Check `https://<app>/api/health` after deploying. It reports `ok`, whether the database is Turso or a local file, and the exact init error when the database cannot be reached (the rest of the API answers 503 in that case).
 5. `vercel.json` registers a daily Vercel Cron for `/api/cron/tick`. Vercel sends `Authorization: Bearer $CRON_SECRET` for you. On the free plan the schedule cannot be more frequent than daily; for minute-level SLA checks either upgrade (cron `*/5 * * * *`) or point an external scheduler such as cron-job.org at `https://<app>/api/cron/tick` with the same bearer header.

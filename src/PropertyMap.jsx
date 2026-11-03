@@ -34,6 +34,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       for (const l of m.getStyle().layers) {
         if (l.type !== 'symbol') continue
         font ??= l.layout?.['text-font']
+        if (l.layout?.['text-field']) m.setLayoutProperty(l.id, 'text-field', ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name']])
       }
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
