@@ -32,7 +32,6 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     m.addControl(new mapboxgl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
-      const english = ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name_int'], ['get', 'name:latin'], ['get', 'name']]
       let font
       for (const l of m.getStyle().layers) {
         if (l.type !== 'symbol') continue
@@ -42,13 +41,9 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
-      m.addSource('mapbox-buildings', { type: 'vector', url: 'mapbox://mapbox.mapbox-streets-v8' })
       m.addSource('terrain', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
-      m.addLayer({ id: 'mapbox-buildings-3d', type: 'fill-extrusion', source: 'mapbox-buildings', 'source-layer': 'building', minzoom: 14, filter: ['any', ['==', ['get', 'extrude'], 'true'], ['has', 'height']], paint: {
-        'fill-extrusion-color': '#c9d0d8', 'fill-extrusion-height': ['coalesce', ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
-      } }, 'area-fill')
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
       m.addLayer({ id: 'area-label', type: 'symbol', source: 'areas', layout: { 'text-field': ['get', 'name'], 'text-font': font || ['Noto Sans Bold'], 'text-size': ['match', ['get', 'kind'], 'Society', 16, 'Phase', 13, 11], 'text-allow-overlap': false },
         paint: { 'text-color': ['get', 'color'], 'text-halo-color': 'rgba(0,0,0,.75)', 'text-halo-width': 1.5 } })
@@ -60,6 +55,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
       m.setTerrain({ source: 'terrain', exaggeration: 1 })
+      const hideBasemapLabels = () => {
+        for (const l of m.getStyle().layers || []) if (l.type === 'symbol' && l.source !== 'areas') m.setLayoutProperty(l.id, 'visibility', 'none')
+      }
+      hideBasemapLabels()
+      m.once('idle', hideBasemapLabels)
       setReady(true)
     })
     m.on('click', e => {
