@@ -17,7 +17,6 @@ const Dot = ({ s }) => <span className="status-dot" style={{ background: STATUS_
 const Call = ({ c }) => c?.phone && !c.phone.includes('*')
   ? <span className="row"><a className="button" href={'tel:+' + c.phone}>Call</a><a className="button ghost" href={'https://wa.me/' + c.phone} target="_blank" rel="noreferrer">WhatsApp</a></span> : null
 
-// All managed properties on a satellite map of Lahore, inside the societies / phases / blocks drawn on it
 export default function Properties() {
   const m = useMeta()
   const [rows, reload] = useApi('/properties')
@@ -26,6 +25,8 @@ export default function Properties() {
   const [opacity, setOpacity] = useState({}) // live slider values before they're saved
   const overlays = overlaysSaved?.map(o => ({ ...o, opacity: opacity[o.id] ?? o.opacity }))
   const [view, setView] = useState('map')
+  const [city, setCity] = useState('Lahore')
+  const [mapMode, setMapMode] = useState('2d')
   const [layer, setLayer] = useState('properties')
   const [f, setF] = useState({ status: '', area: '', q: '' })
   const [sel, setSel] = useState(null)
@@ -35,14 +36,14 @@ export default function Properties() {
   const { run, error } = useAction()
   const set = k => e => setF({ ...f, [k]: e.target.value })
   const area = areas?.find(a => a.id === +f.area)
-  const shown = (rows || []).filter(p => (!f.status || p.status === f.status) && (!area || (p.lat != null && inPolygon([p.lng, p.lat], area.outline)))
+  const shown = (rows || []).filter(p => (!city || (p.city || 'Lahore') === city) && (!f.status || p.status === f.status) && (!area || (p.lat != null && inPolygon([p.lng, p.lat], area.outline)))
     && (!f.q || [propLabel(p), p.owner_name, p.lease?.tenant_name, p.address].join(' ').toLowerCase().includes(f.q.toLowerCase())))
   const counts = (rows || []).reduce((c, p) => ({ ...c, [p.status]: (c[p.status] || 0) + 1 }), {})
   const hasMap = !!m.maptiler_key
   const startAdd = () => { setSel(null); setLayer('properties'); if (hasMap) { setView('map'); setPlacing({ mode: 'pin', target: 'new' }) } else setDraft({ kind: 'property' }) }
   const place = pos => {
     const t = placing.target
-    if (t === 'new') { setPlacing(null); return setDraft({ kind: 'property', lat: pos.lat, lng: pos.lng }) }
+    if (t === 'new') { setPlacing(null); return setDraft({ kind: 'property', city, lat: pos.lat, lng: pos.lng }) }
     if (t === 'area') { setPlacing(null); return setDraft({ kind: 'area', outline: pos.outline }) }
     if (t === 'overlay') return run(async () => { // corners dragged by hand, or moved by the transform the matched points describe
       const o = overlays.find(x => x.id === placing.id)
@@ -87,7 +88,7 @@ export default function Properties() {
       {error && <p className="error">{error}</p>}
       <div className="inv">
         {view === 'map' || layer === 'societies'
-          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
+          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
             onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} /></Suspense>
           : <div className="card scroll">
             <table>
@@ -176,6 +177,7 @@ function NewProperty({ at, areas, onDone, onCancel }) {
       <h3>New property</h3>
       <p className="muted">{at.lat != null ? (Object.values(where).join(' · ') || 'Outside the drawn societies. Type the area below, or draw it under Societies.') : 'Not placed on the map.'}</p>
       <div className="two">
+        <label>City<Select name="city" options={['Lahore', 'Dubai']} defaultValue={at.city || 'Lahore'} blank={null} /></label>
         <label>Society<input name="society" list="society-list" defaultValue={where.society} /></label>
         <label>Phase<input name="phase" defaultValue={where.phase} /></label>
         <label>Block<input name="block" defaultValue={where.block} /></label>

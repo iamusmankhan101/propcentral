@@ -3,7 +3,10 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { useMeta } from './api.js'
 import { STATUS_COLOR, propLabel } from './Properties.jsx'
-const LAHORE = [74.3436, 31.5204]
+const MAP_LOCATIONS = {
+  Lahore: { center: [74.3436, 31.5204], country: 'pk' },
+  Dubai: { center: [55.2708, 25.2048], country: 'ae' },
+}
 const EMPTY = { type: 'FeatureCollection', features: [] }
 const AREA_COLOR = { Society: '#ffffff', Phase: '#ffd54a', Block: '#5ad1ff' }
 const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
@@ -13,7 +16,7 @@ const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
-export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, onSelect, onSelectArea, placing, onPlace, onCancel }) {
+export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode }) {
   const { maptiler_key: key, me } = useMeta()
   const box = useRef(), map = useRef(), live = useRef({})
   const [ready, setReady] = useState(false)
@@ -22,7 +25,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
 
   useEffect(() => {
     if (!key) return
-    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: LAHORE, zoom: 11, attributionControl: { compact: true } })
+    const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
+    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: city === 'Dubai' ? 11 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
     m.addControl(new maplibregl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
@@ -36,6 +40,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
+      m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
@@ -48,6 +53,12 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#ffcc00', 'line-width': 2, 'line-dasharray': [2, 1] } })
       m.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
+      const building = m.getStyle().layers.find(l => l.type === 'fill' && /building/i.test(`${l.id} ${l['source-layer'] || ''}`))
+      if (building && !m.getLayer('building-3d')) m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: building.source, 'source-layer': building['source-layer'], minzoom: 14, paint: {
+        'fill-extrusion-color': '#b9c2cc', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 0], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.72,
+      } }, 'area-fill')
+      m.setTerrain({ source: 'terrain', exaggeration: 1 })
+      if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
       setReady(true)
     })
     m.on('click', e => {
@@ -73,7 +84,14 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     }
     map.current = m
     return () => { m.remove(); map.current = null; setReady(false) }
-  }, [key])
+  }, [key, city])
+
+  useEffect(() => {
+    if (!ready) return
+    const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
+    map.current.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: city === 'Dubai' ? 11 : 11, duration: 700 })
+    if (map.current.getLayer('building-3d')) map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
+  }, [ready, city, mode])
 
   useEffect(() => {
     if (!ready) return
@@ -181,7 +199,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     <div className="prop-map">
       <div ref={box} className="prop-map-canvas" />
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
-      {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
+      {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
+      {ready && !placing && <div className="map-controls">
+        <label>Location<select value={city} onChange={e => onCity?.(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
+        <div className="seg small"><button className={mode === '2d' ? 'on' : ''} onClick={() => onMode?.('2d')}>2D</button><button className={mode === '3d' ? 'on' : ''} onClick={() => onMode?.('3d')}>3D</button></div>
+      </div>}
       {placing && placing.mode !== 'adjust' && (
         <div className="map-hint">
           {what}{placing.mode === 'outline' && ` (${points.length} so far)`}
@@ -201,8 +223,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   )
 }
 
-// Search box on the map: your properties and drawn areas first, then any place in Lahore (MapTiler geocoding)
-function MapSearch({ map, mapKey, rows, areas, onSelect, onSelectArea }) {
+// Search box on the map: your properties and drawn areas first, then nearby places (MapTiler geocoding)
+function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
   const [q, setQ] = useState('')
   const [places, setPlaces] = useState([])
   const [open, setOpen] = useState(false)
@@ -211,13 +233,14 @@ function MapSearch({ map, mapKey, rows, areas, onSelect, onSelectArea }) {
   const t = q.trim().toLowerCase()
   const props = t.length < 2 ? [] : rows.filter(p => [propLabel(p), p.owner_name, p.lease?.tenant_name, p.address, p.street && `street ${p.street}`].join(' ').toLowerCase().includes(t)).slice(0, 5)
   const zones = t.length < 2 ? [] : areas.filter(a => a.name.toLowerCase().includes(t)).slice(0, 4)
-  useEffect(() => { // places: debounced, biased to Lahore, English names
+  useEffect(() => {
     if (t.length < 3) return setPlaces([])
+    const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     const ctl = new AbortController(), timer = setTimeout(() =>
-      fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q.trim())}.json?key=${mapKey}&country=pk&proximity=74.3436,31.5204&language=en&limit=5`, { signal: ctl.signal })
+      fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q.trim())}.json?key=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
         .then(r => r.json()).then(d => setPlaces(d.features || [])).catch(() => {}), 300)
     return () => { clearTimeout(timer); ctl.abort() }
-  }, [q]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, city]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => marker.current?.remove(), [])
   const fit = ring => map.fitBounds(ring.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(ring[0], ring[0])), { padding: 80, maxZoom: 17 })
   const results = [
