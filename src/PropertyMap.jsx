@@ -39,13 +39,14 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
-      m.addSource('maptiler_planet', { type: 'vector', url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` })
-      m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
-      m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
-        'fill-extrusion-color': ['coalesce', ['get', 'colour'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
-      } }, 'area-fill')
+      try {
+        m.addSource('maptiler_planet', { type: 'vector', url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` })
+        m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
+          'fill-extrusion-color': ['coalesce', ['get', 'colour'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
+        } }, 'area-fill')
+      } catch (e) { console.warn('MapTiler 3D buildings unavailable', e) }
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
       m.addLayer({ id: 'area-label', type: 'symbol', source: 'areas', layout: { 'text-field': ['get', 'name'], 'text-font': font || ['Noto Sans Bold'], 'text-size': ['match', ['get', 'kind'], 'Society', 16, 'Phase', 13, 11], 'text-allow-overlap': false },
         paint: { 'text-color': ['get', 'color'], 'text-halo-color': 'rgba(0,0,0,.75)', 'text-halo-width': 1.5 } })
@@ -56,7 +57,10 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#ffcc00', 'line-width': 2, 'line-dasharray': [2, 1] } })
       m.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
-      m.setTerrain({ source: 'terrain', exaggeration: 1 })
+      try {
+        m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
+        m.setTerrain({ source: 'terrain', exaggeration: 1 })
+      } catch (e) { console.warn('MapTiler terrain unavailable', e) }
       const hideBasemapLabels = () => {
         for (const l of m.getStyle().layers || []) if (l.type === 'symbol' && l.source !== 'areas') m.setLayoutProperty(l.id, 'visibility', 'none')
       }
@@ -191,8 +195,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     <div className="card map-missing">
       <h3>Satellite map not set up yet</h3>
       <p className="muted">{me.role === 'admin'
-        ? <>Create a free MapTiler key at <a href="https://cloud.maptiler.com/account/keys/" target="_blank" rel="noreferrer">maptiler.com</a> and paste it in <a href="#/settings?tab=maps">Settings › Maps</a>.</>
-        : 'Ask an admin to add the MapTiler key in Settings › Maps.'} The list view works in the meantime.</p>
+        ? <>Add the Mapbox public token to the app's <b>VITE_MAPBOX_TOKEN</b> environment variable.</>
+        : 'Ask an admin to configure the Mapbox public token.'} The list view works in the meantime.</p>
     </div>
   )
   const finish = () => {
@@ -209,7 +213,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       <div ref={box} className="prop-map-canvas" />
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
       {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
-      {ready && !placing && <div className="map-controls">
+      {!placing && <div className="map-controls">
         <label>Location<select value={city} onChange={e => onCity?.(e.target.value)}><option>Lahore</option><option>Dubai</option></select></label>
         <div className="seg small"><button className={mode === '2d' ? 'on' : ''} onClick={() => onMode?.('2d')}>2D</button><button className={mode === '3d' ? 'on' : ''} onClick={() => onMode?.('3d')}>3D</button></div>
       </div>}
@@ -232,7 +236,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   )
 }
 
-// Search box on the map: your properties and drawn areas first, then nearby places (MapTiler geocoding)
+// Search box on the map: your properties and drawn areas first, then nearby places (Mapbox geocoding)
 function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
   const [q, setQ] = useState('')
   const [places, setPlaces] = useState([])
@@ -246,7 +250,7 @@ function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
     if (t.length < 3) return setPlaces([])
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     const ctl = new AbortController(), timer = setTimeout(() =>
-      fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q.trim())}.json?key=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
+      fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q.trim())}.json?access_token=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
         .then(r => r.json()).then(d => setPlaces(d.features || [])).catch(() => {}), 300)
     return () => { clearTimeout(timer); ctl.abort() }
   }, [q, city]) // eslint-disable-line react-hooks/exhaustive-deps
