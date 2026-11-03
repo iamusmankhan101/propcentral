@@ -86,7 +86,7 @@ export default function Properties() {
         </div>
       </div>}
       {error && <p className="error">{error}</p>}
-      <div className="inv">
+      <div className={'inv' + (view === 'map' || layer === 'societies' ? ' map-inv' : '')}>
         {view === 'map' || layer === 'societies'
           ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
             onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} /></Suspense>

@@ -492,6 +492,9 @@ details[open] summary { margin-bottom: 10px; }
 
 .inv { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; }
 .inv-panel { position: sticky; top: 16px; }
+.map-inv { display: block; position: relative; }
+.map-inv .prop-map { height: calc(100dvh - 250px); min-height: 620px; }
+.map-inv .inv-panel { position: absolute; top: 16px; right: 16px; z-index: 3; width: min(380px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; }
 .unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 6px; }
 .unit { background: var(--bg); color: var(--t); border: 1.5px solid var(--c); border-radius: 10px; padding: 7px 2px; display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
 .unit b { font-size: 14px; }
@@ -518,6 +521,7 @@ details[open] summary { margin-bottom: 10px; }
 @media (max-width: 1100px) {
   .inv { grid-template-columns: minmax(0, 1fr); }
   .inv-panel { position: static; }
+  .map-inv .inv-panel { position: static; width: auto; max-height: none; margin-top: 12px; }
 }
 table.sizes td, table.sizes th { white-space: nowrap; }
 table.sizes tfoot td { border-top: 2px solid var(--line); border-bottom: 0; }
