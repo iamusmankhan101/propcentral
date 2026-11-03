@@ -28,7 +28,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     if (!key) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     mapboxgl.accessToken = key
-    const m = new mapboxgl.Map({ container: box.current, style: 'mapbox://styles/mapbox/standard-satellite', config: { basemap: { lightPreset: 'day', show3dObjects: mode === '3d', show3dBuildings: mode === '3d', show3dLandmarks: mode === '3d', show3dTrees: mode === '3d', show3dFacades: mode === '3d' } }, center: location.center, zoom: mode === '3d' ? 14.2 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
+    const m = new mapboxgl.Map({ container: box.current, style: 'mapbox://styles/mapbox/standard-satellite', config: { basemap: { lightPreset: 'day', show3dObjects: mode === '3d', show3dBuildings: mode === '3d', show3dLandmarks: mode === '3d', show3dTrees: mode === '3d', show3dFacades: mode === '3d' } }, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
     m.addControl(new mapboxgl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
@@ -42,9 +42,13 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
+      m.addSource('mapbox-buildings', { type: 'vector', url: 'mapbox://mapbox.mapbox-streets-v8' })
       m.addSource('terrain', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
+      m.addLayer({ id: 'mapbox-buildings-3d', type: 'fill-extrusion', source: 'mapbox-buildings', 'source-layer': 'building', minzoom: 14, filter: ['any', ['==', ['get', 'extrude'], 'true'], ['has', 'height']], paint: {
+        'fill-extrusion-color': '#c9d0d8', 'fill-extrusion-height': ['coalesce', ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
+      } }, 'area-fill')
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
       m.addLayer({ id: 'area-label', type: 'symbol', source: 'areas', layout: { 'text-field': ['get', 'name'], 'text-font': font || ['Noto Sans Bold'], 'text-size': ['match', ['get', 'kind'], 'Society', 16, 'Phase', 13, 11], 'text-allow-overlap': false },
         paint: { 'text-color': ['get', 'color'], 'text-halo-color': 'rgba(0,0,0,.75)', 'text-halo-width': 1.5 } })
@@ -88,7 +92,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const m = map.current
     if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 14.2 : 11, duration: 700 })
+    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
     if (m.setConfigProperty) for (const property of ['show3dObjects', 'show3dBuildings', 'show3dLandmarks', 'show3dTrees', 'show3dFacades']) m.setConfigProperty('basemap', property, mode === '3d')
   }, [ready, city, mode])
 
