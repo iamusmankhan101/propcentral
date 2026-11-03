@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import mapboxgl from 'mapbox-gl'
-import 'mapbox-gl/dist/mapbox-gl.css'
+import maplibregl from 'maplibre-gl'
+import 'maplibre-gl/dist/maplibre-gl.css'
 import { useMeta } from './api.js'
 import { STATUS_COLOR, propLabel } from './Properties.jsx'
 const MAP_LOCATIONS = {
@@ -11,14 +11,13 @@ const EMPTY = { type: 'FeatureCollection', features: [] }
 const AREA_COLOR = { Society: '#ffffff', Phase: '#ffd54a', Block: '#5ad1ff' }
 const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 
-// Mapbox satellite map with:
+// Satellite map with:
 //  - society / phase / block boundaries (areas), named on the map
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
 export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode }) {
-  const { me } = useMeta()
-  const key = import.meta.env.VITE_MAPBOX_TOKEN
+  const { maptiler_key: key, me } = useMeta()
   const box = useRef(), map = useRef(), live = useRef({})
   const [ready, setReady] = useState(false)
   const [points, setPoints] = useState([])
@@ -27,9 +26,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   useEffect(() => {
     if (!key) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    mapboxgl.accessToken = key
-    const m = new mapboxgl.Map({ container: box.current, style: 'mapbox://styles/mapbox/standard', config: { basemap: { lightPreset: 'day', show3dObjects: mode === '3d', show3dBuildings: mode === '3d', show3dLandmarks: mode === '3d', show3dTrees: mode === '3d', show3dFacades: mode === '3d', showPlaceLabels: false, showPointOfInterestLabels: false, showRoadLabels: false, showTransitLabels: false } }, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
-    m.addControl(new mapboxgl.NavigationControl(), 'top-right')
+    const m = new maplibregl.Map({ container: box.current, style: `https://api.maptiler.com/maps/hybrid/style.json?key=${key}`, center: location.center, zoom: mode === '3d' ? 15.5 : 11, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, maxPitch: 85, attributionControl: { compact: true } })
+    m.addControl(new maplibregl.NavigationControl(), 'top-right')
     m.on('load', () => {
       // place names in English: English name, else the international / Latin-script name, never the Urdu one if any of those exist
       let font
@@ -41,9 +39,13 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
-      m.addSource('terrain', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 })
+      m.addSource('maptiler_planet', { type: 'vector', url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` })
+      m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
+      m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_planet', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
+        'fill-extrusion-color': ['coalesce', ['get', 'colour'], '#cbd2da'], 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], ['*', ['coalesce', ['get', 'levels'], 1], 3.2]], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0], 'fill-extrusion-opacity': 0.9,
+      } }, 'area-fill')
       m.addLayer({ id: 'area-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 4, ['==', ['get', 'kind'], 'Society'], 2.5, 1.5], 'line-opacity': 0.9 } })
       m.addLayer({ id: 'area-label', type: 'symbol', source: 'areas', layout: { 'text-field': ['get', 'name'], 'text-font': font || ['Noto Sans Bold'], 'text-size': ['match', ['get', 'kind'], 'Society', 16, 'Phase', 13, 11], 'text-allow-overlap': false },
         paint: { 'text-color': ['get', 'color'], 'text-halo-color': 'rgba(0,0,0,.75)', 'text-halo-width': 1.5 } })
@@ -93,7 +95,6 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -15 : 0, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
-    if (m.setConfigProperty) for (const property of ['show3dObjects', 'show3dBuildings', 'show3dLandmarks', 'show3dTrees', 'show3dFacades']) m.setConfigProperty('basemap', property, mode === '3d')
   }, [ready, city, mode])
 
   useEffect(() => {
@@ -128,7 +129,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const pts = [...rows.filter(p => p.lat != null).map(p => [p.lng, p.lat]), ...(areas || []).flatMap(a => a.outline)]
     if (!ready || fitted.current || !pts.length) return
     fitted.current = true
-    map.current.fitBounds(pts.reduce((b, p) => b.extend(p), new mapboxgl.LngLatBounds(pts[0], pts[0])), { padding: 60, maxZoom: 16, duration: 0 })
+    map.current.fitBounds(pts.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(pts[0], pts[0])), { padding: 60, maxZoom: 16, duration: 0 })
   }, [ready, rows, areas])
 
   // fly to the selected property / area
@@ -138,7 +139,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   }, [ready, sel]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const a = areas?.find(x => x.id === selArea)
-    if (ready && a) map.current.fitBounds(a.outline.reduce((b, p) => b.extend(p), new mapboxgl.LngLatBounds(a.outline[0], a.outline[0])), { padding: 80, maxZoom: 17 })
+    if (ready && a) map.current.fitBounds(a.outline.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(a.outline[0], a.outline[0])), { padding: 80, maxZoom: 17 })
   }, [ready, selArea]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // drawing: show the points and the closing line
@@ -190,8 +191,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     <div className="card map-missing">
       <h3>Satellite map not set up yet</h3>
       <p className="muted">{me.role === 'admin'
-        ? <>Add the Mapbox public token to the app's <b>VITE_MAPBOX_TOKEN</b> environment variable.</>
-        : 'Ask an admin to configure the Mapbox public token.'} The list view works in the meantime.</p>
+        ? <>Create a free MapTiler key at <a href="https://cloud.maptiler.com/account/keys/" target="_blank" rel="noreferrer">maptiler.com</a> and paste it in <a href="#/settings?tab=maps">Settings › Maps</a>.</>
+        : 'Ask an admin to add the MapTiler key in Settings › Maps.'} The list view works in the meantime.</p>
     </div>
   )
   const finish = () => {
@@ -231,7 +232,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   )
 }
 
-// Search box on the map: your properties and drawn areas first, then nearby places (Mapbox geocoding)
+// Search box on the map: your properties and drawn areas first, then nearby places (MapTiler geocoding)
 function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
   const [q, setQ] = useState('')
   const [places, setPlaces] = useState([])
@@ -245,19 +246,19 @@ function MapSearch({ map, mapKey, rows, areas, city, onSelect, onSelectArea }) {
     if (t.length < 3) return setPlaces([])
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
     const ctl = new AbortController(), timer = setTimeout(() =>
-      fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q.trim())}.json?access_token=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
+      fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q.trim())}.json?key=${mapKey}&country=${location.country}&proximity=${location.center.join(',')}&language=en&limit=5`, { signal: ctl.signal })
         .then(r => r.json()).then(d => setPlaces(d.features || [])).catch(() => {}), 300)
     return () => { clearTimeout(timer); ctl.abort() }
   }, [q, city]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => marker.current?.remove(), [])
-  const fit = ring => map.fitBounds(ring.reduce((b, p) => b.extend(p), new mapboxgl.LngLatBounds(ring[0], ring[0])), { padding: 80, maxZoom: 17 })
+  const fit = ring => map.fitBounds(ring.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(ring[0], ring[0])), { padding: 80, maxZoom: 17 })
   const results = [
     ...props.map(p => ({ key: 'p' + p.id, label: propLabel(p), sub: [p.owner_name && `Owner ${p.owner_name}`, p.lease?.tenant_name && `Tenant ${p.lease.tenant_name}`, p.lat == null && 'not on map'].filter(Boolean).join(' · '), kind: 'Property',
       go: () => onSelect(p.id) })), // the map flies to it if it has a pin
     ...zones.map(a => ({ key: 'a' + a.id, label: a.name, sub: a.kind, kind: 'Area', go: () => { fit(a.outline); onSelectArea?.(a.id) } })),
     ...places.map(f => ({ key: 'g' + f.id, label: f.text || f.place_name, sub: f.place_name, kind: 'Place', go: () => {
       marker.current?.remove()
-      marker.current = new mapboxgl.Marker({ color: '#ff8a00' }).setLngLat(f.center).addTo(map)
+      marker.current = new maplibregl.Marker({ color: '#ff8a00' }).setLngLat(f.center).addTo(map)
       if (f.bbox) map.fitBounds([[f.bbox[0], f.bbox[1]], [f.bbox[2], f.bbox[3]]], { padding: 60, maxZoom: 17 })
       else map.flyTo({ center: f.center, zoom: 16 })
     } })),
@@ -310,7 +311,7 @@ function AdjustOverlay({ map, overlay, onSave, onCancel }) {
     const el = cls => Object.assign(document.createElement('div'), { className: 'ov-handle ' + cls })
     let start
     const corners = [0, 1, 2, 3].map(i => {
-      const h = new mapboxgl.Marker({ element: el('corner'), draggable: true }).setLngLat(cur.current[i]).addTo(map)
+      const h = new maplibregl.Marker({ element: el('corner'), draggable: true }).setLngLat(cur.current[i]).addTo(map)
       h.on('dragstart', () => { start = cur.current.map(p => [...p]) })
       h.on('drag', () => {
         const p = h.getLngLat().toArray()
@@ -321,7 +322,7 @@ function AdjustOverlay({ map, overlay, onSave, onCancel }) {
       })
       return h
     })
-    const mid = new mapboxgl.Marker({ element: el('move'), draggable: true }).setLngLat(centre(cur.current)).addTo(map)
+    const mid = new maplibregl.Marker({ element: el('move'), draggable: true }).setLngLat(centre(cur.current)).addTo(map)
     mid.on('dragstart', () => { start = cur.current.map(p => [...p]) })
     mid.on('drag', () => {
       const [x, y] = mid.getLngLat().toArray(), [cx, cy] = centre(start)
