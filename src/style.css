@@ -751,6 +751,7 @@ button.link:hover { filter: none; color: var(--text); }
 .map-overlay-close:hover { filter: none; color: var(--text); }
 .overlay-actions { flex-wrap: wrap; }
 .overlay-actions button { flex: 1 1 auto; }
+.overlay-check { font-size: 13px; }
 .map-overlay-panel .opacity { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; font-size: 12px; font-weight: 700; }
 .map-overlay-panel .opacity input { min-width: 0; }
 .properties-map-screen { position: fixed; inset: 0; z-index: 30; background: #111318; }

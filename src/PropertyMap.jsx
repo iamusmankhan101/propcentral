@@ -277,6 +277,7 @@ function OverlayActionPanel({ overlay, manage, onAction }) {
           <button onClick={() => onAction('adjust')}>Adjust map</button>
           <button className="ghost" onClick={() => onAction('match')}>Match points</button>
         </div>
+        <label className="check overlay-check"><input type="checkbox" checked={overlay.clear_white} onChange={e => onAction('clear-white', e.target.checked)} /> Remove white background</label>
         <label className="opacity">Opacity<input type="range" min="0.1" max="1" step="0.05" value={opacity} onChange={e => setOpacity(+e.target.value)} onPointerUp={() => onAction('opacity', opacity)} onKeyUp={() => onAction('opacity', opacity)} /></label>
         <div className="row overlay-actions">
           <button className="ghost" onClick={() => onAction('toggle')}>Hide map</button>

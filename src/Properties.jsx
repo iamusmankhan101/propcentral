@@ -82,8 +82,8 @@ export default function Properties() {
       if (!areaForOverlay) return
       setSelOverlay(null); setLayer('societies'); setSelArea(areaForOverlay.id); setView('map'); setPlacing({ mode: 'outline', target: 'area-redraw' }); return
     }
-    if (action === 'toggle' || action === 'opacity') {
-      return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: action === 'toggle' ? { visible: false } : { opacity: value } }); if (action === 'toggle') setSelOverlay(null); reloadOverlays() })
+    if (action === 'toggle' || action === 'opacity' || action === 'clear-white') {
+      return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: action === 'toggle' ? { visible: false } : action === 'clear-white' ? { clear_white: value } : { opacity: value } }); if (action === 'toggle') setSelOverlay(null); reloadOverlays() })
     }
   }
   const areaAction = (action) => {
