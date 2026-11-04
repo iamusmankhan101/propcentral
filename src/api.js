@@ -58,6 +58,14 @@ export async function download(path, name) {
   URL.revokeObjectURL(a.href)
 }
 
+export async function downloadBlob(path, name) {
+  const r = await fetch('/api' + path, { headers: { authorization: 'Bearer ' + (localStorage.token || '') } })
+  if (!r.ok) throw new Error((await r.text()) || r.statusText)
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await r.blob()), download: name })
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
 // Photos are downsized in the browser (JPEG, longest side `max` px) before upload, so a phone camera shot stays ~300KB
 export const shrinkImage = (file, max = 1600) => new Promise((ok, fail) => {
   const img = new Image()

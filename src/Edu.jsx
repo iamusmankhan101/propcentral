@@ -25,13 +25,15 @@ export default function Students({ query }) {
   const [f, setF] = useState({ q: params.get('q') || '', stage: '', counselor_id: '', missing_docs: '', followup: '', page: 0 })
   const [view, setView] = useState(() => { try { return localStorage.eduView || 'board' } catch { return 'board' } })
   const board = view === 'board'
-  const pick = v => { setView(v); try { localStorage.eduView = v } catch { /* private mode */ } }
+  const pick = v => { setView(v); setF({ ...f, page: 0 }); try { localStorage.eduView = v } catch { /* private mode */ } }
   const qs = new URLSearchParams(Object.entries({ ...f, size: board ? 200 : 50 }).filter(([, v]) => v !== '')).toString()
   const [data, reload] = useApi('/edu/students?' + qs)
   const [adding, setAdding] = useState(params.has('new'))
   const [importing, setImporting] = useState(false)
   const [reassigning, setReassigning] = useState(false)
   const [selected, setSelected] = useState([])
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const set = k => e => setF({ ...f, [k]: e.target.value, page: 0 })
   const counselors = m.users.filter(u => u.active && ['agent', 'team_lead'].includes(u.role)).map(u => [u.id, u.name])
   const hasFilters = !!(f.q || f.stage || f.counselor_id || f.missing_docs || f.followup)
@@ -40,19 +42,23 @@ export default function Students({ query }) {
   const selectAll = () => setSelected(data?.rows ? data.rows.map(r => r.id) : [])
   const clearSelect = () => setSelected([])
 
-  const exportCsv = () => {
-    const filterQs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== '')).toString()
-    const url = '/api/edu/students/export' + (filterQs ? '?' + filterQs : '')
-    fetch(url, { headers: { authorization: 'Bearer ' + (localStorage.token || '') } })
-      .then(r => r.blob())
-      .then(b => {
-        const a = Object.assign(document.createElement('a'), {
-          href: URL.createObjectURL(b),
-          download: `students-${new Date().toISOString().slice(0, 10)}.csv`,
-        })
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(a.href), 30000)
+  const exportCsv = async () => {
+    const { page, ...filters } = f // pagination is a screen concern; an export is always the whole filtered set
+    const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== '')).toString()
+    setExportError(''); setExporting(true)
+    try {
+      const r = await fetch('/api/edu/students/export' + (qs ? '?' + qs : ''), {
+        headers: { authorization: 'Bearer ' + (localStorage.token || '') },
       })
+      if (r.status === 401) { delete localStorage.token; location.reload(); return }
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'The export could not be prepared.')
+      const a = Object.assign(document.createElement('a'), {
+        href: URL.createObjectURL(await r.blob()),
+        download: `students-${new Date().toISOString().slice(0, 10)}.csv`,
+      })
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000)
+    } catch (e) { setExportError(e.message) } finally { setExporting(false) }
   }
 
   return (
@@ -61,12 +67,13 @@ export default function Students({ query }) {
         <h2>Students {data && <span className="count">{data.total}</span>}</h2>
         <div className="row">
           <div className="seg small">{[['board', 'Journey'], ['table', 'Table']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => pick(k)}>{l}</button>)}</div>
-          <button className="ghost" onClick={exportCsv} disabled={!data?.total}>Export CSV</button>
+          <button className="ghost" onClick={exportCsv} disabled={!data?.total || exporting}>{exporting ? 'Exporting…' : 'Export CSV'}</button>
           <button className="ghost" onClick={() => setImporting(!importing)}>{importing ? 'Close import' : 'Import CSV'}</button>
           {m.can('reassign') && <button className={reassigning ? 'ghost' : ''} onClick={() => setReassigning(!reassigning)}>{reassigning ? 'Close reassign' : 'Bulk reassign'}</button>}
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ New student'}</button>
         </div>
       </div>
+      {exportError && <p className="error">{exportError}</p>}
       {importing && <StudentImport counselors={counselors} onDone={() => { setImporting(false); reload() }} />}
       {reassigning && <BulkReassign counselors={counselors} selected={selected} onDone={() => { setReassigning(false); clearSelect(); reload() }} />}
       {adding && <NewStudent counselors={counselors} onDone={() => { setAdding(false); reload() }} />}

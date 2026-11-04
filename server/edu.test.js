@@ -98,6 +98,15 @@ test('edu students: gated, created, moved through the pipeline and documented', 
   assert.equal(detail.documents[0].verified, 1)
   assert.equal((await call(base, 'DELETE', `/edu/documents/${docId}`, token, {})).status, 400, 'removing paper needs a reason')
   assert.equal((await call(base, 'DELETE', `/edu/documents/${docId}`, token, { reason: 'wrong scan' })).status, 200)
+
+  // /students/export sits next to /students/:id, so route order decides whether it is reachable at all
+  const csv = await call(base, 'GET', '/edu/students/export', token)
+  assert.equal(csv.status, 200, 'the CSV export is not read as a student id')
+  assert.match(csv.headers.get('content-type') || '', /text\/csv/)
+  const body = await csv.text()
+  assert.ok(body.includes('Ayesha Riaz') && body.includes('Ali Berg'), 'every student in scope is in the file')
+  const filtered = await (await call(base, 'GET', '/edu/students/export?stage=Documents+Collection', token)).text()
+  assert.ok(filtered.includes('Ayesha Riaz') && !filtered.includes('Ali Berg'), 'the export honours the filters the screen is showing')
 })
 
 test('a lead promotes to a student once, keeping the link and both timelines', async t => {

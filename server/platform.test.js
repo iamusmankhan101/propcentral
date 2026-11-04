@@ -73,6 +73,16 @@ test('platform panel: guarded, hierarchy, payment request approval, backup', asy
   assert.equal(dash.paid, 1)
   assert.equal(dash.monthly_revenue, 12499)
 
+  // platform onboards a company directly and hands back a one-time link instead of mailing a password
+  const created = await call(base, 'POST', '/platform/accounts', boss, { name: 'Nova Realty', email: 'Nova@Example.com', phone: '03001234567', plan: 'solo' })
+  assert.equal(created.status, 200, 'a new company account gets created')
+  const { token: invite } = await created.json()
+  assert.match(invite, /^[a-f0-9]{64}$/, 'the invite is a reset token, not a plain password')
+  assert.equal((await accounts()).find(a => a.email === 'nova@example.com')?.plan, 'solo')
+  assert.equal((await call(base, 'POST', '/reset-password', boss, { token: invite, password: 'NovaPass12345' })).status, 200)
+  assert.equal((await call(base, 'POST', '/reset-password', boss, { token: invite, password: 'NovaPass12345' })).status, 400, 'the invite link works once')
+  assert.ok(await login(base, 'nova@example.com', 'NovaPass12345'), 'and the new admin can sign in')
+
   const bk = await call(base, 'GET', '/platform/backup', boss)
   assert.equal(bk.status, 200)
   assert.ok((await bk.arrayBuffer()).byteLength > 1000)

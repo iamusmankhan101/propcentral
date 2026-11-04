@@ -4,6 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import * as XLSX from 'xlsx'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
 import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
@@ -353,10 +354,10 @@ const err = (status, message, data) => Object.assign(new Error(message), { statu
 const stripMeta = r => { if (r) delete r._metadata; return r }
 // libsql has no bool binding: a JS true/false in a parameter panics the Rust layer and kills the process
 const sqlValue = v => (typeof v === 'boolean' ? (v ? 1 : 0) : v)
-const params = p => p.map(sqlValue)
-const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...params(p)))
-const all = (sql, ...p) => db.prepare(sql).all(...params(p)).map(stripMeta)
-const run = (sql, ...p) => db.prepare(sql).run(...params(p))
+const bindArgs = p => p.map(sqlValue)
+const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...bindArgs(p)))
+const all = (sql, ...p) => db.prepare(sql).all(...bindArgs(p)).map(stripMeta)
+const run = (sql, ...p) => db.prepare(sql).run(...bindArgs(p))
 
 // ---------- plans & trials ----------
 function pickPlan(id) {
@@ -729,7 +730,12 @@ app.post('/api/login', async (req, res) => {
 </div>
 <p style="color:#888;font-size:12px">This code is valid for 10 minutes. If you did not attempt to sign in, change your password immediately.</p>
 </div>`
-        await sendEmail(u.email, `Your Estate Centric Login Code: ${code}`, html).catch(e => console.error('[2fa email]', e))
+        const sent = await sendEmail(u.email, `Your Estate Centric Login Code: ${code}`, html)
+        if (!sent.ok) {
+          run('DELETE FROM login_email_codes WHERE user_id=?', u.id)
+          audit(u.id, 'login_blocked_email', 'user', u.id, { reason: sent.error }, req.ip)
+          throw err(503, `We could not send your sign-in code by email. Try again in a few minutes; if it keeps happening contact support on ${SUPPORT_WHATSAPP}.`)
+        }
         return res.json({ need_code: true, method: 'email', email: u.email })
       } else {
         return res.json({ need_code: true, method: 'totp' })
@@ -802,8 +808,10 @@ app.post('/api/register', async (req, res) => {
 <p style="color:#888;font-size:12px">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color:#ea580c">${verifyUrl}</a></p>
 <p style="color:#888;font-size:12px">This link expires in 24 hours. If you didn't create an account, ignore this email.</p>
 </div>`
-  await sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[register email error]', e))
-  res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds })
+  const sent = await sendEmail(email, 'Verify your Estate Centric email', html)
+  // The account is deliberately left half-created: signing in with it explains why, and offers a resend.
+  if (!sent.ok) audit(null, 'register_email_failed', 'user', id, { email, reason: sent.error }, req.ip)
+  res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds, email_sent: sent.ok })
 })
 
 // Email verification: called by the frontend with the raw token from the link
@@ -825,6 +833,7 @@ app.post('/api/resend-verification', async (req, res) => {
   rateHit(rateKey('resend-verify-ip', req.ip || 'local'), 3, 3600e3, 'Too many resend requests. Try again in an hour.')
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
   const u = email && one('SELECT * FROM users WHERE email=? AND active=0', email)
+  let sent
   if (u) {
     run('DELETE FROM email_verifications WHERE user_id=?', u.id)
     const rawToken = crypto.randomBytes(32).toString('hex')
@@ -843,9 +852,9 @@ app.post('/api/resend-verification', async (req, res) => {
 <p style="color:#888;font-size:12px">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color:#ea580c">${verifyUrl}</a></p>
 <p style="color:#888;font-size:12px">This link expires in 24 hours.</p>
 </div>`
-    await sendEmail(email, 'Verify your Estate Centric email', html).catch(e => console.error('[resend-verify email error]', e))
+    sent = await sendEmail(email, 'Verify your Estate Centric email', html)
   }
-  res.json({ ok: true }) // always succeeds — don't reveal if email exists
+  res.json({ ok: true, email_sent: !!sent?.ok }) // always succeeds — don't reveal if email exists
 })
 
 // "Forgot password": the answer never reveals whether the email exists, and no reset secret is emailed
@@ -1176,14 +1185,28 @@ app.get('/api/campaigns/meta', async (req, res) => {
   }), known_names: metaCache.out.map(c => c.name.toLowerCase()) })
 })
 
-app.get('/api/leads/export', guard('export'), (req, res) => sendExport(req, res))
-function sendExport(req, res, extra) {
+function leadExportRows(req) {
   const [from, p] = leadQuery(req)
-  const rows = all(`SELECT l.id, c.name, c.phone, c.email, l.source, l.campaign, l.city, l.lead_type, l.project, l.property_type, l.budget_min, l.budget_max,
+  return all(`SELECT l.id, c.name, c.phone, c.email, l.source, l.campaign, l.city, l.lead_type, l.project, l.property_type, l.budget_min, l.budget_max,
     l.status, u.name agent, l.created_at ${from} ORDER BY l.id DESC`, ...p)
+}
+app.get('/api/leads/export', guard('export'), (req, res) => sendExport(req, res))
+app.get('/api/leads/export.xlsx', guard('export'), (req, res) => sendXlsxExport(req, res))
+function sendExport(req, res, extra) {
+  const rows = leadExportRows(req)
   audit(req.user.id, 'export', 'lead', null, { count: rows.length, query: req.query, ...extra }, req.ip)
   res.type('text/csv').attachment(`leads-${Date.now()}.csv`)
     .send(L.toCsv([[`Exported by ${req.user.name} (${req.user.email}) at ${now()}. Confidential.`], Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
+}
+function sendXlsxExport(req, res) {
+  const rows = leadExportRows(req)
+  audit(req.user.id, 'export', 'lead', null, { count: rows.length, query: req.query, format: 'xlsx' }, req.ip)
+  const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ id: '' }])
+  const book = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(book, sheet, 'Leads')
+  res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    .attachment(`leads-${Date.now()}.xlsx`)
+    .send(XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }))
 }
 
 // Export approval: branch managers ask, export holders (sales head, admin) approve, the requester downloads once
@@ -1571,9 +1594,7 @@ app.post('/api/platform/accounts', platformOnly, (req, res) => {
   const cols = ['name', 'email', 'phone', 'role', 'active', 'available', 'pass', 'created_at', ...(plan ? ['plan', 'trial_ends_at'] : [])]
   const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`,
     name, email, phone, 'admin', 1, 1, hash(tempPass), now(), ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
-  const raw = crypto.randomBytes(32).toString('hex')
-  run('INSERT INTO password_resets(token_hash,user_id,created_at) VALUES(?,?,?)',
-    crypto.createHash('sha256').update(raw).digest('hex'), id, now())
+  const raw = issueReset(id)
   log(req, 'create_account', 'user', id, { email, plan: plan?.id })
   res.json({ id, token: raw })
 })
@@ -2776,6 +2797,30 @@ app.post('/api/edu/students', eduGuard, (req, res) => {
   log(req, 'create', 'student', id, { name, stage: vals[4] })
   res.json({ id })
 })
+// Registered above /students/:id so "export" is not read as a student id.
+// The filters mirror the list endpoint, so a CSV always matches what the screen was showing.
+app.get('/api/edu/students/export', eduGuard, (req, res) => {
+  const [w, p] = eduScope(req.user)
+  const where = [w], params = [...p]
+  const q = req.query
+  if (q.stage) { where.push('s.stage=?'); params.push(eduStage(q.stage)) }
+  if (q.counselor_id) { where.push('s.counselor_id=?'); params.push(+q.counselor_id) }
+  if (q.branch_id) { where.push('s.branch_id=?'); params.push(+q.branch_id) }
+  if (q.missing_docs) { where.push('(SELECT count(*) FROM edu_documents d WHERE d.student_id=s.id)=0') }
+  if (q.followup) { where.push('s.id IN (SELECT student_id FROM edu_activities WHERE next_action_at IS NOT NULL AND next_action_at<=?)'); params.push(now()) }
+  if (q.q) { const like = `%${q.q}%`; where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR s.institution LIKE ? OR s.passport LIKE ?)'); params.push(like, like, like, like, like) }
+
+  const from = `${EDU_FROM} WHERE ${where.join(' AND ')}`
+  const rows = all(`SELECT s.id, c.name, c.phone, c.email, c.cnic, s.gender, s.dob, s.city, s.passport, s.passport_expiry,
+    s.current_level, s.institution, s.graduate_year, s.gpa, s.major, s.ielts, s.toefl, s.gre, s.gmat,
+    s.target_level, s.target_countries, s.intake, s.stage, s.stage_at, u.name counselor_name,
+    s.visa_type, s.visa_app_number, s.cas_coe_number, s.visa_outcome, s.created_at
+    ${from} ORDER BY s.id DESC`, ...params)
+
+  audit(req.user.id, 'export', 'edu_students', null, { count: rows.length, query: q }, req.ip)
+  res.type('text/csv').attachment(`students-${Date.now()}.csv`)
+    .send(L.toCsv([[`Exported by ${req.user.name} (${req.user.email}) at ${now()}. Confidential.`], Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
+})
 app.get('/api/edu/students/:id', eduGuard, (req, res) => {
   const s = scopedEdu(req.user, +req.params.id)
   res.json({
@@ -3347,28 +3392,7 @@ app.post('/api/edu/students/bulk-assign', eduGuard, (req, res) => {
   res.json({ ok: true, moved, total: accessible.length })
 })
 
-// ---------- Student Import & Export ----------
-app.get('/api/edu/students/export', eduGuard, (req, res) => {
-  const [w, p] = eduScope(req.user)
-  const where = [w], params = [...p]
-  const q = req.query
-  if (q.stage) { where.push('s.stage=?'); params.push(eduStage(q.stage)) }
-  if (q.counselor_id) { where.push('s.counselor_id=?'); params.push(+q.counselor_id) }
-  if (q.branch_id) { where.push('s.branch_id=?'); params.push(+q.branch_id) }
-  if (q.q) { const like = `%${q.q}%`; where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR s.institution LIKE ? OR s.passport LIKE ?)'); params.push(like, like, like, like, like) }
-
-  const from = `${EDU_FROM} WHERE ${where.join(' AND ')}`
-  const rows = all(`SELECT s.id, c.name, c.phone, c.email, c.cnic, s.gender, s.dob, s.city, s.passport, s.passport_expiry,
-    s.current_level, s.institution, s.graduate_year, s.gpa, s.major, s.ielts, s.toefl, s.gre, s.gmat,
-    s.target_level, s.target_countries, s.intake, s.stage, s.stage_at, u.name counselor_name,
-    s.visa_type, s.visa_app_number, s.cas_coe_number, s.visa_outcome, s.created_at
-    ${from} ORDER BY s.id DESC`, ...params)
-
-  audit(req.user.id, 'export', 'edu_students', null, { count: rows.length, query: q }, req.ip)
-  res.type('text/csv').attachment(`students-${Date.now()}.csv`)
-    .send(L.toCsv([[`Exported by ${req.user.name} (${req.user.email}) at ${now()}. Confidential.`], Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
-})
-
+// ---------- Student Import ----------
 app.post('/api/edu/students/import', eduGuard, (req, res) => {
   const rows = req.body.rows || []
   const report = rows.map((row, i) => {
@@ -3773,21 +3797,28 @@ ${row('Collected', rs(collected))}${row('Overdue now', rs(overdue))}${row('Commi
 <h3>Top agents by sales</h3><p>${agents.map(a => `${esc(a.name)}: ${a.n} (${rs(a.v)})`).join('<br>') || 'No sales this week'}</p></div>`
   return { subject: `Weekly report ${from} – ${to}: ${sales.n} sales, ${rs(collected)} collected`, html }
 }
-function sendWeeklyReport() {
+async function sendWeeklyReport() {
   const to = S('weekly_report').recipients || []
-  if (!to.length) return false
+  if (!to.length) return { ok: false, error: 'no recipients' }
   const r = weeklyReport()
-  sendEmail(to, r.subject, r.html)
-  run(`INSERT INTO settings VALUES('weekly_report_sent',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(today()))
-  return true
+  const sent = await sendEmail(to, r.subject, r.html)
+  if (sent.ok) run(`INSERT INTO settings VALUES('weekly_report_sent',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(today()))
+  return sent
 }
 function reportTick() { // runs every minute; sends once on the configured weekday/hour (Pakistan time)
   const c = S('weekly_report'), pk = new Date(Date.now() + 5 * 3600e3)
-  if (pk.getUTCDay() === +c.weekday && pk.getUTCHours() >= +c.hour && S('weekly_report_sent') !== today()) sendWeeklyReport()
+  if (pk.getUTCDay() !== +c.weekday || pk.getUTCHours() < +c.hour || S('weekly_report_sent') === today()) return
+  if (Date.now() < (S('weekly_report_retry_at') || 0)) return // a failed send backs off instead of hammering the provider every minute
+  sendWeeklyReport().then(sent => {
+    if (sent.ok) return
+    console.error('[weekly report] delivery failed:', sent.error)
+    run(`INSERT INTO settings(key,value) VALUES('weekly_report_retry_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(Date.now() + 30 * 60e3))
+  }, e => console.error('[weekly report]', e))
 }
 app.get('/api/reports/weekly', guard('settings'), (_req, res) => res.type('html').send(weeklyReport().html))
-app.post('/api/reports/weekly/send', guard('settings'), (req, res) => {
-  if (!sendWeeklyReport()) throw err(400, 'Add recipients to the weekly_report setting first')
+app.post('/api/reports/weekly/send', guard('settings'), async (req, res) => {
+  const sent = await sendWeeklyReport()
+  if (!sent.ok) throw err(503, sent.error === 'no recipients' ? 'Add recipients to the weekly_report setting first' : 'The report could not be emailed. Try again shortly.')
   log(req, 'send_report', 'report', null)
   res.json({ ok: true })
 })

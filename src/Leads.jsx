@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
-import { api, useApi, useMeta, useAction, formData, fmt, fmtParts, go, download, phone } from './api.js'
+import { api, useApi, useMeta, useAction, formData, fmt, fmtParts, go, download, downloadBlob, phone } from './api.js'
 import { parseCsv } from '../server/lib.js'
+import * as XLSX from 'xlsx'
 
 export const When = ({ d, className }) => {
   const [day, time] = fmtParts(d)
@@ -38,7 +39,7 @@ export default function Leads({ query }) {
         <h2>All leads {data && <span className="count">{data.total}</span>}</h2>
         <div className="row">
           <div className="seg small">{[['board', 'Board'], ['table', 'Table']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => pick(k)}>{l}</button>)}</div>
-          {m.can('export') && <button className="ghost" onClick={() => download('/leads/export?' + qs, 'leads.csv')}>Export CSV</button>}
+          {m.can('export') && <><button className="ghost" onClick={() => download('/leads/export?' + qs, 'leads.csv')}>Export CSV</button><button className="ghost" onClick={() => downloadBlob('/leads/export.xlsx?' + qs, 'leads.xlsx')}>Export XLSX</button></>}
           {!m.can('export') && m.can('request_export') && <RequestExport query={Object.fromEntries(new URLSearchParams(qs))} />}
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ New lead'}</button>
         </div>
@@ -270,7 +271,14 @@ export function Import() {
   const { run, error, busy } = useAction()
 
   const load = async e => {
-    const rows = parseCsv(await e.target.files[0].text())
+    const file = e.target.files[0]
+    if (!file) return
+    let rows
+    if (/\.xlsx?$/i.test(file.name)) {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+      rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' })
+    } else rows = parseCsv(await file.text())
+    if (!rows.length) return
     setCsv(rows); setReport()
     const h = rows[0].map(x => x.trim().toLowerCase())
     setMap(Object.fromEntries(IMPORT_FIELDS.map(f => [f, h.findIndex(x => x === f || x.replace(/[\s_]/g, '') === f.replace('_', ''))]).filter(([, i]) => i >= 0)))
@@ -284,10 +292,10 @@ export function Import() {
 
   return (
     <section>
-      <h2>Import leads (CSV)</h2>
+      <h2>Import leads</h2>
       <div className="card">
-        <p className="muted">Save the Excel sheet as CSV. The first row must be headers. Phones are normalized; existing contacts are reported as duplicates and attached as repeat inquiries, not created again.</p>
-        <input type="file" accept=".csv,text/csv" onChange={load} />
+        <p className="muted">Upload a CSV or Excel file. The first row must be headers. Phones are normalized; existing contacts are reported as duplicates and attached as repeat inquiries, not created again.</p>
+        <input type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={load} />
       </div>
       {csv && (
         <div className="card grid">
