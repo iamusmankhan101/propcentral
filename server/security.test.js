@@ -65,8 +65,13 @@ test('API refuses abusive requests and replies with security headers', async t =
 
   const realEmail = `real-${Date.now()}@example.com`
   assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x' })).status, 400, 'a sign-up has to pick a plan')
-  assert.equal((await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x', plan: 'growth' })).status, 200)
+  const signup = await post(base, '/register', { name: 'Real Person', email: realEmail, password: 'CrmPass2026x', plan: 'growth' })
+  assert.equal(signup.status, 200)
+  assert.equal((await signup.json()).email_sent, false, 'no RESEND_API_KEY means no delivery, and the sign-up answer says so')
   assert.equal((await post(base, '/login', { email: realEmail, password: 'CrmPass2026x' })).status, 403, 'real sign-up still reaches the approval queue')
+  const resend = await post(base, '/resend-verification', { email: realEmail })
+  assert.equal(resend.status, 200)
+  assert.equal((await resend.json()).email_sent, false, 'a resend that never leaves cannot be reported as success')
 
   const token = (await (await post(base, '/login', { email: 'admin@propcentral.local', password: 'password123' })).json()).token
   const auth = { authorization: 'Bearer ' + token }
