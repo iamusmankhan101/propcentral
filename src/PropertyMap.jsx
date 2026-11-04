@@ -100,7 +100,15 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     const m = map.current
     if (!m) return
     const location = MAP_LOCATIONS[city] || MAP_LOCATIONS.Lahore
-    m.easeTo({ center: location.center, pitch: mode === '3d' ? 55 : 0, bearing, zoom: mode === '3d' ? 15.5 : 11, duration: 700 })
+    const threeD = mode === '3d'
+    m.easeTo({ center: location.center, pitch: threeD ? 55 : 0, bearing, zoom: threeD ? 15.5 : 11, duration: 700 })
+    if (threeD) {
+      if (m.getSource('terrain')) m.setTerrain({ source: 'terrain', exaggeration: 1 })
+      if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', 'visible')
+    } else {
+      if (m.getSource('terrain')) m.setTerrain(null)
+      if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', 'none')
+    }
   }, [ready, city, mode, bearing])
 
   useEffect(() => {
