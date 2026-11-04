@@ -16,12 +16,13 @@ const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
-export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', bearing = 0, onSelect, onSelectArea, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
-  const { maptiler_key: key, me } = useMeta()
+export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', bearing = 0, onSelect, onSelectArea, onSelectOverlay, selectedOverlay, onOverlayAction, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
+  const m = useMeta()
+  const { maptiler_key: key, me } = m
   const box = useRef(), map = useRef(), live = useRef({})
   const [ready, setReady] = useState(false)
   const [points, setPoints] = useState([])
-  live.current = { onSelect, onSelectArea, placing, onPlace, layer }
+  live.current = { onSelect, onSelectArea, onSelectOverlay, placing, onPlace, layer, overlays }
 
   useEffect(() => {
     if (!key) return
@@ -64,11 +65,13 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       setReady(true)
     })
     m.on('click', e => {
-      const { placing, onPlace, onSelect, onSelectArea, layer } = live.current
+      const { placing, onPlace, onSelect, onSelectArea, onSelectOverlay, layer, overlays } = live.current
       const at = [+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)]
       if (placing?.mode === 'pin') return onPlace({ lng: at[0], lat: at[1] })
       if (placing?.mode === 'outline' || placing?.mode === 'match') return setPoints(p => [...p, at])
       if (layer === 'societies') { // smallest area under the click: block before phase before society
+        const hit = (overlays || []).find(o => o.visible && pointInRing(at, o.corners))
+        if (hit) return onSelectOverlay?.(hit.id)
         const hits = m.queryRenderedFeatures(e.point, { layers: ['area-fill'] })
         const order = { Block: 0, Phase: 1, Society: 2 }
         const f = hits.sort((a, b) => order[a.properties.kind] - order[b.properties.kind])[0]
@@ -219,6 +222,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   return (
     <div className="prop-map">
       <div ref={box} className="prop-map-canvas" />
+      {ready && selectedOverlay && !placing && <OverlayActionPanel overlay={selectedOverlay} manage={m.can('properties') || m.can('settings')} onAction={onOverlayAction} />}
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
       {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
       {!clean && !placing && <div className="map-controls">
@@ -240,6 +244,40 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
           ? Object.entries(AREA_COLOR).map(([k, c]) => <span key={k}><i className="ring" style={{ borderColor: c === '#ffffff' ? '#555' : c }} />{k}</span>)
           : Object.entries(STATUS_COLOR).filter(([k]) => k !== 'Rent overdue').map(([k, c]) => <span key={k}><i style={{ background: c }} />{k === 'Ending soon' ? 'Ending soon / rent overdue' : k}</span>)}
       </div>}
+    </div>
+  )
+}
+
+function pointInRing(point, ring = []) {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j]
+    const crosses = (yi > point[1]) !== (yj > point[1])
+    if (crosses && point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+function OverlayActionPanel({ overlay, manage, onAction }) {
+  const [opacity, setOpacity] = useState(overlay.opacity)
+  return (
+    <div className="map-overlay-panel" role="dialog" aria-label={`${overlay.name} map options`}>
+      <div className="row between">
+        <div><strong>{overlay.name}</strong><small className="muted">Society plan overlay</small></div>
+        <button className="map-overlay-close" onClick={() => onAction('close')} aria-label="Close map options">×</button>
+      </div>
+      {manage ? <>
+        <div className="row overlay-actions">
+          <button onClick={() => onAction('adjust')}>Adjust map</button>
+          <button className="ghost" onClick={() => onAction('match')}>Match points</button>
+        </div>
+        <label className="opacity">Opacity<input type="range" min="0.1" max="1" step="0.05" value={opacity} onChange={e => setOpacity(+e.target.value)} onPointerUp={() => onAction('opacity', opacity)} onKeyUp={() => onAction('opacity', opacity)} /></label>
+        <div className="row overlay-actions">
+          <button className="ghost" onClick={() => onAction('toggle')}>Hide map</button>
+          <button className="ghost" onClick={() => onAction('reset')}>Reset position</button>
+          <button className="ghost danger" onClick={() => onAction('delete')}>Delete</button>
+        </div>
+      </> : <p className="muted">Map overlay selected. Ask an administrator to adjust it.</p>}
     </div>
   )
 }

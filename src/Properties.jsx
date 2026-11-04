@@ -33,6 +33,7 @@ export default function Properties() {
   const [f, setF] = useState({ status: '', area: '', q: '' })
   const [sel, setSel] = useState(null)
   const [selArea, setSelArea] = useState(null)
+  const [selOverlay, setSelOverlay] = useState(null)
   const [placing, setPlacing] = useState(null) // { mode: 'pin' | 'outline', target: 'new' | 'property' | 'plot' | 'area' | 'area-redraw' }
   const [draft, setDraft] = useState(null) // { kind: 'property', lat, lng } or { kind: 'area', outline } waiting for its form
   const { run, error } = useAction()
@@ -59,6 +60,26 @@ export default function Properties() {
       else await api('/properties/' + sel, { method: 'PATCH', body: t === 'plot' ? pos : { lat: pos.lat, lng: pos.lng } })
       setPlacing(null); reload()
     })
+  }
+  const overlayAction = (action, value) => {
+    const o = overlays?.find(x => x.id === selOverlay)
+    if (!o) return
+    if (action === 'close') return setSelOverlay(null)
+    if (action === 'adjust' || action === 'match') {
+      setSelOverlay(null); setShowMapTools(false); setView('map'); setLayer('societies'); setPlacing({ mode: action, target: 'overlay', id: o.id }); return
+    }
+    if (action === 'delete') {
+      if (!confirm(`Delete the ${o.name} map image?`)) return
+      return run(async () => { await api('/overlays/' + o.id, { method: 'DELETE' }); setSelOverlay(null); reloadOverlays() })
+    }
+    if (action === 'reset') {
+      const areaForOverlay = areas?.find(a => a.id === o.area_id) || areas?.find(a => a.kind === 'Society') || areas?.[0]
+      if (!areaForOverlay) return
+      return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: { corners: fitCorners(areaForOverlay.outline, o.width || 1, o.height || 1) } }); reloadOverlays() })
+    }
+    if (action === 'toggle' || action === 'opacity') {
+      return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: action === 'toggle' ? { visible: false } : { opacity: value } }); if (action === 'toggle') setSelOverlay(null); reloadOverlays() })
+    }
   }
   const panel = draft?.kind === 'property' ? <NewProperty at={draft} areas={areas || []} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reload(); setSel(id) }} />
     : draft?.kind === 'area' ? <NewArea outline={draft.outline} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reloadAreas(); reload(); setSelArea(id) }} />
@@ -94,8 +115,8 @@ export default function Properties() {
       </>}
       <div className={'inv' + (mapFull ? ' map-inv full-map' : '')}>
         {view === 'map' || layer === 'societies'
-          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} onSelect={id => { setDraft(null); setSel(id) }}
-            onSelectArea={setSelArea} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
+          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} selectedOverlay={overlays?.find(o => o.id === selOverlay)} onSelect={id => { setSelOverlay(null); setDraft(null); setSel(id) }}
+            onSelectArea={id => { setSelOverlay(null); setSelArea(id) }} onSelectOverlay={id => { setSel(null); setSelOverlay(id) }} onOverlayAction={overlayAction} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
           : <div className="card scroll">
             <table>
               <thead><tr><th></th><th>Property</th><th>Owner</th><th>Tenant</th><th>Rent</th><th>Lease ends</th><th>Overdue</th></tr></thead>
