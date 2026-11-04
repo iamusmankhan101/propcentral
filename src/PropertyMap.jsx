@@ -280,6 +280,7 @@ function OverlayActionPanel({ overlay, manage, onAction }) {
         <div className="row overlay-actions">
           <button className="ghost" onClick={() => onAction('toggle')}>Hide map</button>
           <button className="ghost" onClick={() => onAction('reset')}>Reset position</button>
+          <button className="ghost" onClick={() => onAction('redraw')}>Redraw boundary</button>
           <button className="ghost danger" onClick={() => onAction('delete')}>Delete</button>
         </div>
       </> : <p className="muted">Map overlay selected. Ask an administrator to adjust it.</p>}
@@ -404,8 +405,8 @@ function AdjustOverlay({ map, overlay, onSave, onCancel }) {
   )
 }
 
-// A plan's white paper becomes fully transparent. Only bright neutral pixels go,
-// so pale yellow / pink / green plot fills are kept. Done once per image, then cached.
+// Remove only the white background connected to the image edges. White roads,
+// labels and plot details inside the plan stay intact. Done once per image, then cached.
 const images = new Map()
 function overlayImage(o) {
   const url = '/api/overlay-images/' + o.token
@@ -416,9 +417,19 @@ function overlayImage(o) {
       const c = Object.assign(document.createElement('canvas'), { width: img.naturalWidth, height: img.naturalHeight }), g = c.getContext('2d')
       g.drawImage(img, 0, 0)
       const d = g.getImageData(0, 0, c.width, c.height), px = d.data
-      for (let i = 0; i < px.length; i += 4) {
-        const lo = Math.min(px[i], px[i + 1], px[i + 2]), hi = Math.max(px[i], px[i + 1], px[i + 2])
-        if (lo > 180 && hi - lo < 45) px[i + 3] = 0
+      const w = c.width, h = c.height, seen = new Uint8Array(w * h), queue = new Uint32Array(w * h)
+      const white = n => { const i = n * 4, lo = Math.min(px[i], px[i + 1], px[i + 2]), hi = Math.max(px[i], px[i + 1], px[i + 2]); return lo > 180 && hi - lo < 45 }
+      let head = 0, tail = 0
+      const add = n => { if (!seen[n] && white(n)) { seen[n] = 1; queue[tail++] = n } }
+      for (let x = 0; x < w; x++) { add(x); add((h - 1) * w + x) }
+      for (let y = 1; y < h - 1; y++) { add(y * w); add(y * w + w - 1) }
+      while (head < tail) {
+        const n = queue[head++], x = n % w
+        px[n * 4 + 3] = 0
+        if (x > 0) add(n - 1)
+        if (x < w - 1) add(n + 1)
+        if (n >= w) add(n - w)
+        if (n + w < w * h) add(n + w)
       }
       g.putImageData(d, 0, 0)
       c.toBlob(b => ok(URL.createObjectURL(b)), 'image/png')

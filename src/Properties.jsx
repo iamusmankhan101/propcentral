@@ -77,6 +77,11 @@ export default function Properties() {
       if (!areaForOverlay) return
       return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: { corners: fitCorners(areaForOverlay.outline, o.width || 1, o.height || 1) } }); reloadOverlays() })
     }
+    if (action === 'redraw') {
+      const areaForOverlay = areas?.find(a => a.id === o.area_id)
+      if (!areaForOverlay) return
+      setSelOverlay(null); setLayer('societies'); setSelArea(areaForOverlay.id); setView('map'); setPlacing({ mode: 'outline', target: 'area-redraw' }); return
+    }
     if (action === 'toggle' || action === 'opacity') {
       return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: action === 'toggle' ? { visible: false } : { opacity: value } }); if (action === 'toggle') setSelOverlay(null); reloadOverlays() })
     }
