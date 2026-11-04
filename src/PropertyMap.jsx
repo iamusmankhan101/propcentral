@@ -228,7 +228,10 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     <div className="prop-map">
       <div ref={box} className="prop-map-canvas" />
       {ready && selectedArea && !selectedOverlay && !placing && <AreaActionPanel area={selectedArea} rows={rows} manage={m.can('properties') || m.can('settings')} onAction={onAreaAction} />}
-      {ready && selectedOverlay && !placing && <OverlayActionPanel overlay={selectedOverlay} manage={m.can('properties') || m.can('settings')} onAction={onOverlayAction} />}
+      {ready && selectedOverlay && !placing && <OverlayActionPanel overlay={selectedOverlay} manage={m.can('properties') || m.can('settings')} onAction={(action, value) => {
+        if (action === 'fit') return map.current?.fitBounds(selectedOverlay.corners.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(selectedOverlay.corners[0], selectedOverlay.corners[0])), { padding: 100, maxZoom: 17, duration: 500 })
+        onOverlayAction?.(action, value)
+      }} />}
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
       {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
       {!clean && !placing && <div className="map-controls">
@@ -281,6 +284,7 @@ function OverlayActionPanel({ overlay, manage, onAction }) {
         <label className="opacity">Opacity<input type="range" min="0.1" max="1" step="0.05" value={opacity} onChange={e => setOpacity(+e.target.value)} onPointerUp={() => onAction('opacity', opacity)} onKeyUp={() => onAction('opacity', opacity)} /></label>
         <div className="row overlay-actions">
           <button className="ghost" onClick={() => onAction('toggle')}>Hide map</button>
+          <button className="ghost" onClick={() => onAction('fit')}>Fit entire map</button>
           <button className="ghost" onClick={() => onAction('reset')}>Reset position</button>
           <button className="ghost" onClick={() => onAction('redraw')}>Redraw boundary</button>
           <button className="ghost danger" onClick={() => onAction('delete')}>Delete</button>
