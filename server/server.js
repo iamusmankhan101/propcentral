@@ -343,7 +343,7 @@ const ACCESS = ['own', 'team', 'branch', 'all', 'none']
 const roles = () => [...BUILT_IN_ROLES, ...(S('custom_roles') || [])]
 const accessOf = role => roles().find(r => r.key === role)?.access ?? 'none'
 const S = key => JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value ?? 'null') ?? DEFAULTS[key]
-const can = (u, perm) => ({ ...DEFAULTS.permissions, ...S('permissions') })[perm]?.includes(u.role) // saved matrix + permissions added later
+const can = (u, perm) => (u.role === 'owner' && ['export', 'import'].includes(perm)) || ({ ...DEFAULTS.permissions, ...S('permissions') })[perm]?.includes(u.role) // saved matrix + permissions added later
 const closedJson = () => JSON.stringify(S('closed_statuses'))
 const OPEN = `l.deleted=0 AND l.status NOT IN (SELECT value FROM json_each(?))`
 

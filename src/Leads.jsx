@@ -39,6 +39,7 @@ export default function Leads({ query }) {
         <h2>All leads {data && <span className="count">{data.total}</span>}</h2>
         <div className="row">
           <div className="seg small">{[['board', 'Board'], ['table', 'Table']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => pick(k)}>{l}</button>)}</div>
+          {m.can('import') && <button className="ghost" onClick={() => go('/import')}>Import leads</button>}
           {m.can('export') && <><button className="ghost" onClick={() => download('/leads/export?' + qs, 'leads.csv')}>Export CSV</button><button className="ghost" onClick={() => downloadBlob('/leads/export.xlsx?' + qs, 'leads.xlsx')}>Export XLSX</button></>}
           {!m.can('export') && m.can('request_export') && <RequestExport query={Object.fromEntries(new URLSearchParams(qs))} />}
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ New lead'}</button>
