@@ -311,9 +311,9 @@ const readMapImage = file => new Promise((ok, fail) => { // keeps it under 4096p
   img.onload = () => {
     const k = Math.min(1, 4096 / Math.max(img.width, img.height))
     const c = Object.assign(document.createElement('canvas'), { width: Math.round(img.width * k), height: Math.round(img.height * k) })
-    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height)
+    const g = c.getContext('2d'); g.clearRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height)
     URL.revokeObjectURL(img.src)
-    ok({ data: c.toDataURL('image/jpeg', 0.9), width: c.width, height: c.height })
+    ok({ data: c.toDataURL('image/png'), width: c.width, height: c.height })
   }
   img.onerror = () => fail(new Error(file.type === 'application/pdf' ? 'PDFs can\'t be placed directly. Open the PDF, export or screenshot the map as a JPG/PNG, and upload that.' : `${file.name} is not an image`))
   img.src = URL.createObjectURL(file)
