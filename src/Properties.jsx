@@ -345,7 +345,7 @@ function SocietyMaps({ overlays, areas, area, placing, reload, setOpacity, onAli
               <button className="ghost danger" onClick={() => remove(o)} disabled={busy} aria-label={'Delete ' + o.name}>×</button>
             </span>}
           </div>
-          {o.visible && <label className="check"><input type="checkbox" checked={o.clear_white} onChange={e => patchO(o, { clear_white: e.target.checked })} disabled={!manage} /> Remove white background</label>}
+          {o.visible && <label className="check"><input type="checkbox" checked={o.clear_white} onChange={e => patchO(o, { clear_white: e.target.checked })} disabled={!manage} /> Remove all white background</label>}
           {o.visible && <label className="opacity">See-through<input type="range" min="0.1" max="1" step="0.05" value={o.opacity}
             onChange={e => setOpacity(o.id, +e.target.value)} onPointerUp={e => manage && patchO(o, { opacity: +e.target.value })} onKeyUp={e => manage && patchO(o, { opacity: +e.target.value })} /></label>}
           {manage && !placing && areas.length > 0 && <label className="opacity">Over<Select value={o.area_id ?? ''} onChange={e => moveTo(o, e.target.value)} options={areaOpts} blank="Choose a boundary…" /></label>}

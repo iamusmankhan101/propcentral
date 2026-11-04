@@ -39,9 +39,11 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       }
       m.addSource('areas', { type: 'geojson', data: EMPTY })
       m.addSource('props', { type: 'geojson', data: EMPTY })
+      m.addSource('overlay-hit', { type: 'geojson', data: EMPTY })
       m.addSource('draft', { type: 'geojson', data: EMPTY })
       const isPoly = ['==', ['geometry-type'], 'Polygon']
       m.addLayer({ id: 'area-fill', type: 'fill', source: 'areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['case', ['get', 'sel'], 0.3, ['get', 'active'], 0.12, 0] } })
+      m.addLayer({ id: 'overlay-hit', type: 'fill', source: 'overlay-hit', paint: { 'fill-color': '#fff', 'fill-opacity': 0.001 } })
       try {
         m.addSource('maptiler_buildings', { type: 'vector', url: `https://api.maptiler.com/tiles/buildings/tiles.json?key=${key}` })
         m.addLayer({ id: 'building-3d', type: 'fill-extrusion', source: 'maptiler_buildings', 'source-layer': 'building', minzoom: 13, filter: ['!', ['has', 'hide_3d']], layout: { visibility: mode === '3d' ? 'visible' : 'none' }, paint: {
@@ -70,6 +72,8 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
       if (placing?.mode === 'pin') return onPlace({ lng: at[0], lat: at[1] })
       if (placing?.mode === 'outline' || placing?.mode === 'match') return setPoints(p => [...p, at])
       if (layer === 'societies') { // smallest area under the click: block before phase before society
+        const renderedOverlay = m.queryRenderedFeatures(e.point, { layers: ['overlay-hit'] })[0]
+        if (renderedOverlay) return onSelectOverlay?.(+renderedOverlay.properties.id)
         const hit = (overlays || []).find(o => o.visible && pointInRing(at, o.corners))
         if (hit) return onSelectOverlay?.(hit.id)
         const hits = m.queryRenderedFeatures(e.point, { layers: ['area-fill'] })
@@ -180,6 +184,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
     if (!ready) return
     let alive = true
     const m = map.current, want = (overlays || []).filter(o => o.visible), ids = new Set(want.map(o => 'ov-' + o.id))
+    m.getSource('overlay-hit')?.setData({ type: 'FeatureCollection', features: want.map(o => ({ type: 'Feature', properties: { id: o.id }, geometry: polygon(o.corners) })) })
     for (const id of Object.keys(m.getStyle().sources)) if (id.startsWith('ov-') && !ids.has(id)) { m.removeLayer(id); m.removeSource(id); delete shownImage.current[id] }
     for (const o of want) {
       const id = 'ov-' + o.id, src = m.getSource(id), version = `${o.token}:${o.clear_white}`
@@ -399,8 +404,8 @@ function AdjustOverlay({ map, overlay, onSave, onCancel }) {
   )
 }
 
-// A plan's white paper becomes see-through, fading over a few shades so plot edges stay smooth.
-// Only greys and whites go (low colour), so pale yellow / pink / green plot fills are kept. Done once per image, then cached.
+// A plan's white paper becomes fully transparent. Only bright neutral pixels go,
+// so pale yellow / pink / green plot fills are kept. Done once per image, then cached.
 const images = new Map()
 function overlayImage(o) {
   const url = '/api/overlay-images/' + o.token
@@ -413,7 +418,7 @@ function overlayImage(o) {
       const d = g.getImageData(0, 0, c.width, c.height), px = d.data
       for (let i = 0; i < px.length; i += 4) {
         const lo = Math.min(px[i], px[i + 1], px[i + 2]), hi = Math.max(px[i], px[i + 1], px[i + 2])
-        if (hi - lo < 28 && lo > 215) px[i + 3] = lo >= 245 ? 0 : Math.round(px[i + 3] * (245 - lo) / 30)
+        if (lo > 180 && hi - lo < 45) px[i + 3] = 0
       }
       g.putImageData(d, 0, 0)
       c.toBlob(b => ok(URL.createObjectURL(b)), 'image/png')
