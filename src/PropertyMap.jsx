@@ -62,7 +62,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
         paint: { 'circle-radius': 6, 'circle-color': ['coalesce', ['get', 'c'], '#ffcc00'], 'circle-stroke-color': '#000', 'circle-stroke-width': 1 } })
       try {
         m.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${key}`, tileSize: 512, maxzoom: 14 })
-        m.setTerrain({ source: 'terrain', exaggeration: 1 })
+        if (mode === '3d') m.setTerrain({ source: 'terrain', exaggeration: 1 })
       } catch (e) { console.warn('MapTiler terrain unavailable', e) }
       setReady(true)
     })
@@ -104,8 +104,9 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   }, [ready, city, mode, bearing])
 
   useEffect(() => {
-    if (!ready || !map.current?.getLayer('building-3d')) return
-    map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
+    if (!ready || !map.current) return
+    if (map.current.getLayer('building-3d')) map.current.setLayoutProperty('building-3d', 'visibility', mode === '3d' ? 'visible' : 'none')
+    if (map.current.getSource('terrain')) map.current.setTerrain(mode === '3d' ? { source: 'terrain', exaggeration: 1 } : null)
   }, [ready, mode])
 
   useEffect(() => {
