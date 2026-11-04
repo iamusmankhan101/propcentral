@@ -16,7 +16,7 @@ const polygon = ring => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] })
 //  - a pin per property, plus its plot outline, coloured by lease status
 // layer 'properties' | 'societies' decides what clicks select. placing = { mode: 'pin' | 'outline', target } turns clicks into a position or outline.
 // overlays = uploaded society maps drawn under everything; placing.mode 'match' collects [map spot, real spot] pairs to align one.
-export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, city = 'Lahore', mode = '2d', bearing = 0, onSelect, onSelectArea, onSelectOverlay, selectedOverlay, onOverlayAction, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
+export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea, selectedArea, city = 'Lahore', mode = '2d', bearing = 0, onSelect, onSelectArea, onSelectOverlay, selectedOverlay, onOverlayAction, onAreaAction, placing, onPlace, onCancel, onCity, onMode, clean = false }) {
   const m = useMeta()
   const { maptiler_key: key, me } = m
   const box = useRef(), map = useRef(), live = useRef({})
@@ -227,6 +227,7 @@ export default function PropertyMap({ rows, areas, overlays, layer, sel, selArea
   return (
     <div className="prop-map">
       <div ref={box} className="prop-map-canvas" />
+      {ready && selectedArea && !selectedOverlay && !placing && <AreaActionPanel area={selectedArea} rows={rows} manage={m.can('properties') || m.can('settings')} onAction={onAreaAction} />}
       {ready && selectedOverlay && !placing && <OverlayActionPanel overlay={selectedOverlay} manage={m.can('properties') || m.can('settings')} onAction={onOverlayAction} />}
       {ready && adjusting && <AdjustOverlay map={map.current} overlay={adjusting} onSave={corners => onPlace({ corners })} onCancel={onCancel} />}
       {ready && !placing && <MapSearch map={map.current} mapKey={key} rows={rows} areas={areas || []} city={city} onSelect={onSelect} onSelectArea={layer === 'societies' ? onSelectArea : null} />}
@@ -284,6 +285,26 @@ function OverlayActionPanel({ overlay, manage, onAction }) {
           <button className="ghost danger" onClick={() => onAction('delete')}>Delete</button>
         </div>
       </> : <p className="muted">Map overlay selected. Ask an administrator to adjust it.</p>}
+    </div>
+  )
+}
+
+function AreaActionPanel({ area, rows = [], manage, onAction }) {
+  const inside = rows.filter(p => p.lat != null && pointInRing([p.lng, p.lat], area.outline)).length
+  return (
+    <div className="map-overlay-panel" role="dialog" aria-label={`${area.name} boundary options`}>
+      <div className="row between">
+        <div><strong>{area.name}</strong><small className="muted">{area.kind} boundary · {inside} properties</small></div>
+        <button className="map-overlay-close" onClick={() => onAction('close')} aria-label="Close boundary options">×</button>
+      </div>
+      <div className="row overlay-actions">
+        <button onClick={() => onAction('properties')}>Show properties</button>
+        {manage && <button className="ghost" onClick={() => onAction('redraw')}>Redraw boundary</button>}
+      </div>
+      {manage && <div className="row overlay-actions">
+        <button className="ghost" onClick={() => onAction('rename')}>Rename</button>
+        <button className="ghost danger" onClick={() => onAction('delete')}>Delete</button>
+      </div>}
     </div>
   )
 }

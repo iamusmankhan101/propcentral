@@ -86,6 +86,22 @@ export default function Properties() {
       return run(async () => { await api('/overlays/' + o.id, { method: 'PATCH', body: action === 'toggle' ? { visible: false } : { opacity: value } }); if (action === 'toggle') setSelOverlay(null); reloadOverlays() })
     }
   }
+  const areaAction = (action) => {
+    const a = areas?.find(x => x.id === selArea)
+    if (!a) return
+    if (action === 'close') return setSelArea(null)
+    if (action === 'properties') { setSelOverlay(null); setF({ ...f, area: String(a.id) }); setLayer('properties'); setSelArea(null); return }
+    if (action === 'redraw') { setSelOverlay(null); setLayer('societies'); setView('map'); setPlacing({ mode: 'outline', target: 'area-redraw' }); return }
+    if (action === 'rename') {
+      const name = prompt('Boundary name', a.name)?.trim()
+      if (!name || name === a.name) return
+      return run(async () => { await api('/areas/' + a.id, { method: 'PATCH', body: { name } }); reloadAreas(); setSelArea(a.id) })
+    }
+    if (action === 'delete') {
+      if (!confirm(`Delete the ${a.name} boundary?`)) return
+      return run(async () => { await api('/areas/' + a.id, { method: 'DELETE' }); reloadAreas(); setSelArea(null) })
+    }
+  }
   const panel = draft?.kind === 'property' ? <NewProperty at={draft} areas={areas || []} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reload(); setSel(id) }} />
     : draft?.kind === 'area' ? <NewArea outline={draft.outline} onCancel={() => setDraft(null)} onDone={id => { setDraft(null); reloadAreas(); reload(); setSelArea(id) }} />
       : layer === 'societies' ? <Societies areas={areas || []} rows={rows || []} sel={selArea} onSel={setSelArea} placing={placing}
@@ -120,8 +136,8 @@ export default function Properties() {
       </>}
       <div className={'inv' + (mapFull ? ' map-inv full-map' : '')}>
         {view === 'map' || layer === 'societies'
-          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} selectedOverlay={overlays?.find(o => o.id === selOverlay)} onSelect={id => { setSelOverlay(null); setDraft(null); setSel(id) }}
-            onSelectArea={id => { setSelOverlay(null); setSelArea(id) }} onSelectOverlay={id => { setSel(null); setSelOverlay(id) }} onOverlayAction={overlayAction} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
+          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} selectedArea={areas?.find(a => a.id === selArea)} selectedOverlay={overlays?.find(o => o.id === selOverlay)} onSelect={id => { setSelOverlay(null); setDraft(null); setSel(id) }}
+            onSelectArea={id => { setSelOverlay(null); setSelArea(id) }} onSelectOverlay={id => { setSel(null); setSelOverlay(id) }} onOverlayAction={overlayAction} onAreaAction={areaAction} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
           : <div className="card scroll">
             <table>
               <thead><tr><th></th><th>Property</th><th>Owner</th><th>Tenant</th><th>Rent</th><th>Lease ends</th><th>Overdue</th></tr></thead>
