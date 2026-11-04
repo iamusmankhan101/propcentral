@@ -130,6 +130,11 @@ test('password reset, role checks, account isolation and SQL-injection shapes', 
   assert.equal((await post(base, '/login', { email: 'agent2@propcentral.local', password: 'NewPass2026x' })).status, 200)
   assert.equal((await post(base, '/reset-password', { token: issued.token, password: 'Another2026x' })).status, 400, 'a reset link works once')
 
+  const patch = (id, body) => fetch(`${base}/users/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + admin }, body: JSON.stringify(body) })
+  const agent1 = users.find(u => u.email === 'agent1@propcentral.local')
+  assert.equal((await patch(agent1.id, { available: true })).status, 200)
+  assert.equal((await get('/meta', a1)).status, 200, 'a boolean in a body never reaches the driver: libsql panics on bool bindings and takes the whole API down')
+
   const forgot = await post(base, '/forgot-password', { email: 'nobody@example.com' })
   assert.equal(forgot.status, 200)
   assert.deepEqual(await forgot.json(), { ok: true }, 'unknown emails get the same answer')

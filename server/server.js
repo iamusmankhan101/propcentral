@@ -3834,13 +3834,20 @@ const propertyFor = id => {
   if (!p) throw err(404, 'Property not found')
   return p
 }
-const areaList = () => all('SELECT id, name, kind, outline FROM areas').map(a => ({ ...a, outline: JSON.parse(a.outline) }))
+const accountRoot = u => u.owner_id ?? u.id
+const accountWhere = (alias, u) => u.role === 'platform'
+  ? ['1=1', []]
+  : [`EXISTS (SELECT 1 FROM users creator WHERE creator.id=${alias}.created_by AND (creator.id=? OR creator.owner_id=?))`, [accountRoot(u), accountRoot(u)]]
+const areaList = u => {
+  const [where, params] = accountWhere('a', u)
+  return all(`SELECT a.id, a.name, a.kind, a.outline FROM areas a WHERE ${where}`, ...params).map(a => ({ ...a, outline: JSON.parse(a.outline) }))
+}
 const parseRing = v => {
   const ring = typeof v === 'string' ? JSON.parse(v) : v
   if (!Array.isArray(ring) || ring.length < 3 || ring.some(p => !Array.isArray(p) || p.length !== 2 || p.some(n => typeof n !== 'number'))) throw err(400, 'Bad outline: draw at least 3 corners')
   return ring
 }
-function propertyFields(b, old = {}) {
+function propertyFields(b, old = {}, user = null) {
   const f = pick(b, PROPERTY_FIELDS)
   if ('managed' in f) f.managed = f.managed ? 1 : 0
   if ('lat' in f || 'lng' in f) for (const k of ['lat', 'lng']) if (f[k] != null && !(Math.abs(+f[k]) <= 180)) throw err(400, 'Bad map position')
@@ -3848,7 +3855,7 @@ function propertyFields(b, old = {}) {
   // a pin takes the names of the drawn society / phase / block it lands in, unless they were typed in this same save;
   // a moved pin drops names that came from areas it has left (hand-typed names stay)
   if (f.lat != null && f.lng != null) {
-    const areas = areaList(), at = L.areasAt([+f.lng, +f.lat], areas)
+    const areas = user ? areaList(user) : [], at = L.areasAt([+f.lng, +f.lat], areas)
     for (const [kind, k] of Object.entries(L.AREA_FIELD)) {
       if (b[k]) continue
       if (at[k]) f[k] = at[k]
@@ -3895,7 +3902,7 @@ app.get('/api/properties/:id', (req, res) => {
 })
 app.post('/api/properties', (req, res) => {
   if (!can(req.user, 'properties') && !can(req.user, 'manage_inventory') && req.user.role !== 'agent') throw err(403, 'You do not have permission for this')
-  const f = propertyFields(req.body)
+  const f = propertyFields(req.body, {}, req.user)
   if (!f.number && !f.title) throw err(400, 'Give the house / plot number or a title')
   const id = tx(() => {
     const owner = req.body.owner?.phone ? contactFor(req.body.owner) : null
@@ -3908,7 +3915,7 @@ app.post('/api/properties', (req, res) => {
 app.patch('/api/properties/:id', (req, res) => {
   const p = propertyFor(req.params.id)
   if (!canEditProperty(req.user, p)) throw err(403, 'Only the property agent or a property manager can change this')
-  const f = propertyFields(req.body, p)
+  const f = propertyFields(req.body, p, req.user)
   tx(() => {
     if (req.body.owner?.phone) f.owner_contact_id = contactFor(req.body.owner)
     if (Object.keys(f).length) run(`UPDATE properties SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), p.id)
@@ -4039,12 +4046,13 @@ app.post('/api/properties/:id/payouts', (req, res) => {
 // Society / phase / block boundaries drawn on the map; properties inside take their names
 const AREA_KINDS = Object.keys(L.AREA_FIELD)
 const canAreas = u => can(u, 'properties') || can(u, 'settings')
-function retagArea(a) { // every pinned property inside the area gets its name
+function retagArea(a, u) { // every pinned property inside the area gets its name
   const ring = typeof a.outline === 'string' ? JSON.parse(a.outline) : a.outline, col = L.AREA_FIELD[a.kind]
-  for (const p of all('SELECT id, lat, lng FROM properties WHERE lat IS NOT NULL'))
+  const [where, params] = accountWhere('p', u)
+  for (const p of all(`SELECT p.id, p.lat, p.lng FROM properties p WHERE p.lat IS NOT NULL AND ${where}`, ...params))
     if (L.inPolygon([p.lng, p.lat], ring)) run(`UPDATE properties SET ${col}=?, updated_at=? WHERE id=?`, a.name, now(), p.id)
 }
-app.get('/api/areas', (_req, res) => res.json(areaList()))
+app.get('/api/areas', (req, res) => res.json(areaList(req.user)))
 app.post('/api/areas', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
   const name = String(req.body.name || '').trim(), { kind } = req.body
@@ -4052,7 +4060,7 @@ app.post('/api/areas', (req, res) => {
   const outline = JSON.stringify(parseRing(req.body.outline))
   const id = tx(() => {
     const id = run('INSERT INTO areas(name,kind,outline,created_by,created_at) VALUES(?,?,?,?,?)', name, kind, outline, req.user.id, now()).lastInsertRowid
-    retagArea({ name, kind, outline })
+    retagArea({ name, kind, outline }, req.user)
     return id
   })()
   log(req, 'create', 'area', id, { name, kind })
@@ -4060,7 +4068,8 @@ app.post('/api/areas', (req, res) => {
 })
 app.patch('/api/areas/:id', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
-  const a = one('SELECT * FROM areas WHERE id=?', req.params.id)
+  const [where, params] = accountWhere('a', req.user)
+  const a = one(`SELECT a.* FROM areas a WHERE a.id=? AND ${where}`, req.params.id, ...params)
   if (!a) throw err(404, 'Area not found')
   const f = { name: String(req.body.name ?? a.name).trim(), kind: req.body.kind ?? a.kind, outline: req.body.outline ? JSON.stringify(parseRing(req.body.outline)) : a.outline }
   if (!f.name || !AREA_KINDS.includes(f.kind)) throw err(400, 'Name and type are required')
@@ -4068,17 +4077,19 @@ app.patch('/api/areas/:id', (req, res) => {
     run('UPDATE areas SET name=?, kind=?, outline=? WHERE id=?', f.name, f.kind, f.outline, a.id)
     if (f.name !== a.name || f.kind !== a.kind) { // take the old label off properties inside the old outline only (another society may have a "Phase 6" too)
       const col = L.AREA_FIELD[a.kind], ring = JSON.parse(a.outline)
-      for (const p of all(`SELECT id, lat, lng FROM properties WHERE lat IS NOT NULL AND ${col}=?`, a.name))
+      const [propertyWhere, propertyParams] = accountWhere('p', req.user)
+      for (const p of all(`SELECT p.id, p.lat, p.lng FROM properties p WHERE p.lat IS NOT NULL AND p.${col}=? AND ${propertyWhere}`, a.name, ...propertyParams))
         if (L.inPolygon([p.lng, p.lat], ring)) run(`UPDATE properties SET ${col}=NULL WHERE id=?`, p.id)
     }
-    retagArea(f)
+    retagArea(f, req.user)
   })()
   log(req, 'update', 'area', a.id, { name: f.name, kind: f.kind, outline: !!req.body.outline })
   res.json({ ok: true })
 })
 app.delete('/api/areas/:id', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
-  const a = one('SELECT * FROM areas WHERE id=?', req.params.id)
+  const [where, params] = accountWhere('a', req.user)
+  const a = one(`SELECT a.* FROM areas a WHERE a.id=? AND ${where}`, req.params.id, ...params)
   if (!a) throw err(404, 'Area not found')
   run('DELETE FROM areas WHERE id=?', a.id) // properties keep their society / phase / block text
   log(req, 'delete', 'area', a.id, { name: a.name })
@@ -4092,12 +4103,19 @@ const parseCorners = v => {
   return JSON.stringify(c)
 }
 const overlayOut = o => ({ ...o, corners: JSON.parse(o.corners), visible: !!o.visible, clear_white: o.clear_white !== 0 })
-app.get('/api/overlays', (_req, res) => res.json(all('SELECT id, token, name, area_id, width, height, corners, opacity, visible, clear_white, updated_at FROM overlays ORDER BY name').map(overlayOut)))
+app.get('/api/overlays', (req, res) => {
+  const [where, params] = accountWhere('o', req.user)
+  res.json(all(`SELECT o.id, o.token, o.name, o.area_id, o.width, o.height, o.corners, o.opacity, o.visible, o.clear_white, o.updated_at FROM overlays o WHERE ${where} ORDER BY o.name`, ...params).map(overlayOut))
+})
 app.post('/api/overlays', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
   const name = String(req.body.name || '').trim(), m = String(req.body.data || '').match(/^data:(image\/(jpeg|png|webp));base64,/)
   if (!name) throw err(400, 'Name the map, e.g. DHA Phase 6')
   if (!m) throw err(400, 'Upload a JPG, PNG or WebP image of the map')
+  if (req.body.area_id) {
+    const [where, params] = accountWhere('a', req.user)
+    if (!one(`SELECT a.id FROM areas a WHERE a.id=? AND ${where}`, +req.body.area_id, ...params)) throw err(404, 'Area not found')
+  }
   const data = Buffer.from(req.body.data.slice(m[0].length), 'base64')
   if (data.length > 20e6) throw err(400, 'Image is too large (max 20 MB)')
   const id = run('INSERT INTO overlays(token,name,area_id,mime,data,width,height,corners,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
@@ -4107,17 +4125,24 @@ app.post('/api/overlays', (req, res) => {
 })
 app.patch('/api/overlays/:id', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
+  const [overlayWhere, overlayParams] = accountWhere('o', req.user)
+  if (!one(`SELECT o.id FROM overlays o WHERE o.id=? AND ${overlayWhere}`, req.params.id, ...overlayParams)) throw err(404, 'Map not found')
   const f = pick(req.body, ['name', 'opacity', 'visible', 'corners', 'area_id', 'clear_white'])
   if ('corners' in f) f.corners = parseCorners(f.corners)
   for (const k of ['visible', 'clear_white']) if (k in f) f[k] = f[k] ? 1 : 0
   if ('opacity' in f && !(+f.opacity >= 0 && +f.opacity <= 1)) throw err(400, 'Opacity is 0–1')
-  if (!Object.keys(f).length || !run(`UPDATE overlays SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), req.params.id).changes) throw err(404, 'Map not found')
+  if (f.area_id != null) {
+    const [areaWhere, areaParams] = accountWhere('a', req.user)
+    if (!one(`SELECT a.id FROM areas a WHERE a.id=? AND ${areaWhere}`, +f.area_id, ...areaParams)) throw err(404, 'Area not found')
+  }
+  if (!Object.keys(f).length || !run(`UPDATE overlays SET ${Object.keys(f).map(k => k + '=?')}, updated_at=? WHERE id=? AND ${overlayWhere}`, ...Object.values(f), now(), req.params.id, ...overlayParams).changes) throw err(404, 'Map not found')
   if ('corners' in f) log(req, 'align', 'overlay', +req.params.id)
   res.json({ ok: true })
 })
 app.delete('/api/overlays/:id', (req, res) => {
   if (!canAreas(req.user)) throw err(403, 'You do not have permission for this')
-  if (!run('DELETE FROM overlays WHERE id=?', req.params.id).changes) throw err(404, 'Map not found')
+  const [where, params] = accountWhere('o', req.user)
+  if (!run(`DELETE FROM overlays AS o WHERE o.id=? AND ${where}`, req.params.id, ...params).changes) throw err(404, 'Map not found')
   log(req, 'delete', 'overlay', +req.params.id)
   res.json({ ok: true })
 })
