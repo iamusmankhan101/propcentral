@@ -351,9 +351,12 @@ const now = () => new Date().toISOString()
 const err = (status, message, data) => Object.assign(new Error(message), { status, ...(data ? { data } : {}) })
 // libsql attaches query timing metadata to rows; strip it so API responses stay clean
 const stripMeta = r => { if (r) delete r._metadata; return r }
-const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...p))
-const all = (sql, ...p) => db.prepare(sql).all(...p).map(stripMeta)
-const run = (sql, ...p) => db.prepare(sql).run(...p)
+// libsql has no bool binding: a JS true/false in a parameter panics the Rust layer and kills the process
+const sqlValue = v => (typeof v === 'boolean' ? (v ? 1 : 0) : v)
+const params = p => p.map(sqlValue)
+const one = (sql, ...p) => stripMeta(db.prepare(sql).get(...params(p)))
+const all = (sql, ...p) => db.prepare(sql).all(...params(p)).map(stripMeta)
+const run = (sql, ...p) => db.prepare(sql).run(...params(p))
 
 // ---------- plans & trials ----------
 function pickPlan(id) {
@@ -565,7 +568,7 @@ function autoAssign(leadId, { exclude = null, reason = 'Auto-assigned', quiet = 
 const LEAD_FIELDS = ['source', 'campaign', 'campaign_id', 'adset', 'ad', 'form_id', 'referrer', 'city', 'lead_type', 'interest', 'property_type', 'budget_min', 'budget_max',
   'locations', 'payment_pref', 'project', 'remarks', 'tags', 'custom', 'dealer_id']
 const CONTACT_FIELDS = ['name', 'alt_phones', 'email', 'cnic']
-const pick = (o, keys) => Object.fromEntries(keys.filter(k => o[k] !== undefined).map(k => [k, o[k] === '' ? null : typeof o[k] === 'object' && o[k] ? JSON.stringify(o[k]) : o[k]))
+const pick = (o, keys) => Object.fromEntries(keys.filter(k => o[k] !== undefined).map(k => [k, o[k] === '' ? null : typeof o[k] === 'object' && o[k] ? JSON.stringify(o[k]) : o[k]]))
 
 function checkLeadInput(input) {
   const phone = L.normalizePhone(input.phone)
