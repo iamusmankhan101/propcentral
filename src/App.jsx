@@ -36,8 +36,10 @@ function Login() {
   const [email, setEmail] = useState('')
   const [trial, setTrial] = useState(null)
   const [needVerify, setNeedVerify] = useState('')
+  const [resending, setResending] = useState(false)
+  const [resendError, setResendError] = useState('')
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify('') }
+  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify(''); setResendError('') }
   const submit = e => {
     const body = formData(e)
     run(async () => {
@@ -47,9 +49,11 @@ function Login() {
         return
       }
       if (signup) {
-        await api('/register', { body })
+        const r = await api('/register', { body })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
-        setNotice(`Account created! Check ${body.email} for a verification link.`)
+        setNotice(r.email_sent
+          ? `Account created! Check ${body.email} for a verification link.`
+          : `Account created, but the verification email to ${body.email} could not be sent. Sign in and use "Resend verification email".`)
         return
       }
       let r
@@ -69,11 +73,13 @@ function Login() {
       localStorage.token = r.token; sessionStorage.logoIntro = '1'; location.reload()
     })
   }
-  const resendVerification = () => {
-    run(async () => {
-      await api('/resend-verification', { body: { email: needVerify } })
-      setNotice('Verification email resent! Check your inbox.')
-    })
+  const resendVerification = async () => {
+    setResendError(''); setResending(true)
+    try {
+      const r = await api('/resend-verification', { body: { email: needVerify } })
+      if (r.email_sent) setNotice('Verification email resent! Check your inbox.')
+      else setResendError('The email service could not deliver just now. Try again in a few minutes, or contact support.')
+    } catch (e) { setResendError(e.message) } finally { setResending(false) }
   }
   return (
     <div className="login-page">
@@ -124,7 +130,8 @@ function Login() {
           {needVerify && (
             <div className="card banner" style={{marginBottom:'8px'}}>
               <p style={{margin:'0 0 8px'}}>Please verify your email at <b>{needVerify}</b> before signing in.</p>
-              <button type="button" className="button" style={{fontSize:'13px',padding:'6px 14px'}} onClick={resendVerification} disabled={busy}>Resend verification email</button>
+              <button type="button" className="button" style={{fontSize:'13px',padding:'6px 14px'}} onClick={resendVerification} disabled={resending}>{resending ? 'Sending…' : 'Resend verification email'}</button>
+              {resendError && <p className="error" style={{margin:'8px 0 0'}}>{resendError}</p>}
             </div>
           )}
           {trial && <div className="card banner trial-ended">
