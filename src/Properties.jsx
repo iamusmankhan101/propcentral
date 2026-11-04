@@ -136,7 +136,7 @@ export default function Properties() {
       </>}
       <div className={'inv' + (mapFull ? ' map-inv full-map' : '')}>
         {view === 'map' || layer === 'societies'
-          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} selectedArea={areas?.find(a => a.id === selArea)} selectedOverlay={overlays?.find(o => o.id === selOverlay)} onSelect={id => { setSelOverlay(null); setDraft(null); setSel(id) }}
+          ? <Suspense fallback={<div className="prop-map" />}><PropertyMap key={mapMode} rows={shown} areas={areas} overlays={overlays} layer={layer} city={city} mode={mapMode} bearing={mapBearing} onCity={setCity} onMode={setMapMode} sel={sel} selArea={selArea} selectedArea={areas?.find(a => a.id === selArea)} selectedOverlay={overlays?.find(o => o.id === selOverlay)} onSelect={id => { setSelOverlay(null); setDraft(null); setSel(id) }}
             onSelectArea={id => { setSelOverlay(null); setSelArea(id) }} onSelectOverlay={id => { setSel(null); setSelOverlay(id) }} onOverlayAction={overlayAction} onAreaAction={areaAction} placing={placing} onPlace={place} onCancel={() => setPlacing(null)} clean={mapFull} /></Suspense>
           : <div className="card scroll">
             <table>

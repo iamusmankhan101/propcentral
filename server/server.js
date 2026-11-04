@@ -565,7 +565,7 @@ function autoAssign(leadId, { exclude = null, reason = 'Auto-assigned', quiet = 
 const LEAD_FIELDS = ['source', 'campaign', 'campaign_id', 'adset', 'ad', 'form_id', 'referrer', 'city', 'lead_type', 'interest', 'property_type', 'budget_min', 'budget_max',
   'locations', 'payment_pref', 'project', 'remarks', 'tags', 'custom', 'dealer_id']
 const CONTACT_FIELDS = ['name', 'alt_phones', 'email', 'cnic']
-const pick = (o, keys) => Object.fromEntries(keys.filter(k => o[k] !== undefined).map(k => [k, o[k] === '' ? null : typeof o[k] === 'object' && o[k] ? JSON.stringify(o[k]) : o[k]]))
+const pick = (o, keys) => Object.fromEntries(keys.filter(k => o[k] !== undefined).map(k => [k, o[k] === '' ? null : typeof o[k] === 'object' && o[k] ? JSON.stringify(o[k]) : o[k]))
 
 function checkLeadInput(input) {
   const phone = L.normalizePhone(input.phone)
