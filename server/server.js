@@ -3258,6 +3258,28 @@ app.delete('/api/therapy/children/:id', therapyGuard, (req, res) => {
   res.json({ ok: true })
 })
 
+// ---- ask the planner: free questions about a child's problems, answered from their records ----
+app.post('/api/therapy/ask', therapyGuard, async (req, res) => {
+  const q = String(req.body.question || '').trim().slice(0, 1500)
+  if (!q) throw err(400, 'Type your question first')
+  let ctx
+  if (req.body.child_id) {
+    const c = therapyChild(req.user, req.body.child_id)
+    const asm = one('SELECT result FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC', c.id)
+    ctx = { about: 'one child', child: childFacts(c), approved_assessment: asm && j(asm.result),
+      goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts),
+      recent_sessions: all('SELECT * FROM therapy_sessions WHERE child_id=? ORDER BY date DESC, id DESC LIMIT 15', c.id).map(s => ({ ...sessionFacts(s), intervention_suggested: j(s.analysis) })) }
+  } else {
+    const [w, p] = childWhere(req.user)
+    ctx = { about: 'a general question, or the whole caseload',
+      children: all(`SELECT c.id, c.name, c.dob, c.difficulties FROM therapy_children c WHERE ${w} LIMIT 30`, ...p).map(k => ({ name: k.name, age_years: ageOf(k.dob), difficulties: k.difficulties,
+        approved_goals: all("SELECT area, target_skill, progress FROM therapy_goals WHERE child_id=? AND status='approved'", k.id) })) }
+  }
+  const out = await therapyAI(req, "Answer this question from a special-education professional. Use the recorded data where it is relevant and say which records you used. If the question is general or the data is too thin, give general, practical strategies and say they are general. Give clear next steps. Do not diagnose.",
+    '{"answer":str,"suggestions":[str],"based_on":[str],"missing_information":[str],"consult_specialist":str|null}', { question: q, ...ctx }, req.body.lang)
+  res.json(out)
+})
+
 // ---- super admin (platform owner): usage per organization, counts only, never a child's record ----
 app.get('/api/therapy/platform/overview', platformOnly, (_req, res) => {
   const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)

@@ -43,7 +43,8 @@ function fakeAI(t) {
     let b = ''; req.on('data', d => (b += d)); req.on('end', () => {
       const u = JSON.parse(b).messages[1].content
       const goal = { area: 'Speech and language', kind: 'three_month', current_skill: 'says single words', target_skill: 'two-word phrases', rationale: 'next step', prerequisites: 'single words', teaching: 'model and expand', activities: 'snack time', success_criteria: '8/10 trials', measure: 'trial count', timeframe: '3 months', priority: 'high' }
-      const out = u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
+      const out = u.includes('"consult_specialist"') ? { answer: u.includes('one child') ? 'child-specific' : 'general', suggestions: ['try x'], based_on: [], missing_information: [], consult_specialist: null }
+        : u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
         : u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: [], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
         : u.includes('"goals"') ? { goals: [goal], missing_information: ['hearing check'] }
         : u.includes('"reported_difficulties"') ? { reported_difficulties: ['few words'], demonstrated_abilities: [], strengths: [], areas_needing_further_assessment: [], suggested_questions: [], baseline_methods: [], learning_priorities: [] }
@@ -268,4 +269,17 @@ test('therapy: server PDFs, org settings, delete child, super-admin overview', a
   assert.equal((await call(base, 'DELETE', `/therapy/children/${kid}`, admin)).status, 200)
   assert.equal((await call(base, 'GET', `/therapy/children/${kid}`, admin)).status, 404)
   assert.equal(await login(base, 'mom@example.com'), undefined, 'a parent with no child left cannot sign in')
+})
+
+test('therapy: ask the planner (child-specific, general, scoped)', async t => {
+  process.env.FAKE_AI = await fakeAI(t)
+  const base = await boot(t)
+  delete process.env.FAKE_AI
+  const a = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const b = await company(base, 'Clinic B', 'b@example.com', ['therapy'])
+  const kid = (await J(await call(base, 'POST', '/therapy/children', a, { name: 'Ali', difficulties: 'few words' }))).id
+  assert.equal((await call(base, 'POST', '/therapy/ask', a, { question: '  ' })).status, 400)
+  assert.equal((await J(await call(base, 'POST', '/therapy/ask', a, { question: 'How do I help?', child_id: kid }))).answer, 'child-specific')
+  assert.equal((await J(await call(base, 'POST', '/therapy/ask', a, { question: 'Why do children lose interest?' }))).answer, 'general')
+  assert.equal((await call(base, 'POST', '/therapy/ask', b, { question: 'x', child_id: kid })).status, 404, "cannot ask about another company's child")
 })

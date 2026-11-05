@@ -23,6 +23,7 @@ export default function Therapy() {
         ? <><div className="hero"><div className="hero-title"><h1>Therapy overview</h1></div></div>
           <div className="kpis glass">{kpis.map(([l, v]) => <div key={l} className="kpi"><small>{l}</small><b>{v ?? 0}</b></div>)}</div></>
         : <div className="grid" style={{ marginBottom: 18 }}>{kpis.map(([l, v]) => <Stat key={l} label={l} value={v ?? 0} />)}</div>}
+      <Ask />
       <div className="t-charts">
         <WeeklyChart rows={dash?.charts.weekly} />
         <ProgressDonut rows={dash?.charts.progress} />
@@ -807,6 +808,44 @@ function NextStep({ d, setTab }) {
     <div className="card next-step">
       <ol className="steps" aria-label="Progress">{STEPS.map((t, i) => <li key={t} className={i + 1 === n.n ? 'on' : i + 1 < n.n ? 'done' : ''}><span>{i + 1 < n.n ? '✓' : i + 1}</span>{t}</li>)}</ol>
       <div className="row between"><p style={{ margin: 0 }}><b>Next:</b> {n.text}</p><button onClick={() => setTab(n.tab)}>{n.go}</button></div>
+    </div>
+  )
+}
+
+// ---------- ask the planner ----------
+function Ask() {
+  const [kids] = useApi('/therapy/children')
+  const [log, setLog] = useState([])
+  const { run, error, busy } = useAction()
+  const submit = e => {
+    const body = formData(e)
+    run(async () => {
+      const r = await api('/therapy/ask', { body: { question: body.question, child_id: body.child_id || null, lang: body.lang } })
+      setLog([{ q: body.question, who: kids?.find(k => String(k.id) === body.child_id)?.name || 'General', r }, ...log])
+      e.target.elements.question.value = ''
+    })
+  }
+  return (
+    <div className="card">
+      <h3>Ask about a child or a problem</h3>
+      <p className="muted">For example: "What can I try to help Ali say full sentences?" or "Why might a child lose interest during lessons?" Answers use the child's recorded profile, goals and sessions, and are suggestions for a professional to review.</p>
+      <form onSubmit={submit}>
+        <div className="row">
+          <Select name="child_id" options={(kids || []).map(k => [k.id, k.name])} blank="General question (no child)" />
+          <Select name="lang" options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} />
+        </div>
+        <textarea name="question" rows={2} required maxLength={1500} placeholder="Type your question…" />
+        <Err e={error} />
+        <button disabled={busy}>{busy ? 'Thinking…' : 'Ask'}</button>
+      </form>
+      {log.map((x, i) => (
+        <div key={i} className="card" style={{ marginTop: 12 }}>
+          <p className="muted" style={{ margin: 0 }}>{x.who}: {x.q}</p>
+          <p>{x.r.answer}</p>
+          <L title="What to try" items={x.r.suggestions} /><L title="Based on" items={x.r.based_on} /><L title="Missing information" items={x.r.missing_information} />
+          {x.r.consult_specialist && <p><b>See a specialist:</b> {x.r.consult_specialist}</p>}
+        </div>
+      ))}
     </div>
   )
 }
