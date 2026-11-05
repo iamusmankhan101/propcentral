@@ -18,7 +18,7 @@ import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
-import Therapy, { TherapyChild, ParentPortal, TherapyLibrary, TherapyOrg } from './Therapy.jsx'
+import Therapy, { TherapyChild, TherapyChildren, ParentPortal, TherapyLibrary, TherapyOrg } from './Therapy.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -409,7 +409,8 @@ const EDU_NAV = [
   ['/universities', 'Universities', 'book', 'edu', 'wide'], ['/courses', 'Courses', 'layers', 'edu', 'wide'],
 ]
 
-const THERAPY_NAV = [['/therapy', 'Therapy', 'heart', 'therapy', 'all']]
+const THERAPY_NAV = [['/therapy', 'Therapy', 'heart', 'therapy', 'all'], ['/therapy/children', 'Children', 'users', 'therapy', 'wide'],
+  ['/therapy/library', 'Skills', 'book', 'therapy', 'wide'], ['/therapy/org', 'Organization', 'settings', 'therapy', 'more']]
 
 // The platform owner manages sign-ups only, so their whole app is the Users page
 const PLATFORM_NAV = [['/users', 'Accounts', 'users', null, 'all']]
@@ -528,7 +529,7 @@ export default function App() {
           ['/audit', 'Audit', 'audit', 'audit', 'more'],
         ]
       : !propertyOn && therapyOn
-        ? [['/', 'Therapy', 'heart', null, 'all'], ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more']]
+        ? [['/', 'Dashboard', 'dashboard', null, 'all'], ['/therapy/children', 'Children', 'users', null, 'all'], ['/therapy/library', 'Skills', 'book', null, 'all'], ['/therapy/org', 'Organization', 'settings', null, 'wide'], ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more']]
         : [...NAV, ...(eduOn ? EDU_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
@@ -562,7 +563,7 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
-        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/library': <TherapyLibrary />, '/therapy/org': <TherapyOrg /> } : {}),
+        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/children': <TherapyChildren query={query} key={query} />, '/therapy/library': <TherapyLibrary />, '/therapy/org': <TherapyOrg /> } : {}),
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
           '/applications': <Applications query={query} key={query} />,

@@ -44,7 +44,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '14'
+const SCHEMA_VERSION = '15' // 15: therapy_children profile columns
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()

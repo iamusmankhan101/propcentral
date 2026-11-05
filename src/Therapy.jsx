@@ -9,27 +9,53 @@ const waLink = (phone, text) => { const d = String(phone).replace(/\D/g, ''); re
 const ymd = d => (d || '').slice(0, 10) || '—'
 const Stat = ({ label, value }) => <div className="card"><small className="muted">{label}</small><h2 style={{ margin: '4px 0 0' }}>{value ?? '…'}</h2></div>
 
-// ---------- dashboard + children ----------
+// ---------- shared page header: same hero + KPI strip as the main dashboard ----------
+const Hero = ({ title, children }) => <div className="hero"><div className="hero-title"><h1>{title}</h1></div>{children}</div>
+
+// ---------- dashboard ----------
 export default function Therapy() {
   const [dash] = useApi('/therapy/dashboard')
+  const kpis = [['Children', dash?.children], ['Active plans', dash?.active_plans], ['Goals in progress', dash?.in_progress], ['Goals achieved', dash?.achieved], ['Waiting for approval', dash?.pending_approval]]
+  return (
+    <section className="dash">
+      <Hero title="Therapy overview" />
+      <div className="kpis glass">{kpis.map(([l, v]) => <div key={l} className="kpi"><small>{l}</small><b>{v ?? 0}</b></div>)}</div>
+      <div className="board">
+        <div>
+          <div className="card">
+            <h3>Needs attention</h3>
+            {dash && <p className="muted">{dash.needs_intervention} goal{dash.needs_intervention === 1 ? '' : 's'} to reassess · {dash.reviews_due} review{dash.reviews_due === 1 ? '' : 's'} due in 14 days</p>}
+            {dash?.flags.length === 0 && <p className="muted">Nothing flagged. Flags come from your records, not from AI.</p>}
+            <ul>{dash?.flags.map((f, i) => <li key={i}><a href={'#/therapy/' + f.child_id}>{f.text}</a></li>)}</ul>
+          </div>
+          <Insights />
+        </div>
+        <div>
+          <div className="card"><h3>Recent observations</h3>
+            {dash?.recent.length === 0 && <p className="muted">No sessions recorded yet.</p>}
+            <ul>{dash?.recent.map(s => <li key={s.id}><a href={'#/therapy/' + s.child_id}><b>{s.child}</b></a> · {s.date}{s.progress && <> · <Status s={s.progress} /></>}{s.response && <><br /><span className="muted">{s.response.slice(0, 110)}</span></>}</li>)}</ul></div>
+          <div className="card"><h3>Quick links</h3>
+            <p><a href="#/therapy/children?new=1">+ Add a child</a></p><p><a href="#/therapy/children">All children</a></p>
+            <p><a href="#/therapy/library">Skills library</a></p><p><a href="#/therapy/org">Organization settings</a></p></div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+// ---------- children list ----------
+export function TherapyChildren({ query }) {
   const [kids, , loadError] = useApi('/therapy/children')
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState(new URLSearchParams(query).has('new'))
+  const [q, setQ] = useState('')
   const { run, error, busy } = useAction()
   const submit = e => { const body = formData(e); body.consent = !!body.consent; run(async () => go('/therapy/' + (await api('/therapy/children', { body })).id)) }
+  const shown = kids?.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()))
   return (
-    <section>
-      <div className="row between">
-        <h2>Special Needs Therapy</h2>
-        <div className="row"><a className="button ghost" href="#/therapy/org">Organization</a><a className="button ghost" href="#/therapy/library">Skills library</a>
-          <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button></div>
-      </div>
-      <p className="muted">AI drafts assessments, goals, lessons and reviews from what you record. A professional approves everything. It never diagnoses.</p>
-      <div className="grid">
-        <Stat label="Children" value={dash?.children} /><Stat label="Active plans" value={dash?.active_plans} />
-        <Stat label="Goals in progress" value={dash?.in_progress} /><Stat label="Goals achieved" value={dash?.achieved} />
-        <Stat label="Need intervention" value={dash?.needs_intervention} /><Stat label="Reviews due (14 days)" value={dash?.reviews_due} />
-        <Stat label="Waiting for approval" value={dash?.pending_approval} />
-      </div>
+    <section className="dash">
+      <Hero title="Children">
+        <div className="row" style={{ marginTop: 14 }}><button className="glass" onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button></div>
+      </Hero>
       {adding && (
         <form className="card grid" onSubmit={submit}>
           <h3 className="wide">New child</h3>
@@ -44,28 +70,21 @@ export default function Therapy() {
           <div className="wide row"><button disabled={busy}>Create child</button></div>
         </form>
       )}
-      <div className="card">
-        <h3>Needs attention</h3>
-        {dash?.flags.length === 0 && <p className="muted">Nothing flagged. Flags come from your records: reassessment needed, reviews due, no recent sessions.</p>}
-        <ul>{dash?.flags.map((f, i) => <li key={i}><a href={'#/therapy/' + f.child_id}>{f.text}</a></li>)}</ul>
-      </div>
-      <Insights />
+      <div className="filters"><input placeholder="Search children…" value={q} onChange={e => setQ(e.target.value)} /></div>
       <Err e={loadError} />
       <div className="card scroll">
         <table>
           <thead><tr><th>Child</th><th>Age</th><th>Guardian</th><th>Approved goals</th><th>Next review</th><th>Last session</th></tr></thead>
           <tbody>
-            {kids?.map(c => (
+            {shown?.map(c => (
               <tr key={c.id} className="link" onClick={() => go('/therapy/' + c.id)}>
                 <td><b>{c.name}</b></td><td>{c.age ?? '—'}</td><td>{c.guardian || '—'}</td><td>{c.goals}</td><td>{ymd(c.review_date)}</td><td>{ymd(c.last_session)}</td>
               </tr>
             ))}
-            {kids?.length === 0 && <tr><td colSpan="6" className="muted">No children yet. Add one to begin with an initial assessment.</td></tr>}
+            {shown?.length === 0 && <tr><td colSpan="6" className="muted">{kids.length ? 'No child matches.' : 'No children yet. Add one to begin with an initial assessment.'}</td></tr>}
           </tbody>
         </table>
       </div>
-      {dash?.recent.length > 0 && <div className="card"><h3>Recent observations</h3>
-        <ul>{dash.recent.map(s => <li key={s.id}><a href={'#/therapy/' + s.child_id}><b>{s.child}</b></a> · {s.date}{s.progress && <> · <Status s={s.progress} /></>} {s.response && '— ' + s.response.slice(0, 100)}</li>)}</ul></div>}
     </section>
   )
 }
@@ -84,7 +103,7 @@ export function TherapyChild({ id }) {
   const props = { data, reload, lang, id }
   return (
     <section>
-      <div className="back-nav"><a className="button soft back-btn" href="#/therapy">← Back to children</a></div>
+      <div className="back-nav"><a className="button soft back-btn" href="#/therapy/children">← Back to children</a></div>
       <div className="row between">
         <div className="row"><Photo child={child} reload={reload} id={id} /><div><h2>{child.name}</h2><p className="muted">{child.age != null ? child.age + ' years' : 'Age unknown'}{child.guardian && ' · ' + child.guardian}{!child.consent && ' · ⚠ consent not recorded'}</p></div></div>
         <label>AI language<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
