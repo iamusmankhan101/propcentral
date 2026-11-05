@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     body TEXT NOT NULL, created_at TEXT NOT NULL)`)
   db.exec(`CREATE TABLE IF NOT EXISTS therapy_skills(id INTEGER PRIMARY KEY, category TEXT NOT NULL, name TEXT NOT NULL, description TEXT, prerequisites TEXT, behaviours TEXT,
     assessment TEXT, teaching TEXT, activities TEXT, materials TEXT, measurement TEXT, alternatives TEXT, refs TEXT, created_by INTEGER NOT NULL, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_org(owner_id INTEGER PRIMARY KEY, display_name TEXT, report_footer TEXT, default_lang TEXT DEFAULT 'en', cycle_days INTEGER DEFAULT 91, guidelines TEXT)`)
   db.exec('CREATE INDEX IF NOT EXISTS therapy_goals_child ON therapy_goals(child_id, status)')
   db.exec('CREATE INDEX IF NOT EXISTS therapy_sessions_child ON therapy_sessions(child_id, date)')
 
@@ -2803,7 +2804,7 @@ async function therapyAI(req, task, shape, data, lang) {
   const r = await fetch(`${GROQ_URL()}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: T_RULES },
+      messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
         { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] }),
   })
   if (!r.ok) throw err(502, 'The AI is unavailable right now. Try again in a minute.')
@@ -2888,7 +2889,7 @@ app.get('/api/therapy/children/:id', therapyGuard, (req, res) => {
     staff_options: staffOptions(req.user),
     parents: all('SELECT u.id, u.name, u.email FROM therapy_parents p JOIN users u ON u.id=p.user_id WHERE p.child_id=?', c.id),
     homework: homeworkOf(c.id), messages: messagesOf(c.id),
-    can_approve: can(req.user, 'therapy_approve'),
+    can_approve: can(req.user, 'therapy_approve'), default_lang: orgOf(req.user).default_lang,
     lists: { areas: T_AREAS, progress: T_PROGRESS, assistance: T_ASSIST },
   })
 })
@@ -2916,10 +2917,10 @@ app.patch('/api/therapy/assessments/:id', therapyGuard, (req, res) => {
 })
 
 // 2/6. goals: AI proposes (status 'proposed'); only a professional approves; approved goals are never regenerated
-function openCycle(childId) {
+function openCycle(childId, u) {
   return one("SELECT * FROM therapy_cycles WHERE child_id=? AND status IN ('draft','active') ORDER BY id DESC", childId)
     || one('SELECT * FROM therapy_cycles WHERE id=?', run('INSERT INTO therapy_cycles(child_id,start_date,review_date,status,created_at) VALUES(?,?,?,?,?)',
-      childId, now().slice(0, 10), new Date(Date.now() + 91 * 864e5).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
+      childId, now().slice(0, 10), new Date(Date.now() + cycleMs(u)).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
 }
 const GOAL_SHAPE = '{"goals":[{"area":str,"kind":"three_month"|"short"|"long","current_skill":str,"target_skill":str,"rationale":str,"prerequisites":str,"teaching":str,"activities":str,"success_criteria":str,"measure":str,"timeframe":str,"priority":"high"|"medium"|"low"}],"missing_information":[str]}'
 const GOAL_ITEM = GOAL_SHAPE.slice(GOAL_SHAPE.indexOf('['), GOAL_SHAPE.indexOf(']}') + 1)
@@ -2933,7 +2934,7 @@ app.post('/api/therapy/children/:id/goals/generate', therapyGuard, async (req, r
   const c = therapyChild(req.user, req.params.id)
   const ass = one('SELECT result FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC', c.id)
   if (!ass) throw err(400, 'Approve an initial assessment first: goals are built on it')
-  const cycle = openCycle(c.id)
+  const cycle = openCycle(c.id, req.user)
   const area = T_AREAS.includes(req.body.area) ? req.body.area : null
   const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed. Where a skill_library entry fits, build on its prerequisites and measurement.`, GOAL_SHAPE,
     { child: childFacts(c), approved_assessment: j(ass.result), skill_library: skillsFor(req.user).filter(k => !area || CAT_AREA[k.category] === area).slice(0, 14).map(k => ({ category: k.category, name: k.name, prerequisites: k.prerequisites, teaching: k.teaching, measurement: k.measurement })), existing_goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts) }, req.body.lang)
@@ -2944,7 +2945,7 @@ app.post('/api/therapy/children/:id/goals/generate', therapyGuard, async (req, r
 app.post('/api/therapy/children/:id/goals', therapyGuard, (req, res) => { // a professional's own goal
   const c = therapyChild(req.user, req.params.id)
   if (!String(req.body.target_skill || '').trim()) throw err(400, 'Say what the target skill is')
-  const cycle = openCycle(c.id)
+  const cycle = openCycle(c.id, req.user)
   const [id] = insertGoals(c.id, cycle.id, [req.body], 'manual')
   if (can(req.user, 'therapy_approve')) { // a professional's own goal is approved as it is added; anyone else's waits
     run("UPDATE therapy_goals SET status='approved', approved_by=?, approved_at=? WHERE id=?", req.user.id, now(), id)
@@ -3040,7 +3041,7 @@ app.post('/api/therapy/children/:id/review', therapyGuard, async (req, res) => {
     { child: childFacts(c), quarter: { start: cycle.start_date, review_date: cycle.review_date, sessions_recorded: sessions.length }, goals: evidence }, req.body.lang)
   const next = one("SELECT * FROM therapy_cycles WHERE child_id=? AND status='draft'", c.id)
     || one('SELECT * FROM therapy_cycles WHERE id=?', run('INSERT INTO therapy_cycles(child_id,start_date,review_date,status,created_at) VALUES(?,?,?,?,?)',
-      c.id, cycle.review_date > now().slice(0, 10) ? cycle.review_date : now().slice(0, 10), new Date(Date.now() + 91 * 864e5).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
+      c.id, cycle.review_date > now().slice(0, 10) ? cycle.review_date : now().slice(0, 10), new Date(Date.now() + cycleMs(req.user)).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
   insertGoals(c.id, next.id, Array.isArray(out.next_goals) ? out.next_goals : [], 'review')
   run('UPDATE therapy_cycles SET review=?, review_approved_at=NULL WHERE id=?', JSON.stringify(out), cycle.id)
   log(req, 'review', 'therapy_child', c.id, {})
@@ -3115,8 +3116,15 @@ app.post('/api/therapy/children/:id/messages', therapyGuard, (req, res) => {
   const body = String(req.body.body || '').trim().slice(0, 2000)
   if (!body) throw err(400, 'Write a message first')
   run('INSERT INTO therapy_messages(child_id,sender_id,sender_role,kind,body,created_at) VALUES(?,?,?,?,?,?)', c.id, req.user.id, req.user.role, 'message', body, now())
+  therapyEmail(all('SELECT u.email FROM therapy_parents p JOIN users u ON u.id=p.user_id WHERE p.child_id=? AND u.active=1', c.id).map(r => r.email), 'You have a new message from your child\'s team')
   res.json({ ok: true })
 })
+// Notification emails never carry the message or anything about the child: they only say there is something to read
+const therapyEmail = (to, subject) => {
+  if (!to.length) return
+  const url = process.env.SITE_URL || 'https://app.estatecentric.com'
+  sendEmail(to, subject, `<div style="font-family:Arial,sans-serif;max-width:480px"><p>${subject}.</p><p><a href="${url}">Sign in to read it</a></p></div>`).catch(() => {})
+}
 const messagesOf = childId => all(`SELECT m.id, m.kind, m.body, m.created_at, m.sender_role, u.name sender FROM therapy_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.child_id=? ORDER BY m.id DESC LIMIT 100`, childId)
 const homeworkOf = childId => all(`SELECT h.*, g.target_skill FROM therapy_homework h LEFT JOIN therapy_goals g ON g.id=h.goal_id WHERE h.child_id=? ORDER BY h.id DESC`, childId)
 
@@ -3161,19 +3169,21 @@ app.post('/api/therapy/portal/:id/messages', parentGuard, (req, res) => {
   if (!body) throw err(400, 'Write a message first')
   rateHit(rateKey('therapy-parent-msg', req.user.id), 30, 3600e3, 'Too many messages. Try again later.')
   run('INSERT INTO therapy_messages(child_id,sender_id,sender_role,kind,body,created_at) VALUES(?,?,?,?,?,?)', c.id, req.user.id, 'parent', req.body.kind === 'observation' ? 'observation' : 'message', body, now())
-  for (const s of all('SELECT user_id FROM therapy_staff WHERE child_id=?', c.id)) notify(s.user_id, `${c.name}: new ${req.body.kind === 'observation' ? 'parent observation' : 'message from the parent'}`, null)
+  const staff = all('SELECT u.id, u.email FROM therapy_staff s JOIN users u ON u.id=s.user_id WHERE s.child_id=? AND u.active=1', c.id)
+  for (const s of staff) notify(s.id, `${c.name}: new ${req.body.kind === 'observation' ? 'parent observation' : 'message from the parent'}`, null)
+  therapyEmail(staff.map(s => s.email), 'A parent has sent a new message or observation')
   res.json({ ok: true })
 })
 
 // ---- reports: assembled from records, no AI; the page prints to PDF ----
-app.get('/api/therapy/children/:id/report', therapyGuard, (req, res) => {
-  const c = therapyChild(req.user, req.params.id)
+function buildReport(u, c, fromQ, toQ) {
   const day = v => (/^\d{4}-\d\d-\d\d$/.test(v || '') ? v : null)
-  const to = day(req.query.to) || now().slice(0, 10), from = day(req.query.from) || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  const to = day(toQ) || now().slice(0, 10), from = day(fromQ) || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
   const name = id => (id ? one('SELECT name FROM users WHERE id=?', id)?.name : null)
   const asm = one('SELECT * FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC', c.id)
-  res.json({
-    organization: one('SELECT name FROM users WHERE id=?', accountRoot(req.user))?.name, generated_by: req.user.name, generated_at: now(), from, to,
+  const org = orgOf(u)
+  return {
+    organization: org.display_name || one('SELECT name FROM users WHERE id=?', accountRoot(u))?.name, report_footer: org.report_footer, generated_by: u.name, generated_at: now(), from, to,
     child: { ...c, age: ageOf(c.dob), photo: undefined },
     assessment: asm && { ...asm, result: j(asm.result), approved_by_name: name(asm.approved_by) },
     goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected' ORDER BY id", c.id).map(g => ({ ...g, approved_by_name: name(g.approved_by) })),
@@ -3181,7 +3191,163 @@ app.get('/api/therapy/children/:id/report', therapyGuard, (req, res) => {
     all_sessions: all('SELECT id, goal_id, date, trials, independent, prompted FROM therapy_sessions WHERE child_id=? ORDER BY date, id', c.id),
     cycles: all('SELECT * FROM therapy_cycles WHERE child_id=? ORDER BY id DESC', c.id).map(y => ({ ...y, review: j(y.review), approved_by_name: name(y.review_approved_by) })),
     homework: homeworkOf(c.id),
+  }
+}
+app.get('/api/therapy/children/:id/report', therapyGuard, (req, res) => {
+  res.json(buildReport(req.user, therapyChild(req.user, req.params.id), req.query.from, req.query.to))
+})
+
+// ---- organization settings (one row per company, keyed by its main account) ----
+const ORG_DEFAULTS = { display_name: '', report_footer: '', default_lang: 'en', cycle_days: 91, guidelines: '' }
+const orgOf = u => ({ ...ORG_DEFAULTS, ...(one('SELECT * FROM therapy_org WHERE owner_id=?', accountRoot(u)) || {}) })
+const cycleMs = u => Math.min(366, Math.max(28, orgOf(u).cycle_days || 91)) * 864e5
+const orgAdmin = u => ['admin', 'owner', 'platform'].includes(u.role)
+app.get('/api/therapy/org', therapyGuard, (req, res) => {
+  const root = accountRoot(req.user)
+  const inAcct = `(u.id=? OR u.owner_id=?)`
+  res.json({
+    org: orgOf(req.user), account_name: one('SELECT name FROM users WHERE id=?', root)?.name, can_edit: orgAdmin(req.user),
+    team: all(`SELECT u.id, u.name, u.email, u.role, u.active FROM users u WHERE ${inAcct} AND u.role!='parent' ORDER BY u.name`, root, root)
+      .map(m => ({ ...m, children: one('SELECT count(*) n FROM therapy_staff WHERE user_id=?', m.id).n })),
+    counts: {
+      children: one(`SELECT count(*) n FROM therapy_children c JOIN users u ON u.id=c.created_by WHERE ${inAcct}`, root, root).n,
+      parents: one(`SELECT count(DISTINCT p.user_id) n FROM therapy_parents p JOIN users u ON u.id=p.user_id WHERE ${inAcct}`, root, root).n,
+    },
   })
+})
+app.put('/api/therapy/org', therapyGuard, (req, res) => {
+  if (!orgAdmin(req.user)) throw err(403, 'Only the organization admin can change these settings')
+  const b = req.body
+  const lang = ['en', 'ur'].includes(b.default_lang) ? b.default_lang : 'en'
+  const days = Math.min(366, Math.max(28, Math.round(+b.cycle_days) || 91))
+  const v = [String(b.display_name || '').slice(0, 120), String(b.report_footer || '').slice(0, 500), lang, days, String(b.guidelines || '').slice(0, 2000)]
+  run(`INSERT INTO therapy_org(owner_id,display_name,report_footer,default_lang,cycle_days,guidelines) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(owner_id) DO UPDATE SET display_name=excluded.display_name, report_footer=excluded.report_footer, default_lang=excluded.default_lang, cycle_days=excluded.cycle_days, guidelines=excluded.guidelines`,
+  accountRoot(req.user), ...v)
+  log(req, 'org_settings', 'therapy_org', accountRoot(req.user), { cycle_days: days })
+  res.json({ ok: true })
+})
+
+// ---- delete a child and everything recorded about them ----
+app.delete('/api/therapy/children/:id', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  needApprover(req.user)
+  const parents = all('SELECT user_id FROM therapy_parents WHERE child_id=?', c.id).map(r => r.user_id)
+  for (const t of ['therapy_sessions', 'therapy_lessons', 'therapy_goals', 'therapy_assessments', 'therapy_cycles', 'therapy_homework', 'therapy_messages', 'therapy_staff', 'therapy_parents'])
+    run(`DELETE FROM ${t} WHERE child_id=?`, c.id)
+  run('DELETE FROM therapy_children WHERE id=?', c.id)
+  // a parent login with no child left has nothing to see: switch it off (the user row stays for the audit trail)
+  for (const uid of parents) if (!one('SELECT 1 FROM therapy_parents WHERE user_id=?', uid)) run('UPDATE users SET active=0 WHERE id=?', uid)
+  log(req, 'delete', 'therapy_child', c.id, { name: c.name })
+  res.json({ ok: true })
+})
+
+// ---- super admin (platform owner): usage per organization, counts only, never a child's record ----
+app.get('/api/therapy/platform/overview', platformOnly, (_req, res) => {
+  const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  res.json(all("SELECT id, name, email, active, modules FROM users WHERE role!='platform' AND owner_id IS NULL").filter(m => parseModules(m.modules).includes('therapy')).map(m => {
+    const mine = `(u.id=? OR u.owner_id=?)`
+    return { id: m.id, name: m.name, email: m.email, active: m.active,
+      staff: one(`SELECT count(*) n FROM users u WHERE ${mine} AND u.active=1 AND u.role NOT IN ('parent')`, m.id, m.id).n,
+      parents: one(`SELECT count(DISTINCT p.user_id) n FROM therapy_parents p JOIN users u ON u.id=p.user_id WHERE ${mine}`, m.id, m.id).n,
+      children: one(`SELECT count(*) n FROM therapy_children c JOIN users u ON u.id=c.created_by WHERE ${mine}`, m.id, m.id).n,
+      approved_goals: one(`SELECT count(*) n FROM therapy_goals g JOIN therapy_children c ON c.id=g.child_id JOIN users u ON u.id=c.created_by WHERE ${mine} AND g.status='approved'`, m.id, m.id).n,
+      sessions_30d: one(`SELECT count(*) n FROM therapy_sessions s JOIN therapy_children c ON c.id=s.child_id JOIN users u ON u.id=c.created_by WHERE ${mine} AND s.date>=?`, m.id, m.id, since).n }
+  }))
+})
+
+// ---- server-generated PDF reports ----
+const ymd10 = d => (d || '').slice(0, 10)
+async function reportPdf(res, r, type, comment, org) {
+  const { default: PDFDocument } = await import('pdfkit')
+  const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: `${r.child.name} report`, Author: r.generated_by } })
+  const name = `${r.child.name.replace(/[^\w-]+/g, '_')}-${type}-${r.to}.pdf`
+  res.setHeader('content-type', 'application/pdf'); res.setHeader('content-disposition', `attachment; filename="${name}"`)
+  doc.pipe(res)
+  const TEAL = '#0d9488', GREY = '#6b7280', W = doc.page.width - 96
+  const H = t => { doc.moveDown(0.6).fillColor('#111').font('Helvetica-Bold').fontSize(12).text(t).moveDown(0.2) }
+  const P = (t, o = {}) => doc.fillColor(o.grey ? GREY : '#111').font('Helvetica').fontSize(o.small ? 9 : 10.5).text(String(t ?? ''), o)
+  const UL = (t, items) => { if (!items?.length) return; H(t); for (const x of items) P('•  ' + (typeof x === 'string' ? x : JSON.stringify(x)), { indent: 4 }) }
+  const KV = (k, v) => { if (v) { doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#111').text(k + ': ', { continued: true }); doc.font('Helvetica').text(String(v)) } }
+  const title = { assessment: 'Initial assessment', iep: 'Individualized Education Plan', session: 'Daily session report', weekly: 'Weekly progress', monthly: 'Monthly progress', quarterly: 'Quarterly development report', goals: 'Goal achievement', domain: 'Domain-wise development', parent: 'Parent progress report' }[type]
+  const goals = r.goals.filter(g => g.status === 'approved'), gname = id => r.goals.find(g => g.id === id)?.target_skill || '-'
+  const RANK = ['Not introduced', 'Emerging', 'Developing', 'Progressing', 'Achieved']
+  doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(9).text((org.display_name || r.organization || '').toUpperCase())
+  doc.fillColor('#111').fontSize(20).text(title)
+  P(`${r.child.name}${r.child.age != null ? `, ${r.child.age} years` : ''}${r.child.guardian ? ` · Guardian: ${r.child.guardian}` : ''}`, { grey: true })
+  P(`Generated ${ymd10(r.generated_at)} by ${r.generated_by}${['session', 'weekly', 'monthly'].includes(type) ? ` · ${r.from} to ${r.to}` : ''}`, { grey: true, small: true })
+  const trend = pts => {
+    if (pts.length < 2) return P('Not enough sessions with trial counts to draw a trend yet.', { grey: true })
+    doc.moveDown(0.3); const x0 = doc.x + 28, y0 = doc.y + 4, h = 80, w = W - 40
+    if (y0 + h + 24 > doc.page.height - 60) { doc.addPage(); return trend(pts) }
+    doc.lineWidth(0.5).strokeColor('#d1d5db')
+    for (const v of [0, 50, 100]) { const y = y0 + h - v * h / 100; doc.moveTo(x0, y).lineTo(x0 + w, y).stroke(); doc.fillColor(GREY).fontSize(8).text(v + '%', x0 - 28, y - 4, { lineBreak: false }) }
+    doc.lineWidth(1.6).strokeColor(TEAL)
+    pts.forEach((p, i) => { const x = x0 + i * w / (pts.length - 1), y = y0 + h - p.v * h / 100; i ? doc.lineTo(x, y) : doc.moveTo(x, y) }); doc.stroke()
+    doc.x = 48; doc.y = y0 + h + 14
+  }
+  const pts = list => list.filter(s => s.trials > 0 && s.independent != null).map(s => ({ d: s.date, v: Math.round(100 * s.independent / s.trials) }))
+  const quarter = r.cycles.find(y => y.review), asm = r.assessment?.result
+
+  if (type === 'assessment') {
+    if (!asm) P('No approved assessment yet.', { grey: true })
+    else { P(`Approved ${ymd10(r.assessment.approved_at)} by ${r.assessment.approved_by_name}`, { grey: true, small: true })
+      UL('Reported difficulties', asm.reported_difficulties); UL('Demonstrated abilities', asm.demonstrated_abilities); UL('Strengths', asm.strengths)
+      UL('Areas needing further assessment', asm.areas_needing_further_assessment); UL('Baseline methods', asm.baseline_methods)
+      if (asm.learning_priorities?.length) { H('Learning priorities'); for (const x of asm.learning_priorities) P(`•  ${x.area} (${x.priority}): ${x.why}`, { indent: 4 }) } }
+  }
+  if (type === 'iep') {
+    if (!goals.length) P('No approved goals yet.', { grey: true })
+    for (const g of goals) { H(`${g.target_skill}  (${g.kind.replace('_', '-')}, ${g.area}, priority ${g.priority})`)
+      KV('Now', g.current_skill); KV('Why', g.rationale); KV('Teaching', g.teaching); KV('Success criteria', g.success_criteria); KV('Measured by', `${g.measure} · ${g.timeframe}`)
+      P(`Approved ${ymd10(g.approved_at)} by ${g.approved_by_name}`, { grey: true, small: true }) }
+  }
+  if (['session', 'weekly', 'monthly'].includes(type)) {
+    if (type !== 'session') { H('Independent responses over time'); trend(pts(r.sessions)) }
+    P(`${r.sessions.length} session${r.sessions.length === 1 ? '' : 's'} recorded in this period.`)
+    for (const s of r.sessions) { H(`${s.date} · ${s.educator || ''} · ${gname(s.goal_id)}${s.progress ? ' · ' + s.progress : ''}`)
+      KV('Activities', s.activities); KV('Response', s.response)
+      if (s.trials != null) KV('Trials', `${s.trials}, independent ${s.independent ?? '-'}, prompted ${s.prompted ?? '-'}${s.assistance ? ', ' + s.assistance : ''}`)
+      KV('Difficulties', s.difficulties) }
+  }
+  if (type === 'quarterly') {
+    if (!quarter) P('No three-month review has been generated yet.', { grey: true })
+    else { const rv = quarter.review
+      P(`Quarter ${quarter.start_date} to ${quarter.review_date} · ${quarter.review_approved_at ? `Approved ${ymd10(quarter.review_approved_at)} by ${quarter.approved_by_name}` : 'DRAFT: not yet approved'}`, { grey: true, small: true })
+      H('Goal outcomes'); for (const o of rv.outcomes || []) P(`•  ${gname(o.goal_id)}: ${o.outcome}. ${o.evidence || ''}`, { indent: 4 })
+      UL('What improved', rv.developmental_progress?.improved); UL('Remaining difficulties', rv.developmental_progress?.remaining_difficulties)
+      UL('Effective strategies', rv.intervention_analysis?.effective); UL('Strategies to modify', rv.intervention_analysis?.needs_modification); UL('Next-step recommendations', rv.next_step_recommendations) }
+  }
+  if (type === 'goals') {
+    H(`${goals.filter(g => g.progress === 'Achieved').length} of ${goals.length} approved goals achieved`)
+    for (const g of goals) P(`•  ${g.target_skill}  [${g.area}]  -  ${g.progress}  (approved ${ymd10(g.approved_at)})`, { indent: 4 })
+  }
+  if (type === 'domain') {
+    const areas = [...new Set(goals.map(g => g.area || 'General'))]
+    if (!areas.length) P('No approved goals yet.', { grey: true })
+    P('Average progress of approved goals per area (0 = not introduced, 4 = achieved).', { grey: true, small: true }); doc.moveDown(0.4)
+    for (const a of areas) {
+      const gs = goals.filter(g => (g.area || 'General') === a), avg = gs.reduce((t, g) => t + Math.max(0, RANK.indexOf(g.progress)), 0) / gs.length, y = doc.y
+      doc.fillColor('#111').font('Helvetica').fontSize(10).text(a, 48, y, { width: 170, lineBreak: false })
+      doc.roundedRect(222, y, 220, 10, 3).fill('#e5e7eb'); doc.roundedRect(222, y, Math.max(3, 220 * avg / 4), 10, 3).fill(TEAL)
+      doc.fillColor(GREY).fontSize(9).text(`${avg.toFixed(1)} · ${gs.length} goal${gs.length > 1 ? 's' : ''}`, 450, y, { lineBreak: false }); doc.x = 48; doc.y = y + 20
+    }
+  }
+  if (type === 'parent') {
+    H('What we are working on'); for (const g of goals) P(`•  ${g.target_skill}: ${g.progress}`, { indent: 4 })
+    H('Progress'); trend(pts(r.all_sessions))
+    UL('Home practice', r.homework.map(h => `${h.done_at ? '[done] ' : '[ ] '}${h.text}`))
+    if (quarter?.review_approved_at) UL('Next steps', quarter.review.next_step_recommendations)
+  }
+  if (comment) { H('Professional comments'); P(comment) }
+  doc.moveDown(1.2); P(org.report_footer || 'This report supports, and does not replace, professional judgement. It makes no diagnosis.', { grey: true, small: true })
+  doc.end()
+}
+app.get('/api/therapy/children/:id/report.pdf', therapyGuard, async (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const type = String(req.query.type || '')
+  if (!['assessment', 'iep', 'session', 'weekly', 'monthly', 'quarterly', 'goals', 'domain', 'parent'].includes(type)) throw err(400, 'Unknown report type')
+  await reportPdf(res, buildReport(req.user, c, req.query.from, req.query.to), type, String(req.query.comment || '').slice(0, 2000), orgOf(req.user))
 })
 
 // ---- skills and activity library: curated starters plus the company's own ----

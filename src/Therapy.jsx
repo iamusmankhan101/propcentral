@@ -1,9 +1,11 @@
 import { useState } from 'react'
-import { api, useApi, useAction, formData, go, fmt, shrinkImage, useMeta } from './api.js'
+import { api, useApi, useAction, formData, go, fmt, shrinkImage, useMeta, downloadBlob } from './api.js'
 import { Select, Status } from './Leads.jsx'
 
 const L = ({ title, items }) => items?.length ? <><h4>{title}</h4><ul>{items.map((x, i) => <li key={i}>{typeof x === 'string' ? x : JSON.stringify(x)}</li>)}</ul></> : null
 const Err = ({ e }) => e ? <p className="error">{e}</p> : null
+// 03xx... -> 923xx...; anything else is used as typed (digits only)
+const waLink = (phone, text) => { const d = String(phone).replace(/\D/g, ''); return `https://wa.me/${d.startsWith('0') ? '92' + d.slice(1) : d}?text=${encodeURIComponent(text)}` }
 const ymd = d => (d || '').slice(0, 10) || '—'
 const Stat = ({ label, value }) => <div className="card"><small className="muted">{label}</small><h2 style={{ margin: '4px 0 0' }}>{value ?? '…'}</h2></div>
 
@@ -18,7 +20,7 @@ export default function Therapy() {
     <section>
       <div className="row between">
         <h2>Special Needs Therapy</h2>
-        <div className="row"><a className="button ghost" href="#/therapy/library">Skills library</a>
+        <div className="row"><a className="button ghost" href="#/therapy/org">Organization</a><a className="button ghost" href="#/therapy/library">Skills library</a>
           <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button></div>
       </div>
       <p className="muted">AI drafts assessments, goals, lessons and reviews from what you record. A professional approves everything. It never diagnoses.</p>
@@ -74,10 +76,11 @@ const TABS = [['profile', 'Profile & assessment'], ['goals', 'Goals'], ['lessons
 export function TherapyChild({ id }) {
   const [data, reload, loadError] = useApi('/therapy/children/' + id)
   const [tab, setTab] = useState('profile')
-  const [lang, setLang] = useState('en')
+  const [langPick, setLang] = useState(null)
   if (loadError) return <p className="error">{loadError}</p>
   if (!data) return <p className="muted">Loading…</p>
   const { child } = data
+  const lang = langPick ?? data.default_lang ?? 'en'
   const props = { data, reload, lang, id }
   return (
     <section>
@@ -103,7 +106,7 @@ const FIELDS = [['difficulties', 'Reported difficulties'], ['abilities', 'Curren
 
 function Profile({ data, reload, lang, id }) {
   const { child, assessments } = data
-  const save = useAction(), ai = useAction()
+  const save = useAction(), ai = useAction(), del = useAction()
   const submit = e => { const body = formData(e); body.consent = !!body.consent; save.run(async () => { await api('/therapy/children/' + id, { method: 'PATCH', body }); reload() }) }
   const assess = e => { const { text } = formData(e); ai.run(async () => { await api(`/therapy/children/${id}/assessment`, { body: { text, lang } }); e.target.reset(); reload() }) }
   return (
@@ -117,7 +120,9 @@ function Profile({ data, reload, lang, id }) {
         {FIELDS.map(([k, l]) => <label key={k} className="wide">{l}<textarea name={k} rows={2} defaultValue={child[k] || ''} /></label>)}
         <label className="wide"><span><input name="consent" type="checkbox" style={{ width: 'auto' }} defaultChecked={!!child.consent} /> Guardian has consented to these records</span></label>
         <Err e={save.error} />
-        <div className="wide row"><button disabled={save.busy}>Save profile</button></div>
+        <div className="wide row"><button disabled={save.busy}>Save profile</button>
+          {data.can_approve && <button type="button" className="ghost" disabled={del.busy} onClick={() => confirm(`Delete ${child.name} and every record about them? This cannot be undone.`) && del.run(async () => { await api('/therapy/children/' + id, { method: 'DELETE' }); go('/therapy') })}>Delete child</button>}</div>
+        <Err e={del.error} />
       </form>
       <form className="card" onSubmit={assess}>
         <h3>Initial assessment</h3>
@@ -399,6 +404,7 @@ function Home({ data, reload, id }) {
         <h3>Parent / guardian access</h3>
         {parents.length === 0 && <p className="muted">No parent has portal access yet.</p>}
         {parents.map(p => <p key={p.id}>{p.name} · {p.email} {can_approve && <button className="ghost" onClick={() => a2.run(async () => { await api(`/therapy/children/${id}/parent/${p.id}`, { method: 'DELETE' }); reload() })}>Remove</button>}</p>)}
+        {data.child.guardian_phone && <p><a className="button ghost" target="_blank" rel="noreferrer" href={waLink(data.child.guardian_phone, `Hello, this is a message from ${data.child.name}'s team.`)}>Message guardian on WhatsApp</a></p>}
         {can_approve && <form className="grid" onSubmit={e => { const body = formData(e); a2.run(async () => { await api(`/therapy/children/${id}/parent`, { body }); e.target.reset(); reload() }) }}>
           <label>Name<input name="name" required /></label><label>Email<input name="email" type="email" required /></label>
           <label>Password<input name="password" type="password" minLength={10} required placeholder="10+ characters" /></label>
@@ -440,13 +446,19 @@ function Reports({ id }) {
   const [comment, setComment] = useState('')
   const pickType = t => { setType(t); if (t === 'weekly') { setFrom(day(7)); setTo(day(0)) } if (t === 'monthly') { setFrom(day(30)); setTo(day(0)) } if (t === 'session') { setFrom(day(0)); setTo(day(0)) } }
   const [r] = useApi(`/therapy/children/${id}/report?from=${from}&to=${to}`)
+  const [pdfBusy, setPdfBusy] = useState(false), [pdfErr, setPdfErr] = useState('')
+  const pdf = async () => {
+    setPdfErr(''); setPdfBusy(true)
+    try { await downloadBlob(`/therapy/children/${id}/report.pdf?` + new URLSearchParams({ type, from, to, comment }), `${type}-${to}.pdf`) } catch (e) { setPdfErr(e.message) } finally { setPdfBusy(false) }
+  }
   return (
     <>
       <div className="card grid">
         <label>Report<Select value={type} onChange={e => pickType(e.target.value)} options={REPORTS} blank={null} /></label>
         {['session', 'weekly', 'monthly'].includes(type) && <><label>From<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>To<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label></>}
         <label className="wide">Professional comments (printed on the report)<textarea rows={2} value={comment} onChange={e => setComment(e.target.value)} /></label>
-        <div className="wide row"><button onClick={() => window.print()} disabled={!r}>Download PDF (print)</button></div>
+        <div className="wide row"><button onClick={pdf} disabled={!r || pdfBusy}>{pdfBusy ? 'Preparing…' : 'Download PDF'}</button><button className="ghost" onClick={() => window.print()} disabled={!r}>Print</button></div>
+        <Err e={pdfErr} />
       </div>
       {!r ? <p className="muted">Loading…</p> : <ReportPage r={r} type={type} comment={comment} />}
     </>
@@ -617,6 +629,44 @@ export function TherapyLibrary() {
         </div>
       ))}
       {d?.skills.length === 0 && <p className="muted">No skills match.</p>}
+    </section>
+  )
+}
+
+// ---------- organization settings (admin) ----------
+export function TherapyOrg() {
+  const [d, reload, loadError] = useApi('/therapy/org')
+  const { run, error, busy } = useAction()
+  const [saved, setSaved] = useState(false)
+  if (loadError) return <p className="error">{loadError}</p>
+  if (!d) return <p className="muted">Loading…</p>
+  const o = d.org
+  const submit = e => { const body = formData(e); run(async () => { await api('/therapy/org', { method: 'PUT', body }); setSaved(true); reload() }) }
+  return (
+    <section>
+      <div className="back-nav"><a className="button soft back-btn" href="#/therapy">← Back to therapy</a></div>
+      <h2>Organization</h2>
+      <div className="grid">
+        <div className="card"><small className="muted">Children</small><h2 style={{ margin: 0 }}>{d.counts.children}</h2></div>
+        <div className="card"><small className="muted">Staff</small><h2 style={{ margin: 0 }}>{d.team.filter(t => t.active).length}</h2></div>
+        <div className="card"><small className="muted">Parent logins</small><h2 style={{ margin: 0 }}>{d.counts.parents}</h2></div>
+      </div>
+      <form className="card grid" onSubmit={submit}>
+        <h3 className="wide">Settings for {d.account_name}</h3>
+        <label>Name on reports<input name="display_name" defaultValue={o.display_name} placeholder={d.account_name} maxLength={120} disabled={!d.can_edit} /></label>
+        <label>Default AI language<Select name="default_lang" options={[['en', 'English'], ['ur', 'Roman Urdu']]} defaultValue={o.default_lang} blank={null} /></label>
+        <label>Review cycle (days)<input name="cycle_days" type="number" min="28" max="366" defaultValue={o.cycle_days} disabled={!d.can_edit} /></label>
+        <label className="wide">Report footer<textarea name="report_footer" rows={2} defaultValue={o.report_footer} maxLength={500} disabled={!d.can_edit} placeholder="Printed at the end of every report" /></label>
+        <label className="wide">Centre guidelines for the AI<textarea name="guidelines" rows={4} defaultValue={o.guidelines} maxLength={2000} disabled={!d.can_edit} placeholder="e.g. We follow a play-based approach. Always include a visual-support option." /></label>
+        <small className="muted wide">The AI follows these unless they conflict with its safety rules (no diagnosis, evidence-based progress, professional approval).</small>
+        <Err e={error} />{saved && <p className="ok wide">Saved.</p>}
+        {d.can_edit ? <div className="wide row"><button disabled={busy}>Save settings</button></div> : <p className="muted wide">Only the organization admin can change these.</p>}
+      </form>
+      <div className="card scroll">
+        <div className="row between"><h3>Team</h3><a className="button ghost" href="#/users">Manage users & roles</a></div>
+        <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Assigned children</th><th>Status</th></tr></thead>
+          <tbody>{d.team.map(m => <tr key={m.id}><td>{m.name}</td><td>{m.email}</td><td>{m.role.replace(/_/g, ' ')}</td><td>{m.children}</td><td>{m.active ? 'Active' : 'Inactive'}</td></tr>)}</tbody></table>
+      </div>
     </section>
   )
 }

@@ -18,7 +18,7 @@ import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
-import Therapy, { TherapyChild, ParentPortal, TherapyLibrary } from './Therapy.jsx'
+import Therapy, { TherapyChild, ParentPortal, TherapyLibrary, TherapyOrg } from './Therapy.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -562,7 +562,7 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
-        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/library': <TherapyLibrary /> } : {}),
+        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/library': <TherapyLibrary />, '/therapy/org': <TherapyOrg /> } : {}),
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
           '/applications': <Applications query={query} key={query} />,

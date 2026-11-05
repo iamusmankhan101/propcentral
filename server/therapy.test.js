@@ -220,3 +220,47 @@ test('therapy: reports, skills library, AI insights', async t => {
   const ins = await J(await call(base, 'POST', '/therapy/dashboard/insights', a, {}))
   assert.equal(ins.insights.length, 1, 'insights about children outside the company are dropped')
 })
+
+test('therapy: server PDFs, org settings, delete child, super-admin overview', async t => {
+  const base = await boot(t)
+  const boss = await login(base, PLATFORM.email, PLATFORM.password)
+  const admin = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const kid = (await J(await call(base, 'POST', '/therapy/children', admin, { name: 'Ali', guardian: 'Mr Ali' }))).id
+  await call(base, 'POST', `/therapy/children/${kid}/goals`, admin, { target_skill: 'two-word phrases', area: 'Speech and language', kind: 'three_month', success_criteria: '8/10' })
+
+  for (const type of ['assessment', 'iep', 'session', 'weekly', 'monthly', 'quarterly', 'goals', 'domain', 'parent']) {
+    const r = await call(base, 'GET', `/therapy/children/${kid}/report.pdf?type=${type}&comment=Well+done`, admin)
+    assert.equal(r.status, 200, type)
+    assert.match(r.headers.get('content-type'), /application\/pdf/)
+    assert.equal(Buffer.from(await r.arrayBuffer()).subarray(0, 4).toString(), '%PDF', `${type} is a real PDF`)
+  }
+  assert.equal((await call(base, 'GET', `/therapy/children/${kid}/report.pdf?type=bogus`, admin)).status, 400)
+
+  // organization settings: admin edits, others cannot; cycle length drives the review date
+  const slt = await staffUser(base, admin, 'Speech T', 'slt@example.com', 'speech_therapist')
+  assert.equal((await call(base, 'PUT', '/therapy/org', slt.token, { display_name: 'Hacked' })).status, 403)
+  assert.equal((await call(base, 'PUT', '/therapy/org', admin, { display_name: 'Bright Steps', cycle_days: 60, default_lang: 'ur', report_footer: 'Bright Steps Centre', guidelines: 'Play based' })).status, 200)
+  const org = await J(await call(base, 'GET', '/therapy/org', slt.token))
+  assert.equal(org.org.display_name, 'Bright Steps'); assert.equal(org.can_edit, false); assert.equal(org.counts.children, 1)
+  const kid2 = (await J(await call(base, 'POST', '/therapy/children', admin, { name: 'Sara' }))).id
+  await call(base, 'POST', `/therapy/children/${kid2}/goals`, admin, { target_skill: 'x' })
+  const cyc = (await J(await call(base, 'GET', `/therapy/children/${kid2}`, admin)))
+  const days = Math.round((new Date(cyc.cycles[0].review_date) - new Date(cyc.cycles[0].start_date)) / 864e5)
+  assert.equal(days, 60, 'review cycle follows the organization setting')
+  assert.equal(cyc.default_lang, 'ur')
+  assert.equal((await J(await call(base, 'GET', `/therapy/children/${kid}/report`, admin))).organization, 'Bright Steps')
+
+  // super admin sees counts only
+  const ov = await J(await call(base, 'GET', '/therapy/platform/overview', boss))
+  assert.equal(ov.find(o => o.email === 'a@example.com').children, 2)
+  assert.equal(JSON.stringify(ov).includes('Ali'), false, 'no child names in the overview')
+  assert.equal((await call(base, 'GET', '/therapy/platform/overview', admin)).status, 403)
+
+  // delete: only approvers; parent login is switched off
+  await call(base, 'POST', `/therapy/children/${kid}/parent`, admin, { name: 'Mom', email: 'mom@example.com', password: 'Passw0rd12345' })
+  assert.ok(await login(base, 'mom@example.com'))
+  assert.equal((await call(base, 'DELETE', `/therapy/children/${kid}`, slt.token)).status, 404, 'unassigned staff cannot even see it')
+  assert.equal((await call(base, 'DELETE', `/therapy/children/${kid}`, admin)).status, 200)
+  assert.equal((await call(base, 'GET', `/therapy/children/${kid}`, admin)).status, 404)
+  assert.equal(await login(base, 'mom@example.com'), undefined, 'a parent with no child left cannot sign in')
+})
