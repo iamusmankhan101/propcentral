@@ -110,7 +110,7 @@ export function TherapyChild({ id }) {
   if (!data) return <p className="muted">Loading…</p>
   const { child } = data
   const lang = langPick ?? data.default_lang ?? 'en'
-  const props = { data, reload, lang, id }
+  const props = { data, reload, lang, id, setTab }
   return (
     <section>
       <div className="back-nav"><a className="button soft back-btn" href="#/therapy/children">← Back to children</a></div>
@@ -226,7 +226,7 @@ function Goal({ g, reload, progress, can }) {
   )
 }
 
-function Goals({ data, reload, lang, id }) {
+function Goals({ data, reload, lang, id, setTab }) {
   const { goals, lists, assessments } = data
   const ai = useAction(), manual = useAction()
   const [note, setNote] = useState([])
@@ -236,12 +236,14 @@ function Goals({ data, reload, lang, id }) {
   const approved = assessments.some(a => a.approved)
   return (
     <>
+      {!approved && <div className="card banner">
+        <div><b>Approve an initial assessment to unlock AI goals.</b><br /><span className="muted">Goals are built on the approved assessment, so the suggestions fit this child. You can still add your own goal now.</span></div>
+        <button type="button" onClick={() => setTab('profile')}>Go to assessment</button></div>}
       <form className="card row" onSubmit={gen}>
         <Select name="area" options={lists.areas} blank="Highest priorities" />
-        <button disabled={ai.busy || !approved}>{ai.busy ? 'Thinking…' : 'Suggest goals with AI'}</button>
+        <button disabled={ai.busy || !approved} title={approved ? '' : 'Approve an initial assessment first'}>{ai.busy ? 'Thinking…' : 'Suggest goals with AI'}</button>
         <button type="button" className="ghost" onClick={() => setAdding(!adding)}>+ Own goal</button>
       </form>
-      {!approved && <p className="muted">Approve an initial assessment first (Profile & assessment tab). Goals are built on it.</p>}
       <Err e={ai.error} />
       {note.length > 0 && <div className="card"><L title="Information the AI says is missing" items={note} /></div>}
       {adding && <form className="card grid" onSubmit={add}>
