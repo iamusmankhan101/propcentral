@@ -47,7 +47,7 @@ function fakeAI(t) {
         : u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
         : u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: [], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
         : u.includes('"goals"') ? { goals: [goal], missing_information: ['hearing check'] }
-        : u.includes('"reported_difficulties"') ? { reported_difficulties: ['few words'], demonstrated_abilities: [], strengths: [], areas_needing_further_assessment: [], suggested_questions: [], baseline_methods: [], learning_priorities: [] }
+        : u.includes('"reported_difficulties"') ? { reported_difficulties: 'few words', strengths: null, demonstrated_abilities: [], strengths: [], areas_needing_further_assessment: [], suggested_questions: [], baseline_methods: [], learning_priorities: [] }
         : u.includes('"learning_objective"') ? { title: 'Lesson', learning_objective: 'obj', steps: ['s'] }
         : { possible_reasons: ['r'], alternative_methods: ['m'], different_from_before: 'd' }
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(out) } }] }))
@@ -89,6 +89,9 @@ test('therapy: assessment -> goals -> lesson -> session -> intervention -> revie
   const get = async () => J(await call(base, 'GET', `/therapy/children/${id}`, a))
 
   const aid = (await J(await call(base, 'POST', `/therapy/children/${id}/assessment`, a, { text: 'says only I food' }))).id
+  const draftA = (await get()).assessments[0].result
+  assert.deepEqual(draftA.reported_difficulties, ['few words'], 'a string from the AI becomes a list')
+  assert.deepEqual(draftA.strengths, [], 'null becomes an empty list')
   assert.equal((await call(base, 'POST', `/therapy/children/${id}/goals/generate`, a, {})).status, 400, 'draft assessment is not enough')
   assert.equal((await call(base, 'PATCH', `/therapy/assessments/${aid}`, a, { approve: true })).status, 200)
   const gen = await J(await call(base, 'POST', `/therapy/children/${id}/goals/generate`, a, {}))

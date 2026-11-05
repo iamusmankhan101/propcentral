@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { api, useApi, useAction, formData, go, fmt, shrinkImage, useMeta, downloadBlob } from './api.js'
 import { Select, Status } from './Leads.jsx'
 
-const L = ({ title, items }) => items?.length ? <><h4>{title}</h4><ul>{items.map((x, i) => <li key={i}>{typeof x === 'string' ? x : JSON.stringify(x)}</li>)}</ul></> : null
+// AI text can arrive as a string or null: never call .map on it directly
+const arr = v => (Array.isArray(v) ? v : v ? [v] : [])
+const L = ({ title, items: raw }) => { const items = arr(raw); return items.length ? <><h4>{title}</h4><ul>{items.map((x, i) => <li key={i}>{typeof x === 'string' ? x : JSON.stringify(x)}</li>)}</ul></> : null }
 const Err = ({ e }) => e ? <p className="error">{e}</p> : null
 // 03xx... -> 923xx...; anything else is used as typed (digits only)
 const waLink = (phone, text) => { const d = String(phone).replace(/\D/g, ''); return `https://wa.me/${d.startsWith('0') ? '92' + d.slice(1) : d}?text=${encodeURIComponent(text)}` }
@@ -200,12 +202,12 @@ function Assessment({ a, reload, can }) {
       <p className="muted">{fmt(a.created_at)} · {a.approved ? <b>Approved {ymd(a.approved_at)}</b> : 'Draft: needs professional approval'}</p>
       {edit ? (
         <form onSubmit={saveEdit}>
-          {ASSESS_LISTS.map(([k, l]) => <label key={k}>{l} (one per line)<textarea name={k} rows={3} defaultValue={(r[k] || []).join('\n')} /></label>)}
+          {ASSESS_LISTS.map(([k, l]) => <label key={k}>{l} (one per line)<textarea name={k} rows={3} defaultValue={arr(r[k]).join('\n')} /></label>)}
           <div className="row"><button disabled={busy}>Save edits</button><button type="button" className="ghost" onClick={() => setEdit(false)}>Cancel</button></div>
         </form>
       ) : <>
         {ASSESS_LISTS.map(([k, l]) => <L key={k} title={l} items={r[k]} />)}
-        {r.learning_priorities?.length > 0 && <><h4>Learning priorities</h4><ul>{r.learning_priorities.map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
+        {arr(r.learning_priorities).length > 0 && <><h4>Learning priorities</h4><ul>{arr(r.learning_priorities).map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
       </>}
       <Err e={error} />
       {!a.approved && !edit && <div className="row">{can && <button onClick={() => patch({ approve: true })} disabled={busy}>Approve</button>}<button className="ghost" onClick={() => setEdit(true)}>Edit</button></div>}
@@ -398,7 +400,7 @@ function ReviewCard({ c, goals, onApprove, busy, can }) {
     <div className="card">
       <p className="muted">Quarter {ymd(c.start_date)} → {ymd(c.review_date)} · {c.review_approved_at ? <b>Review approved {ymd(c.review_approved_at)}</b> : 'Draft: needs professional approval'}</p>
       <h4>Goal outcomes</h4>
-      <ul>{r.outcomes?.map((o, i) => <li key={i}><b>{goals.find(g => g.id === o.goal_id)?.target_skill || 'Goal ' + o.goal_id}:</b> {o.outcome}. {o.evidence}</li>)}</ul>
+      <ul>{arr(r.outcomes).map((o, i) => <li key={i}><b>{goals.find(g => g.id === o.goal_id)?.target_skill || 'Goal ' + o.goal_id}:</b> {o.outcome}. {o.evidence}</li>)}</ul>
       <L title="What improved" items={r.developmental_progress?.improved} /><L title="Remaining difficulties" items={r.developmental_progress?.remaining_difficulties} />
       <L title="Strategies that worked" items={r.intervention_analysis?.effective} /><L title="Strategies to modify" items={r.intervention_analysis?.needs_modification} />
       <L title="Next-step recommendations" items={r.next_step_recommendations} /><L title="Missing information" items={r.missing_information} />
@@ -560,7 +562,7 @@ function ReportPage({ r, type, comment }) {
         <p className="muted">Approved {r.assessment.approved_at?.slice(0, 10)} by {r.assessment.approved_by_name}</p>
         <L title="Reported difficulties" items={asm.reported_difficulties} /><L title="Demonstrated abilities" items={asm.demonstrated_abilities} /><L title="Strengths" items={asm.strengths} />
         <L title="Areas needing further assessment" items={asm.areas_needing_further_assessment} /><L title="Baseline methods" items={asm.baseline_methods} />
-        {asm.learning_priorities?.length > 0 && <><h4>Learning priorities</h4><ul>{asm.learning_priorities.map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
+        {arr(asm.learning_priorities).length > 0 && <><h4>Learning priorities</h4><ul>{arr(asm.learning_priorities).map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
       </> : <p className="muted">No approved assessment yet.</p>)}
 
       {(type === 'iep') && (goals.length ? goals.map(g => <div key={g.id} style={{ breakInside: 'avoid', marginBottom: 12 }}>
@@ -579,7 +581,7 @@ function ReportPage({ r, type, comment }) {
 
       {(type === 'quarterly') && (quarter ? <>
         <p className="muted">Quarter {quarter.start_date} to {quarter.review_date} · {quarter.review_approved_at ? `Approved ${quarter.review_approved_at.slice(0, 10)} by ${quarter.approved_by_name}` : 'DRAFT: not yet approved'}</p>
-        <h4>Goal outcomes</h4><ul>{quarter.review.outcomes?.map((o, i) => <li key={i}><b>{gname(o.goal_id)}:</b> {o.outcome}. {o.evidence}</li>)}</ul>
+        <h4>Goal outcomes</h4><ul>{arr(quarter.review.outcomes).map((o, i) => <li key={i}><b>{gname(o.goal_id)}:</b> {o.outcome}. {o.evidence}</li>)}</ul>
         <L title="What improved" items={quarter.review.developmental_progress?.improved} /><L title="Remaining difficulties" items={quarter.review.developmental_progress?.remaining_difficulties} />
         <L title="Effective strategies" items={quarter.review.intervention_analysis?.effective} /><L title="Strategies to modify" items={quarter.review.intervention_analysis?.needs_modification} />
         <L title="Next-step recommendations" items={quarter.review.next_step_recommendations} />
@@ -642,7 +644,7 @@ function PortalChild({ id }) {
       <div className="card"><h3>Quarterly reports</h3>
         {d.reports.length === 0 && <p className="muted">Reports appear after the team approves each three-month review.</p>}
         {d.reports.map(r => <div key={r.id}><p className="muted">{r.start_date} to {r.review_date}</p>
-          <ul>{r.outcomes.map((o, i) => <li key={i}><b>{o.goal}:</b> {o.outcome}</li>)}</ul>
+          <ul>{arr(r.outcomes).map((o, i) => <li key={i}><b>{o.goal}:</b> {o.outcome}</li>)}</ul>
           <L title="What improved" items={r.improved} /><L title="Still working on" items={r.remaining} /><L title="Next steps" items={r.next_steps} /></div>)}</div>
       <div className="card"><h3>Messages & observations</h3>
         <form onSubmit={e => (e.preventDefault(), send('message', e))}><textarea name="body" rows={2} required placeholder="Write to the team, or share something you noticed at home" />

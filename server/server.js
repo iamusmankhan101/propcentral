@@ -2808,7 +2808,24 @@ async function therapyAI(req, task, shape, data, lang) {
         { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] }),
   })
   if (!r.ok) throw err(502, 'The AI is unavailable right now. Try again in a minute.')
-  try { return JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+  let out
+  try { out = JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+  return fixLists(out)
+}
+// Models sometimes answer a list field with one string (or null). Screens and reports expect arrays, so fix the shape once, here.
+const T_STR_LISTS = new Set(['reported_difficulties', 'demonstrated_abilities', 'strengths', 'areas_needing_further_assessment', 'suggested_questions', 'baseline_methods', 'missing_information',
+  'materials', 'steps', 'activities', 'practice_exercises', 'expected_responses', 'alternative_activities', 'home_practice', 'possible_reasons', 'alternative_methods', 'simpler_activities',
+  'visual_or_physical_aids', 'prompting_strategies', 'complexity_changes', 'extra_practice', 'improved', 'remaining_difficulties', 'effective', 'needs_modification', 'next_step_recommendations',
+  'suggestions', 'based_on', 'review_in_3_months_check'])
+const T_OBJ_LISTS = new Set(['learning_priorities', 'outcomes', 'goals', 'next_goals', 'insights', 'if_stuck'])
+function fixLists(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return o
+  for (const k of Object.keys(o)) {
+    if (T_OBJ_LISTS.has(k)) o[k] = Array.isArray(o[k]) ? o[k].filter(x => x && typeof x === 'object') : []
+    else if (T_STR_LISTS.has(k)) o[k] = Array.isArray(o[k]) ? o[k].map(x => (typeof x === 'string' ? x : JSON.stringify(x))) : (o[k] == null || o[k] === '' ? [] : [String(o[k])])
+    else if (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) fixLists(o[k])
+  }
+  return o
 }
 const childFacts = c => ({ name: c.name, age_years: ageOf(c.dob), difficulties: c.difficulties, abilities: c.abilities, strengths: c.strengths,
   history: c.history, communication: c.communication, learning_preferences: c.learning_prefs, sensory_needs: c.sensory, notes: c.notes })
