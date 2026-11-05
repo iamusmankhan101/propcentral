@@ -10,7 +10,8 @@ const ymd = d => (d || '').slice(0, 10) || '—'
 const Stat = ({ label, value }) => <div className="card"><small className="muted">{label}</small><h2 style={{ margin: '4px 0 0' }}>{value ?? '…'}</h2></div>
 
 // ---------- shared page header: same hero + KPI strip as the main dashboard ----------
-const Hero = ({ title, children }) => <div className="hero"><div className="hero-title"><h1>{title}</h1></div>{children}</div>
+// The app already prints the page title above every page except the home one, so the hero + glass KPI strip is only for home
+const isHome = () => (location.hash.replace(/^#/, '').split('?')[0] || '/') === '/'
 
 // ---------- dashboard ----------
 export default function Therapy() {
@@ -18,8 +19,10 @@ export default function Therapy() {
   const kpis = [['Children', dash?.children], ['Active plans', dash?.active_plans], ['Goals in progress', dash?.in_progress], ['Goals achieved', dash?.achieved], ['Waiting for approval', dash?.pending_approval]]
   return (
     <section className="dash">
-      <Hero title="Therapy overview" />
-      <div className="kpis glass">{kpis.map(([l, v]) => <div key={l} className="kpi"><small>{l}</small><b>{v ?? 0}</b></div>)}</div>
+      {isHome()
+        ? <><div className="hero"><div className="hero-title"><h1>Therapy overview</h1></div></div>
+          <div className="kpis glass">{kpis.map(([l, v]) => <div key={l} className="kpi"><small>{l}</small><b>{v ?? 0}</b></div>)}</div></>
+        : <div className="grid" style={{ marginBottom: 18 }}>{kpis.map(([l, v]) => <Stat key={l} label={l} value={v ?? 0} />)}</div>}
       <div className="t-charts">
         <WeeklyChart rows={dash?.charts.weekly} />
         <ProgressDonut rows={dash?.charts.progress} />
@@ -58,10 +61,11 @@ export function TherapyChildren({ query }) {
   const submit = e => { const body = formData(e); body.consent = !!body.consent; run(async () => go('/therapy/' + (await api('/therapy/children', { body })).id)) }
   const shown = kids?.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()))
   return (
-    <section className="dash">
-      <Hero title="Children">
-        <div className="row" style={{ marginTop: 14 }}><button className="glass" onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button></div>
-      </Hero>
+    <section>
+      <div className="row between">
+        <h2>Children {kids && <span className="count">{kids.length}</span>}</h2>
+        <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button>
+      </div>
       {adding && (
         <form className="card grid" onSubmit={submit}>
           <h3 className="wide">New child</h3>
