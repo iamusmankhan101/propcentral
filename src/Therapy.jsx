@@ -100,7 +100,23 @@ export function TherapyChildren({ query }) {
 }
 
 // ---------- one child ----------
-const TABS = [['profile', 'Profile & assessment'], ['goals', 'Goals'], ['lessons', 'Lessons'], ['sessions', 'Sessions'], ['review', '3-month review'], ['home', 'Team, parents & home'], ['reports', 'Reports']]
+const TABS = [['profile', 'About & assessment'], ['goals', 'Goals'], ['lessons', 'Lessons'], ['sessions', 'Sessions'], ['review', '3-month review'], ['home', 'Parents & team'], ['reports', 'Reports']]
+
+// Tells the educator the one thing to do next, from what is already recorded
+function nextStep(d) {
+  const asm = d.assessments, goals = d.goals, approved = goals.filter(g => g.status === 'approved'), proposed = goals.filter(g => g.status === 'proposed')
+  const active = d.cycles.find(c => c.status === 'active'), today = new Date().toISOString().slice(0, 10)
+  if (!asm.length) return { n: 1, text: "Describe the child's difficulties and abilities, and the AI will draft an assessment.", tab: 'profile', go: 'Start assessment' }
+  if (!asm.some(a => a.approved)) return { n: 1, text: 'Read the drafted assessment, edit it if needed, then approve it.', tab: 'profile', go: 'Review assessment' }
+  if (!goals.length) return { n: 2, text: 'Ask the AI to suggest goals for this child.', tab: 'goals', go: 'Suggest goals' }
+  if (proposed.length && d.can_approve) return { n: 2, text: `${proposed.length} suggested goal${proposed.length > 1 ? 's are' : ' is'} waiting. Approve the ones you agree with.`, tab: 'goals', go: 'Review goals' }
+  if (!approved.length) return { n: 2, text: 'Approve at least one goal to begin teaching.', tab: 'goals', go: 'Review goals' }
+  if (!d.lessons.length) return { n: 3, text: 'Create a lesson plan for an approved goal.', tab: 'lessons', go: 'Create lesson' }
+  if (!d.sessions.length) return { n: 4, text: 'After teaching, record how the session went.', tab: 'sessions', go: 'Record session' }
+  if (active && active.review_date <= today) return { n: 5, text: 'The 3-month review is due. The AI will use your recorded sessions.', tab: 'review', go: 'Start review' }
+  return { n: 4, text: 'Keep recording sessions. The review will be ready at the end of the quarter.', tab: 'sessions', go: 'Record session' }
+}
+const STEPS = ['Assessment', 'Goals', 'Lessons', 'Sessions', 'Review']
 
 export function TherapyChild({ id }) {
   const [data, reload, loadError] = useApi('/therapy/children/' + id)
@@ -118,6 +134,7 @@ export function TherapyChild({ id }) {
         <div className="row"><Photo child={child} reload={reload} id={id} /><div><h2>{child.name}</h2><p className="muted">{child.age != null ? child.age + ' years' : 'Age unknown'}{child.guardian && ' · ' + child.guardian}{!child.consent && ' · ⚠ consent not recorded'}</p></div></div>
         <label>AI language<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
       </div>
+      <NextStep d={data} setTab={setTab} />
       <div className="seg">{TABS.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
       {tab === 'profile' && <Profile {...props} />}
       {tab === 'goals' && <Goals {...props} />}
@@ -215,7 +232,10 @@ function Goal({ g, reload, progress, can }) {
           {GOAL_LABELS.map(([k, l]) => <label key={k}>{l}<textarea name={k} rows={2} defaultValue={g[k] || ''} /></label>)}
           <div className="row"><button disabled={busy}>Save</button><button type="button" className="ghost" onClick={() => setEdit(false)}>Cancel</button></div>
         </form>
-      ) : <dl>{GOAL_LABELS.map(([k, l]) => g[k] && <div key={k}><dt className="muted">{l}</dt><dd style={{ margin: '0 0 8px' }}>{g[k]}</dd></div>)}</dl>}
+      ) : <>
+        <p style={{ margin: '8px 0' }}><b>{g.target_skill}</b>{g.current_skill && <><br /><span className="muted">Now: {g.current_skill}</span></>}{g.success_criteria && <><br /><span className="muted">Done when: {g.success_criteria}</span></>}</p>
+        <details><summary className="muted">Why, how to teach it, and how it is measured</summary>
+          <dl>{GOAL_LABELS.filter(([k]) => !['target_skill', 'current_skill', 'success_criteria'].includes(k)).map(([k, l]) => g[k] && <div key={k}><dt className="muted">{l}</dt><dd style={{ margin: '0 0 8px' }}>{g[k]}</dd></div>)}</dl></details></>}
       <Err e={error} />
       {g.status === 'proposed' && !edit && <div className="row">
         {can && <button disabled={busy} onClick={() => patch({ status: 'approved' })}>Approve</button>}
@@ -305,14 +325,17 @@ function Sessions({ data, reload, lang, id }) {
       <form className="card grid" onSubmit={submit}>
         <h3 className="wide">Record a session</h3>
         <label>Date<input name="date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} /></label>
-        <label>Goal addressed<Select name="goal_id" options={approved.map(g => [g.id, g.target_skill])} blank="No specific goal" /></label>
+        <label>Goal addressed<Select name="goal_id" options={approved.map(g => [g.id, g.target_skill])} blank="No specific goal" defaultValue={approved[0]?.id} /></label>
         <label className="wide">Activities performed<textarea name="activities" rows={2} /></label>
         <label className="wide">Child's response<textarea name="response" rows={2} /></label>
-        <label>Trials<input name="trials" type="number" min="0" /></label>
-        <label>Independent correct<input name="independent" type="number" min="0" /></label>
-        <label>Prompted correct<input name="prompted" type="number" min="0" /></label>
-        <label>Level of assistance<Select name="assistance" options={lists.assistance} blank="—" /></label>
         <label>Progress status<Select name="progress" options={lists.progress} blank="No change" /></label>
+        <details className="wide"><summary><b>Add counts (optional)</b> <small className="muted">for charts and reports</small></summary>
+          <div className="grid" style={{ marginTop: 10 }}>
+            <label>Tries<input name="trials" type="number" min="0" /></label>
+            <label>Done alone<input name="independent" type="number" min="0" /></label>
+            <label>Done with help<input name="prompted" type="number" min="0" /></label>
+            <label>Type of help<Select name="assistance" options={lists.assistance} blank="—" /></label>
+          </div></details>
         <label className="wide">Difficulties <small className="muted">(then use "Suggest interventions" on the saved session)</small><textarea name="difficulties" rows={2} /></label>
         <label className="wide">Other observations<textarea name="notes" rows={2} /></label>
         <Err e={rec.error} /><div className="wide row"><button disabled={rec.busy}>Save session</button></div>
@@ -774,6 +797,16 @@ function AreaBars({ rows }) {
             <text x="468" y="16" fontSize="11" fill="var(--muted)">{a.avg} · {a.n}</text></g>)}
         </svg>
       )}
+    </div>
+  )
+}
+
+function NextStep({ d, setTab }) {
+  const n = nextStep(d)
+  return (
+    <div className="card next-step">
+      <ol className="steps" aria-label="Progress">{STEPS.map((t, i) => <li key={t} className={i + 1 === n.n ? 'on' : i + 1 < n.n ? 'done' : ''}><span>{i + 1 < n.n ? '✓' : i + 1}</span>{t}</li>)}</ol>
+      <div className="row between"><p style={{ margin: 0 }}><b>Next:</b> {n.text}</p><button onClick={() => setTab(n.tab)}>{n.go}</button></div>
     </div>
   )
 }
