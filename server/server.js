@@ -366,8 +366,7 @@ function pickPlan(id) {
   return p
 }
 // Accounts that signed up before billing exists have no plan: never locked, never capped.
-// Admins are never locked out either — same reason the permission matrix keeps settings/manage_users off the table.
-const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now() && u.role !== 'admin'
+const trialOver = u => !u.paid_at && !!u.trial_ends_at && u.trial_ends_at < now()
 const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Date.now()) / 864e5))
 // A plan is sold per company, so every cap counts the whole database: no branch or project gets its own allowance.
 const COUNT = {
@@ -789,7 +788,7 @@ app.post('/api/register', async (req, res) => {
   const plan = pickPlan(req.body.plan)
   const trialEnds = trialEndsAt()
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,created_at) VALUES(?,?,?,?,0,1,?,?,?,?)',
-    name, email, phone, 'agent', hash(pass), plan.id, trialEnds, now()).lastInsertRowid
+    name, email, phone, 'admin', hash(pass), plan.id, trialEnds, now()).lastInsertRowid
   audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
   // Generate and store a 32-byte verification token
   const rawToken = crypto.randomBytes(32).toString('hex')
