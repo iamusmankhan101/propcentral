@@ -50,7 +50,9 @@ function Login() {
         return
       }
       if (signup) {
-        const r = await api('/register', { body: { ...body, modules: new FormData(e.target).getAll('modules') } })
+        const modules = new FormData(e.target).getAll('modules')
+        if (!modules.length) throw new Error('Pick at least one module')
+        const r = await api('/register', { body: { ...body, modules } })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
         setNotice(r.email_sent
           ? `Account created! Check ${body.email} for a verification link.`
@@ -110,11 +112,11 @@ function Login() {
             <small className="muted">7-day free trial on every plan. No card.</small>
           </fieldset>}
           {signup && <fieldset className="plan-picker">
-            <legend>Add-on modules</legend>
-            {MODULES.filter(x => x.id !== 'property').map(x => (
-              <label key={x.id}><input type="checkbox" name="modules" value={x.id} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
+            <legend>Your modules</legend>
+            {MODULES.map(x => (
+              <label key={x.id}><input type="checkbox" name="modules" value={x.id} defaultChecked={x.id === 'property'} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
             ))}
-            <small className="muted">Property CRM is included. Change these later in Settings.</small>
+            <small className="muted">Pick at least one. Change these later in Settings.</small>
           </fieldset>}
           {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
           {needCode && (
@@ -498,11 +500,14 @@ export default function App() {
           ['/courses', 'Courses', 'layers', null, 'wide'],
           ['/reports', 'Reports', 'calendar', null, 'wide'],
           ['/commissions', 'Commissions', 'percent', null, 'more'],
+          ...(therapyOn ? THERAPY_NAV : []),
           ['/users', 'Users', 'users', 'manage_users', 'more'],
           ['/settings', 'Settings', 'settings', null, 'more'],
           ['/audit', 'Audit', 'audit', 'audit', 'more'],
         ]
-      : [...NAV, ...(eduOn ? EDU_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
+      : !propertyOn && therapyOn
+        ? [['/', 'Therapy', 'heart', null, 'all'], ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more']]
+        : [...NAV, ...(eduOn ? EDU_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
@@ -518,7 +523,7 @@ export default function App() {
     : projectId && propertyOn ? <Project id={projectId} key={projectId} />
     : allotmentId && propertyOn ? <AllotmentLetter id={allotmentId} key={allotmentId} />
     : {
-        '/': <Dashboard />,
+        '/': !propertyOn && !eduOn && therapyOn ? <Therapy /> : <Dashboard />,
         '/reports': <Reports />,
         '/commissions': <Commissions />,
         '/users': <Users />,
@@ -553,6 +558,7 @@ export default function App() {
   const search = e => {
     const { q } = formData(e)
     if (!propertyOn && eduOn) go('/students?q=' + encodeURIComponent(q))
+    else if (!propertyOn && therapyOn) go('/')
     else go('/leads?q=' + encodeURIComponent(q))
   }
 

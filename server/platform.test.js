@@ -110,18 +110,19 @@ test('the platform switches product modules on for one company at a time', async
   assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['eduction'] })).status, 400, 'unknown module')
 
   assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['edu'] })).status, 200)
-  assert.deepEqual(await modules(coTok), ['property', 'edu'], 'the base CRM stays on whatever the client sends')
+  assert.deepEqual(await modules(coTok), ['edu'], 'modules are separate: edu alone does not bring the property CRM')
 
   const sub = await call(base, 'POST', '/users', coTok, { name: 'Counselor', email: 'counselor@example.com', role: 'agent', password: 'Passw0rd12345' })
   assert.equal(sub.status, 200)
   const subId = (await sub.json()).id
   await call(base, 'POST', `/users/${subId}/activate`, coTok)
   const subTok = await login(base, 'counselor@example.com', 'Passw0rd12345')
-  assert.deepEqual(await modules(subTok), ['property', 'edu'], 'a user added under the company inherits it')
+  assert.deepEqual(await modules(subTok), ['edu'], 'a user added under the company inherits it')
 
   assert.equal((await call(base, 'POST', `/platform/accounts/${subId}/modules`, boss, { modules: ['edu'] })).status, 400, 'a sub-account has no switch of its own')
 
-  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: [] })).status, 200)
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: [] })).status, 400, 'at least one module stays on')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['property'] })).status, 200)
   assert.deepEqual(await modules(subTok), ['property'], 'switching off takes it from the whole company at once')
   assert.deepEqual(await modules(otherAdmin), ['property'], 'and only that company')
 

@@ -38,7 +38,7 @@ export function Users() {
   const patch = (u, body) => run(async () => { await api('/users/' + u.id, { method: 'PATCH', body }); done('Saved') })
   // The platform switches a product module on for a whole company; the setting lives on its main account
   const setModule = (u, id, on) => run(async () => {
-    const other = parseModules(u.modules).filter(x => x !== id && x !== 'property')
+    const other = parseModules(u.modules).filter(x => x !== id)
     await api(`/platform/accounts/${u.id}/modules`, { body: { modules: on ? [...other, id] : other } })
     done(`${u.name}: ${MODULES.find(x => x.id === id)?.name ?? id} ${on ? 'enabled' : 'disabled'}`)
   })
@@ -89,7 +89,7 @@ export function Users() {
                   : u.trial_ends_at ? <small className={u.trial_ends_at < new Date().toISOString() ? 'warn' : 'muted'}><br />Trial to {fmt(u.trial_ends_at).slice(0, 10)}</small> : null}
               </td>
               {isPlatform && <td>{u.owner_id == null
-                ? MODULES.filter(x => x.id !== 'property').map(x => <label key={x.id} className="module-toggle" title={x.blurb}>
+                ? MODULES.map(x => <label key={x.id} className="module-toggle" title={x.blurb}>
                   <input type="checkbox" checked={parseModules(u.modules).includes(x.id)} disabled={busy} onChange={e => setModule(u, x.id, e.target.checked)} />{x.name}
                 </label>)
                 : <small className="muted" title="Set on the main account this user belongs to">inherits</small>}</td>}
@@ -713,7 +713,7 @@ function CompanyModules() {
   return (
     <div className="card">
       <h3>Active Company Modules</h3>
-      <p className="muted">Turn modules on or off for this workspace. The Property CRM is the base and always stays on; the switch that matters here is Student Consultancy.</p>
+      <p className="muted">Turn modules on or off for this workspace. Each module is separate. At least one must stay on.</p>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error">{error}</p>}
       <div className="grid" style={{ marginTop: 12 }}>
@@ -726,7 +726,7 @@ function CompanyModules() {
             <input
               type="checkbox"
               checked={currentModules.includes(mod.id)}
-              disabled={busy || mod.id === 'property'}
+              disabled={busy}
               onChange={e => toggle(mod.id, e.target.checked)}
               style={{ width: 20, height: 20 }}
             />

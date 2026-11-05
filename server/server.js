@@ -796,9 +796,10 @@ app.post('/api/register', async (req, res) => {
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const plan = pickPlan(req.body.plan)
   const trialEnds = trialEndsAt()
-  // optional products the company picked at sign-up; Property CRM is always on (see modulesOf)
-  const picked = Array.isArray(req.body.modules) ? req.body.modules.filter(m => MODULE_IDS.includes(m)) : []
-  const modules = JSON.stringify([...new Set(['property', ...picked])])
+  // products the company picked at sign-up; a request that names none keeps the original default (Property CRM)
+  const picked = Array.isArray(req.body.modules) ? [...new Set(req.body.modules.filter(m => MODULE_IDS.includes(m)))] : ['property']
+  if (!picked.length) throw err(400, 'Pick at least one module')
+  const modules = JSON.stringify(picked)
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,created_at) VALUES(?,?,?,?,0,1,?,?,?,?,?)',
     name, email, phone, 'admin', hash(pass), plan.id, trialEnds, modules, now()).lastInsertRowid
   audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
@@ -1630,8 +1631,8 @@ app.post('/api/platform/accounts/:id/modules', platformOnly, (req, res) => {
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}. Choose from ${MODULE_IDS.join(', ')}`)
-  // the base CRM is never switched off, whatever the console sends: whole sections of the app key off it
-  const list = [...new Set(['property', ...req.body.modules])]
+  const list = [...new Set(req.body.modules)]
+  if (!list.length) throw err(400, 'Pick at least one module')
   run('UPDATE users SET modules=? WHERE id=?', JSON.stringify(list), acct.id)
   for (const u of all("SELECT id FROM users WHERE (id=? OR owner_id=?) AND role='admin' AND active=1", acct.id, acct.id))
     notify(u.id, list.includes('edu') ? 'The Student Consultancy module is now enabled for your account.' : 'The Student Consultancy module was disabled for your account.', null)
@@ -1645,7 +1646,8 @@ app.post('/api/company/modules', (req, res) => {
   if (!Array.isArray(req.body.modules)) throw err(400, 'Send the modules as a list')
   const unknown = req.body.modules.filter(m => !MODULE_IDS.includes(m))
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}`)
-  const list = [...new Set(['property', ...req.body.modules.filter(m => MODULE_IDS.includes(m))])]
+  const list = [...new Set(req.body.modules)]
+  if (!list.length) throw err(400, 'At least one module must remain enabled')
 
   const targetId = req.user.owner_id ?? req.user.id
   run('UPDATE users SET modules=? WHERE id=? OR owner_id=?', JSON.stringify(list), targetId, targetId)
