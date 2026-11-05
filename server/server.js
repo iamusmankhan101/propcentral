@@ -171,13 +171,26 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     user_id INTEGER, type TEXT NOT NULL, outcome TEXT, notes TEXT, next_action TEXT, next_action_at TEXT, created_at TEXT NOT NULL)`)
   db.exec('CREATE INDEX IF NOT EXISTS edu_activities_student ON edu_activities(student_id)')
 
-  // Special Needs Therapy: a child, and one AI-drafted 3-month plan per review. outcome is what happened
-  // when that plan ran; the next plan reads it, which is how the guidance moves forward.
+  // Special Needs Therapy. The AI only drafts: assessments, goals, lessons, interventions and reviews wait for a
+  // professional to approve them, and approved goals/assessments are kept as history, never rewritten.
   db.exec(`CREATE TABLE IF NOT EXISTS therapy_children(id INTEGER PRIMARY KEY, name TEXT NOT NULL, age TEXT, notes TEXT,
     created_by INTEGER NOT NULL, created_at TEXT NOT NULL)`)
-  db.exec(`CREATE TABLE IF NOT EXISTS therapy_plans(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id),
-    area TEXT NOT NULL, current_level TEXT NOT NULL, concerns TEXT, plan TEXT NOT NULL, outcome TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
-  db.exec('CREATE INDEX IF NOT EXISTS therapy_plans_child ON therapy_plans(child_id)')
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_assessments(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id),
+    input TEXT, result TEXT NOT NULL, approved INTEGER DEFAULT 0, approved_by INTEGER, approved_at TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
+  // a cycle is one three-month plan: draft (goals proposed) -> active (a goal approved) -> closed (review approved)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_cycles(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id),
+    start_date TEXT NOT NULL, review_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', review TEXT, review_approved_by INTEGER, review_approved_at TEXT, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_goals(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id), cycle_id INTEGER,
+    area TEXT, kind TEXT DEFAULT 'three_month', current_skill TEXT, target_skill TEXT, rationale TEXT, prerequisites TEXT, teaching TEXT, activities TEXT,
+    success_criteria TEXT, measure TEXT, timeframe TEXT, priority TEXT, status TEXT NOT NULL DEFAULT 'proposed', progress TEXT DEFAULT 'Not introduced',
+    source TEXT, approved_by INTEGER, approved_at TEXT, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_sessions(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id), goal_id INTEGER,
+    date TEXT NOT NULL, educator_id INTEGER, area TEXT, activities TEXT, response TEXT, trials INTEGER, independent INTEGER, prompted INTEGER, assistance TEXT,
+    difficulties TEXT, notes TEXT, progress TEXT, analysis TEXT, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_lessons(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id), goal_id INTEGER,
+    kind TEXT, content TEXT NOT NULL, created_by INTEGER, created_at TEXT NOT NULL)`)
+  db.exec('CREATE INDEX IF NOT EXISTS therapy_goals_child ON therapy_goals(child_id, status)')
+  db.exec('CREATE INDEX IF NOT EXISTS therapy_sessions_child ON therapy_sessions(child_id, date)')
 
   // The catalog a counsellor sells from, shared by the whole company, and the applications that hang off it.
   // One student applies to several universities, so an application is its own record keyed on student + course.
@@ -230,6 +243,17 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'trial_ends_at', 'TEXT')
     addColumn('users', 'owner_id', 'INTEGER') // NULL = main account (a sign-up); else the main account this user was added under
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
+    addColumn('therapy_children', 'dob', 'TEXT')
+    addColumn('therapy_children', 'guardian', 'TEXT')
+    addColumn('therapy_children', 'guardian_phone', 'TEXT')
+    addColumn('therapy_children', 'difficulties', 'TEXT')
+    addColumn('therapy_children', 'abilities', 'TEXT')
+    addColumn('therapy_children', 'strengths', 'TEXT')
+    addColumn('therapy_children', 'history', 'TEXT')
+    addColumn('therapy_children', 'communication', 'TEXT')
+    addColumn('therapy_children', 'learning_prefs', 'TEXT')
+    addColumn('therapy_children', 'sensory', 'TEXT')
+    addColumn('therapy_children', 'consent', 'INTEGER DEFAULT 0')
     addColumn('users', 'modules', 'TEXT') // JSON array of product modules this company can use; NULL = property only
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     // Visa tracking fields on edu_students
@@ -2725,71 +2749,280 @@ app.delete('/api/media/:id', (req, res) => {
 // ---------- Special Needs Therapy module ----------
 // Same two gates as edu: module switched on for the company, then the role's `therapy` permission.
 // A child belongs to the company of whoever added them (accountWhere), so companies never see each other's.
+// The AI only ever *proposes*: assessments, goals, lessons, interventions and reviews are saved as drafts
+// that a professional approves. Approved goals are never rewritten by the AI.
 const therapyGuard = (req, _res, next) => (modulesOf(req.user).includes('therapy') && can(req.user, 'therapy')
   ? next() : next(err(403, 'Special Needs Therapy is not enabled for your account')))
-const THERAPY_AREAS = ['speech', 'behavior', 'motor', 'social']
+const T_AREAS = ['Speech and language', 'Cognitive development', 'Social development', 'Emotional development', 'Behavioural development',
+  'Fine motor skills', 'Gross motor skills', 'Self-care and daily living', 'Academic readiness', 'Communication and AAC']
+const T_PROGRESS = ['Not introduced', 'Emerging', 'Developing', 'Progressing', 'Achieved', 'Requires reassessment']
+const T_ASSIST = ['Independent', 'Gestural prompt', 'Verbal prompt', 'Model', 'Partial physical', 'Full physical']
+const CHILD_FIELDS = ['name', 'dob', 'guardian', 'guardian_phone', 'difficulties', 'abilities', 'strengths', 'history', 'communication', 'learning_prefs', 'sensory', 'notes', 'consent']
 const therapyChild = (u, id) => {
   const [w, p] = accountWhere('c', u)
   const c = one(`SELECT c.* FROM therapy_children c WHERE c.id=? AND ${w}`, +id, ...p)
   if (!c) throw err(404, 'Child not found')
   return c
 }
-const THERAPY_SYSTEM = `You are an experienced special-education and speech-language therapy planning assistant supporting a therapist or parent.
-Given a child's profile, area, current level and past 3-month reviews, propose the NEXT 3-month plan: move the child exactly one small step beyond the current level (e.g. if the child says "I food", target 2-3 word phrases like "I want food", then expand).
-Be concrete and practical. Use simple, evidence-based approaches (modeling, expansion, prompt fading, visual supports, routines, reinforcement, task analysis, AAC as support). Never diagnose. If something looks like a medical or safety concern, say to consult a specialist.
-If a previous review shows the goal was not met, change the approach: break the step smaller, change prompts/reinforcers/setting, and explain why.
-Reply with JSON only: {"summary":str,"next_goal":str,"steps":[str],"activities":[str],"home_practice":[str],"if_stuck":[{"problem":str,"try":str}],"review_in_3_months_check":[str]}`
-const therapyPlan = r => ({ ...r, plan: JSON.parse(r.plan) })
-app.get('/api/therapy/children', therapyGuard, (req, res) => {
-  const [w, p] = accountWhere('c', req.user)
-  res.json(all(`SELECT c.id, c.name, c.age, c.created_at,
-    (SELECT count(*) FROM therapy_plans t WHERE t.child_id=c.id) plans,
-    (SELECT max(created_at) FROM therapy_plans t WHERE t.child_id=c.id) last_plan_at,
-    (SELECT area || ': ' || current_level FROM therapy_plans t WHERE t.child_id=c.id ORDER BY id DESC LIMIT 1) last_level
-    FROM therapy_children c WHERE ${w} ORDER BY c.id DESC`, ...p))
-})
-app.post('/api/therapy/children', therapyGuard, (req, res) => {
-  const name = String(req.body.name || '').trim().slice(0, 80)
-  if (!name) throw err(400, 'Name is required')
-  const id = run('INSERT INTO therapy_children(name,age,notes,created_by,created_at) VALUES(?,?,?,?,?)',
-    name, String(req.body.age || '').slice(0, 40), String(req.body.notes || '').slice(0, 2000), req.user.id, now()).lastInsertRowid
-  log(req, 'create', 'therapy_child', id, { name })
-  res.json({ id })
-})
-app.get('/api/therapy/children/:id', therapyGuard, (req, res) => {
-  const c = therapyChild(req.user, req.params.id)
-  res.json({ child: c, plans: all('SELECT * FROM therapy_plans WHERE child_id=? ORDER BY id DESC', c.id).map(therapyPlan) })
-})
-app.post('/api/therapy/children/:id/plan', therapyGuard, async (req, res) => {
-  const c = therapyChild(req.user, req.params.id)
+const therapyGoal = (u, id) => {
+  const g = one('SELECT * FROM therapy_goals WHERE id=?', +id)
+  if (!g) throw err(404, 'Goal not found')
+  therapyChild(u, g.child_id)
+  return g
+}
+const j = v => { try { return JSON.parse(v) } catch { return null } }
+const ageOf = dob => dob ? Math.floor((Date.now() - new Date(dob)) / 31557600000) : null
+
+const T_RULES = `You assist special-education professionals; you never replace them.
+Rules: do not diagnose any disability or disorder. Every recommendation needs a short explanation. Say what information is missing. Be individualized to this child. Goals must be measurable (a behaviour, a count or percentage, a prompt level, a setting). Base statements about progress ONLY on the recorded data given; if there is not enough, say "insufficient evidence", never invent progress. Respect prerequisite skills: do not jump to a harder skill because time has passed, only when the recorded evidence shows readiness. If an approach has not worked, propose a different one. Anything medical or safety-related: advise consulting the relevant specialist. Reply with JSON only, matching the requested shape.`
+
+async function therapyAI(req, task, shape, data, lang) {
   const key = process.env.GROQ_API_KEY
-  if (!key) throw err(503, 'The planner is not configured yet (missing GROQ_API_KEY)')
-  rateHit(rateKey('therapy-plan', req.user.id), 20, 3600e3, 'Too many plans requested. Try again later.')
-  const area = req.body.area, current = String(req.body.current || '').trim().slice(0, 500), concerns = String(req.body.concerns || '').trim().slice(0, 1000)
-  if (!THERAPY_AREAS.includes(area)) throw err(400, 'Pick an area')
-  if (!current) throw err(400, 'Say where the child is now')
-  const hist = all('SELECT * FROM therapy_plans WHERE child_id=? AND area=? ORDER BY id DESC LIMIT 3', c.id, area).reverse()
-    .map(r => `${r.created_at.slice(0, 10)}: level="${r.current_level}" goal="${JSON.parse(r.plan).next_goal}" outcome="${r.outcome || 'not reviewed yet'}"`).join('\n')
-  const user = `Child: ${c.name}, age ${c.age || 'unknown'}. Background: ${c.notes || 'none'}\nArea: ${area}\nCurrent level: ${current}\nConcerns: ${concerns || 'none'}\nPast reviews:\n${hist || 'none (first plan)'}\nWrite the plan in ${req.body.lang === 'ur' ? 'Roman Urdu (Urdu written in English letters)' : 'English'}. JSON keys stay in English.`
+  if (!key) throw err(503, 'AI is not configured yet (missing GROQ_API_KEY)')
+  rateHit(rateKey('therapy-ai', req.user.id), 60, 3600e3, 'Too many AI requests this hour. Try again later.')
   const r = await fetch(`${GROQ_URL()}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: THERAPY_SYSTEM }, { role: 'user', content: user }] }),
+      messages: [{ role: 'system', content: T_RULES },
+        { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] }),
   })
-  if (!r.ok) throw err(502, 'The planner is unavailable right now. Try again in a minute.')
-  let plan
-  try { plan = JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The planner gave an unreadable answer. Try again.') }
-  const id = run('INSERT INTO therapy_plans(child_id,area,current_level,concerns,plan,created_by,created_at) VALUES(?,?,?,?,?,?,?)',
-    c.id, area, current, concerns, JSON.stringify(plan), req.user.id, now()).lastInsertRowid
-  log(req, 'plan', 'therapy_child', c.id, { area })
+  if (!r.ok) throw err(502, 'The AI is unavailable right now. Try again in a minute.')
+  try { return JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+}
+const childFacts = c => ({ name: c.name, age_years: ageOf(c.dob), difficulties: c.difficulties, abilities: c.abilities, strengths: c.strengths,
+  history: c.history, communication: c.communication, learning_preferences: c.learning_prefs, sensory_needs: c.sensory, notes: c.notes })
+const sessionFacts = s => ({ date: s.date, goal_id: s.goal_id, activities: s.activities, response: s.response, trials: s.trials,
+  independent_correct: s.independent, prompted_correct: s.prompted, assistance: s.assistance, difficulties: s.difficulties, notes: s.notes, status: s.progress })
+const goalFacts = g => ({ id: g.id, area: g.area, kind: g.kind, current_skill: g.current_skill, target_skill: g.target_skill, success_criteria: g.success_criteria, progress: g.progress, status: g.status })
+
+app.get('/api/therapy/dashboard', therapyGuard, (req, res) => {
+  const [w, p] = accountWhere('c', req.user)
+  const kids = all(`SELECT c.id, c.name FROM therapy_children c WHERE ${w}`, ...p), ids = kids.map(k => k.id)
+  const inIds = `(${ids.map(() => '?').join(',') || 'NULL'})`
+  const goals = all(`SELECT * FROM therapy_goals WHERE child_id IN ${inIds} AND status='approved'`, ...ids)
+  const cycles = all(`SELECT * FROM therapy_cycles WHERE child_id IN ${inIds} AND status='active'`, ...ids)
+  const today = now().slice(0, 10), soon = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10), stale = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10)
+  const name = id => kids.find(k => k.id === id)?.name
+  const lastSession = Object.fromEntries(all(`SELECT child_id, max(date) d FROM therapy_sessions WHERE child_id IN ${inIds} GROUP BY child_id`, ...ids).map(r => [r.child_id, r.d]))
+  // attention flags come from the records themselves, never from a model
+  const flags = [
+    ...goals.filter(g => g.progress === 'Requires reassessment').map(g => ({ child_id: g.child_id, text: `${name(g.child_id)}: goal "${g.target_skill}" needs reassessment` })),
+    ...cycles.filter(c => c.review_date <= soon).map(c => ({ child_id: c.child_id, text: `${name(c.child_id)}: 3-month review ${c.review_date < today ? 'overdue since' : 'due'} ${c.review_date}` })),
+    ...cycles.filter(c => (lastSession[c.child_id] || c.start_date) < stale).map(c => ({ child_id: c.child_id, text: `${name(c.child_id)}: no session recorded in 14+ days` })),
+  ]
+  res.json({
+    children: kids.length, active_plans: cycles.length,
+    in_progress: goals.filter(g => ['Emerging', 'Developing', 'Progressing'].includes(g.progress)).length,
+    achieved: goals.filter(g => g.progress === 'Achieved').length,
+    needs_intervention: goals.filter(g => g.progress === 'Requires reassessment').length,
+    reviews_due: cycles.filter(c => c.review_date <= soon).length,
+    pending_approval: one(`SELECT count(*) n FROM therapy_goals WHERE child_id IN ${inIds} AND status='proposed'`, ...ids).n
+      + one(`SELECT count(*) n FROM therapy_assessments WHERE child_id IN ${inIds} AND approved=0`, ...ids).n,
+    flags,
+    recent: all(`SELECT s.id, s.child_id, c.name child, s.date, s.response, s.progress FROM therapy_sessions s JOIN therapy_children c ON c.id=s.child_id
+      WHERE s.child_id IN ${inIds} ORDER BY s.id DESC LIMIT 6`, ...ids),
+  })
+})
+app.get('/api/therapy/children', therapyGuard, (req, res) => {
+  const [w, p] = accountWhere('c', req.user)
+  res.json(all(`SELECT c.id, c.name, c.dob, c.guardian,
+    (SELECT count(*) FROM therapy_goals g WHERE g.child_id=c.id AND g.status='approved') goals,
+    (SELECT review_date FROM therapy_cycles y WHERE y.child_id=c.id AND y.status='active') review_date,
+    (SELECT max(date) FROM therapy_sessions s WHERE s.child_id=c.id) last_session
+    FROM therapy_children c WHERE ${w} ORDER BY c.id DESC`, ...p).map(c => ({ ...c, age: ageOf(c.dob) })))
+})
+app.post('/api/therapy/children', therapyGuard, (req, res) => {
+  const f = pick(req.body, CHILD_FIELDS)
+  if (!String(f.name || '').trim()) throw err(400, 'Name is required')
+  for (const k of Object.keys(f)) if (typeof f[k] === 'string') f[k] = f[k].slice(0, 2000)
+  f.consent = f.consent ? 1 : 0
+  const cols = [...Object.keys(f), 'created_by', 'created_at']
+  const id = run(`INSERT INTO therapy_children(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), req.user.id, now()).lastInsertRowid
+  log(req, 'create', 'therapy_child', id, { name: f.name })
   res.json({ id })
 })
-app.patch('/api/therapy/plans/:id', therapyGuard, (req, res) => {
-  const t = one('SELECT * FROM therapy_plans WHERE id=?', +req.params.id)
-  if (!t) throw err(404, 'Plan not found')
-  therapyChild(req.user, t.child_id) // account check
-  run('UPDATE therapy_plans SET outcome=? WHERE id=?', String(req.body.outcome || '').slice(0, 1000), t.id)
+app.patch('/api/therapy/children/:id', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const f = pick(req.body, CHILD_FIELDS)
+  for (const k of Object.keys(f)) if (typeof f[k] === 'string') f[k] = f[k].slice(0, 2000)
+  if ('consent' in f) f.consent = f.consent ? 1 : 0
+  if ('name' in f && !String(f.name || '').trim()) throw err(400, 'Name is required')
+  if (Object.keys(f).length) run(`UPDATE therapy_children SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), c.id)
+  log(req, 'update', 'therapy_child', c.id, f)
   res.json({ ok: true })
+})
+app.get('/api/therapy/children/:id', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const ass = r => ({ ...r, result: j(r.result) })
+  res.json({
+    child: { ...c, age: ageOf(c.dob) },
+    assessments: all('SELECT * FROM therapy_assessments WHERE child_id=? ORDER BY id DESC', c.id).map(ass),
+    cycles: all('SELECT * FROM therapy_cycles WHERE child_id=? ORDER BY id DESC', c.id).map(y => ({ ...y, review: j(y.review) })),
+    goals: all('SELECT * FROM therapy_goals WHERE child_id=? ORDER BY id DESC', c.id),
+    lessons: all('SELECT * FROM therapy_lessons WHERE child_id=? ORDER BY id DESC', c.id).map(l => ({ ...l, content: j(l.content) })),
+    sessions: all(`SELECT s.*, u.name educator FROM therapy_sessions s LEFT JOIN users u ON u.id=s.educator_id WHERE s.child_id=? ORDER BY s.date DESC, s.id DESC LIMIT 200`, c.id)
+      .map(s => ({ ...s, analysis: j(s.analysis) })),
+    lists: { areas: T_AREAS, progress: T_PROGRESS, assistance: T_ASSIST },
+  })
+})
+
+// 1. natural-language description -> organised draft assessment, approved (and editable) by a professional
+app.post('/api/therapy/children/:id/assessment', therapyGuard, async (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const text = String(req.body.text || '').trim().slice(0, 4000)
+  if (!text) throw err(400, "Describe the child's difficulties and abilities first")
+  const result = await therapyAI(req, "Organise this educator's description into an initial assessment. Do not diagnose.",
+    '{"reported_difficulties":[str],"demonstrated_abilities":[str],"strengths":[str],"areas_needing_further_assessment":[str],"suggested_questions":[str],"baseline_methods":[str],"learning_priorities":[{"area":str,"priority":str,"why":str}]}',
+    { child: childFacts(c), description: text, previous_assessments: all('SELECT result FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC LIMIT 1', c.id).map(r => j(r.result)) }, req.body.lang)
+  const id = run('INSERT INTO therapy_assessments(child_id,input,result,approved,created_by,created_at) VALUES(?,?,?,0,?,?)', c.id, text, JSON.stringify(result), req.user.id, now()).lastInsertRowid
+  log(req, 'assessment', 'therapy_child', c.id, {})
+  res.json({ id })
+})
+app.patch('/api/therapy/assessments/:id', therapyGuard, (req, res) => {
+  const a = one('SELECT * FROM therapy_assessments WHERE id=?', +req.params.id)
+  if (!a) throw err(404, 'Assessment not found')
+  therapyChild(req.user, a.child_id)
+  if (typeof req.body.result === 'object' && req.body.result && !a.approved) run('UPDATE therapy_assessments SET result=? WHERE id=?', JSON.stringify(req.body.result), a.id)
+  if (req.body.approve && !a.approved) run('UPDATE therapy_assessments SET approved=1, approved_by=?, approved_at=? WHERE id=?', req.user.id, now(), a.id) // history is kept: an approved one is never edited
+  res.json({ ok: true })
+})
+
+// 2/6. goals: AI proposes (status 'proposed'); only a professional approves; approved goals are never regenerated
+function openCycle(childId) {
+  return one("SELECT * FROM therapy_cycles WHERE child_id=? AND status IN ('draft','active') ORDER BY id DESC", childId)
+    || one('SELECT * FROM therapy_cycles WHERE id=?', run('INSERT INTO therapy_cycles(child_id,start_date,review_date,status,created_at) VALUES(?,?,?,?,?)',
+      childId, now().slice(0, 10), new Date(Date.now() + 91 * 864e5).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
+}
+const GOAL_SHAPE = '{"goals":[{"area":str,"kind":"three_month"|"short"|"long","current_skill":str,"target_skill":str,"rationale":str,"prerequisites":str,"teaching":str,"activities":str,"success_criteria":str,"measure":str,"timeframe":str,"priority":"high"|"medium"|"low"}],"missing_information":[str]}'
+const GOAL_ITEM = GOAL_SHAPE.slice(GOAL_SHAPE.indexOf('['), GOAL_SHAPE.indexOf(']}') + 1)
+const insertGoals = (childId, cycleId, goals, source) => goals.slice(0, 12).map(g => run(
+  `INSERT INTO therapy_goals(child_id,cycle_id,area,kind,current_skill,target_skill,rationale,prerequisites,teaching,activities,success_criteria,measure,timeframe,priority,status,progress,source,created_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'proposed','Not introduced',?,?)`,
+  childId, cycleId, String(g.area || '').slice(0, 80), ['long', 'short'].includes(g.kind) ? g.kind : 'three_month',
+  ...['current_skill', 'target_skill', 'rationale', 'prerequisites', 'teaching', 'activities', 'success_criteria', 'measure', 'timeframe', 'priority'].map(k => String(g[k] ?? '').slice(0, 1500)),
+  source, now()).lastInsertRowid)
+app.post('/api/therapy/children/:id/goals/generate', therapyGuard, async (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const ass = one('SELECT result FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC', c.id)
+  if (!ass) throw err(400, 'Approve an initial assessment first: goals are built on it')
+  const cycle = openCycle(c.id)
+  const area = T_AREAS.includes(req.body.area) ? req.body.area : null
+  const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed.`, GOAL_SHAPE,
+    { child: childFacts(c), approved_assessment: j(ass.result), existing_goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts) }, req.body.lang)
+  const ids = insertGoals(c.id, cycle.id, Array.isArray(out.goals) ? out.goals : [], 'ai')
+  log(req, 'goals', 'therapy_child', c.id, { n: ids.length })
+  res.json({ added: ids.length, missing_information: out.missing_information || [] })
+})
+app.post('/api/therapy/children/:id/goals', therapyGuard, (req, res) => { // a professional's own goal
+  const c = therapyChild(req.user, req.params.id)
+  if (!String(req.body.target_skill || '').trim()) throw err(400, 'Say what the target skill is')
+  const cycle = openCycle(c.id)
+  const [id] = insertGoals(c.id, cycle.id, [req.body], 'manual')
+  run("UPDATE therapy_goals SET status='approved', approved_by=?, approved_at=? WHERE id=?", req.user.id, now(), id)
+  run("UPDATE therapy_cycles SET status='active' WHERE id=? AND status='draft'", cycle.id)
+  res.json({ id })
+})
+const GOAL_EDIT = ['area', 'current_skill', 'target_skill', 'rationale', 'prerequisites', 'teaching', 'activities', 'success_criteria', 'measure', 'timeframe', 'priority']
+app.patch('/api/therapy/goals/:id', therapyGuard, (req, res) => {
+  const g = therapyGoal(req.user, req.params.id), f = pick(req.body, GOAL_EDIT)
+  if (g.status === 'approved' && Object.keys(f).length) throw err(400, 'An approved goal is locked. Reject it and add a new one to change it')
+  if (req.body.status !== undefined) {
+    if (!['approved', 'rejected', 'proposed'].includes(req.body.status)) throw err(400, 'Unknown status')
+    if (g.status === 'approved' && req.body.status === 'proposed') throw err(400, 'An approved goal cannot go back to draft')
+    f.status = req.body.status; f.approved_by = req.body.status === 'approved' ? req.user.id : null; f.approved_at = req.body.status === 'approved' ? now() : null
+  }
+  if (req.body.progress !== undefined) {
+    if (!T_PROGRESS.includes(req.body.progress)) throw err(400, 'Unknown progress status')
+    f.progress = req.body.progress
+  }
+  for (const k of Object.keys(f)) if (typeof f[k] === 'string') f[k] = f[k].slice(0, 1500)
+  if (Object.keys(f).length) run(`UPDATE therapy_goals SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), g.id)
+  // approving the first goals starts the quarter
+  if (f.status === 'approved') run("UPDATE therapy_cycles SET status='active' WHERE id=? AND status='draft'", g.cycle_id)
+  log(req, 'goal', 'therapy_goal', g.id, f)
+  res.json({ ok: true })
+})
+
+// 7. lesson plans from an approved goal
+app.post('/api/therapy/goals/:id/lesson', therapyGuard, async (req, res) => {
+  const g = therapyGoal(req.user, req.params.id), c = therapyChild(req.user, g.child_id)
+  if (g.status !== 'approved') throw err(400, 'Lessons are generated from approved goals only')
+  const kind = ['daily', 'weekly', 'monthly'].includes(req.body.kind) ? req.body.kind : 'daily'
+  const recent = all('SELECT * FROM therapy_sessions WHERE goal_id=? ORDER BY id DESC LIMIT 5', g.id).map(sessionFacts)
+  const out = await therapyAI(req, `Write a ${kind} lesson plan for this approved goal, adapted to the recent recorded sessions (if none, say so and keep it introductory).`,
+    '{"title":str,"learning_objective":str,"target_skill":str,"materials":[str],"duration":str,"difficulty":str,"steps":[str],"activities":[str],"practice_exercises":[str],"expected_responses":[str],"alternative_activities":[str],"home_practice":[str],"progress_measurement":str}',
+    { child: childFacts(c), goal: goalFacts(g), teaching_notes: g.teaching, recent_sessions: recent }, req.body.lang)
+  const id = run('INSERT INTO therapy_lessons(child_id,goal_id,kind,content,created_by,created_at) VALUES(?,?,?,?,?,?)', c.id, g.id, kind, JSON.stringify(out), req.user.id, now()).lastInsertRowid
+  res.json({ id })
+})
+app.delete('/api/therapy/lessons/:id', therapyGuard, (req, res) => {
+  const l = one('SELECT * FROM therapy_lessons WHERE id=?', +req.params.id)
+  if (!l) throw err(404, 'Lesson not found')
+  therapyChild(req.user, l.child_id)
+  run('DELETE FROM therapy_lessons WHERE id=?', l.id)
+  res.json({ ok: true })
+})
+
+// 8/9. sessions and interventions
+const INTERVENTION_SHAPE = '{"possible_reasons":[str],"alternative_methods":[str],"simpler_activities":[str],"visual_or_physical_aids":[str],"prompting_strategies":[str],"complexity_changes":[str],"extra_practice":[str],"reassess_when":str,"different_from_before":str}'
+const intOrNull = v => (v === '' || v == null || isNaN(+v) ? null : Math.max(0, Math.min(1000, Math.round(+v))))
+app.post('/api/therapy/children/:id/sessions', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id), b = req.body
+  const goal = b.goal_id ? therapyGoal(req.user, b.goal_id) : null
+  if (goal && goal.child_id !== c.id) throw err(400, 'That goal belongs to another child')
+  if (!String(b.activities || '').trim() && !String(b.response || '').trim()) throw err(400, 'Record what was done or how the child responded')
+  if (b.progress && !T_PROGRESS.includes(b.progress)) throw err(400, 'Unknown progress status')
+  const progress = b.progress || null
+  const date = /^\d{4}-\d\d-\d\d$/.test(b.date || '') ? b.date : now().slice(0, 10)
+  const id = run(`INSERT INTO therapy_sessions(child_id,goal_id,date,educator_id,area,activities,response,trials,independent,prompted,assistance,difficulties,notes,progress,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, c.id, goal?.id ?? null, date, req.user.id, goal?.area || String(b.area || '').slice(0, 80), String(b.activities || '').slice(0, 2000),
+    String(b.response || '').slice(0, 2000), intOrNull(b.trials), intOrNull(b.independent), intOrNull(b.prompted), T_ASSIST.includes(b.assistance) ? b.assistance : null,
+    String(b.difficulties || '').slice(0, 2000), String(b.notes || '').slice(0, 2000), progress, now()).lastInsertRowid
+  if (goal && progress && goal.status === 'approved') run('UPDATE therapy_goals SET progress=? WHERE id=?', progress, goal.id)
+  log(req, 'session', 'therapy_child', c.id, { goal: goal?.id })
+  res.json({ id })
+})
+app.post('/api/therapy/sessions/:id/analyze', therapyGuard, async (req, res) => {
+  const s = one('SELECT * FROM therapy_sessions WHERE id=?', +req.params.id)
+  if (!s) throw err(404, 'Session not found')
+  const c = therapyChild(req.user, s.child_id)
+  const g = s.goal_id ? one('SELECT * FROM therapy_goals WHERE id=?', s.goal_id) : null
+  const history = all('SELECT * FROM therapy_sessions WHERE child_id=? AND goal_id IS ? AND id!=? ORDER BY id DESC LIMIT 6', c.id, s.goal_id, s.id)
+  const out = await therapyAI(req, 'The child had difficulty in this session. Suggest practical step-by-step interventions. If earlier sessions already tried similar approaches (see history), propose a genuinely different approach and say how it differs. Recommend reassessing the goal if there has been no improvement over several sessions.',
+    INTERVENTION_SHAPE, { child: childFacts(c), goal: g && goalFacts(g), session: sessionFacts(s), earlier_sessions: history.map(sessionFacts), earlier_interventions: history.map(h => j(h.analysis)).filter(Boolean) }, req.body.lang)
+  run('UPDATE therapy_sessions SET analysis=? WHERE id=?', JSON.stringify(out), s.id)
+  res.json({ ok: true })
+})
+
+// 10. quarterly review built from recorded sessions only; next goals are proposals for a professional to approve
+app.post('/api/therapy/children/:id/review', therapyGuard, async (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const cycle = one("SELECT * FROM therapy_cycles WHERE child_id=? AND status='active' ORDER BY id DESC", c.id)
+  if (!cycle) throw err(400, 'No active three-month plan to review. Approve some goals first')
+  const goals = all("SELECT * FROM therapy_goals WHERE cycle_id=? AND status='approved'", cycle.id)
+  const sessions = all('SELECT * FROM therapy_sessions WHERE child_id=? AND date>=? ORDER BY date', c.id, cycle.start_date)
+  if (!sessions.length) throw err(400, 'No sessions recorded in this quarter yet, so there is no evidence to review')
+  const evidence = goals.map(g => ({ ...goalFacts(g), sessions: sessions.filter(s => s.goal_id === g.id).map(sessionFacts),
+    interventions: sessions.filter(s => s.goal_id === g.id && s.analysis).map(s => ({ date: s.date, plan: j(s.analysis) })) }))
+  const out = await therapyAI(req, 'Write the three-month review from the recorded evidence only. For each goal give an outcome (Achieved, Partially achieved, Not yet achieved, Insufficient evidence, or Requires reassessment) justified by the records. Then recommend next steps and propose the next three-month goals (no goal that skips an unmet prerequisite).',
+    `{"outcomes":[{"goal_id":int,"outcome":str,"evidence":str}],"developmental_progress":{"improved":[str],"remaining_difficulties":[str]},"intervention_analysis":{"effective":[str],"needs_modification":[str]},"next_step_recommendations":[str],"missing_information":[str],"next_goals":${GOAL_ITEM}}`,
+    { child: childFacts(c), quarter: { start: cycle.start_date, review_date: cycle.review_date, sessions_recorded: sessions.length }, goals: evidence }, req.body.lang)
+  const next = one("SELECT * FROM therapy_cycles WHERE child_id=? AND status='draft'", c.id)
+    || one('SELECT * FROM therapy_cycles WHERE id=?', run('INSERT INTO therapy_cycles(child_id,start_date,review_date,status,created_at) VALUES(?,?,?,?,?)',
+      c.id, cycle.review_date > now().slice(0, 10) ? cycle.review_date : now().slice(0, 10), new Date(Date.now() + 91 * 864e5).toISOString().slice(0, 10), 'draft', now()).lastInsertRowid)
+  insertGoals(c.id, next.id, Array.isArray(out.next_goals) ? out.next_goals : [], 'review')
+  run('UPDATE therapy_cycles SET review=?, review_approved_at=NULL WHERE id=?', JSON.stringify(out), cycle.id)
+  log(req, 'review', 'therapy_child', c.id, {})
+  res.json({ ok: true })
+})
+app.post('/api/therapy/cycles/:id/approve-review', therapyGuard, (req, res) => {
+  const y = one('SELECT * FROM therapy_cycles WHERE id=?', +req.params.id)
+  if (!y) throw err(404, 'Plan not found')
+  therapyChild(req.user, y.child_id)
+  if (!y.review) throw err(400, 'No review to approve')
+  run("UPDATE therapy_cycles SET status='closed', review_approved_by=?, review_approved_at=? WHERE id=?", req.user.id, now(), y.id)
+  log(req, 'approve_review', 'therapy_cycle', y.id, {})
+  res.json({ ok: true }) // the next quarter's draft goals now wait for individual approval
 })
 
 // ---------- Student Consultancy (the edu module) ----------
