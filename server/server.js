@@ -171,6 +171,14 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     user_id INTEGER, type TEXT NOT NULL, outcome TEXT, notes TEXT, next_action TEXT, next_action_at TEXT, created_at TEXT NOT NULL)`)
   db.exec('CREATE INDEX IF NOT EXISTS edu_activities_student ON edu_activities(student_id)')
 
+  // Special Needs Therapy: a child, and one AI-drafted 3-month plan per review. outcome is what happened
+  // when that plan ran; the next plan reads it, which is how the guidance moves forward.
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_children(id INTEGER PRIMARY KEY, name TEXT NOT NULL, age TEXT, notes TEXT,
+    created_by INTEGER NOT NULL, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_plans(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id),
+    area TEXT NOT NULL, current_level TEXT NOT NULL, concerns TEXT, plan TEXT NOT NULL, outcome TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
+  db.exec('CREATE INDEX IF NOT EXISTS therapy_plans_child ON therapy_plans(child_id)')
+
   // The catalog a counsellor sells from, shared by the whole company, and the applications that hang off it.
   // One student applies to several universities, so an application is its own record keyed on student + course.
   db.exec(`CREATE TABLE IF NOT EXISTS edu_universities(id INTEGER PRIMARY KEY, name TEXT NOT NULL, country TEXT NOT NULL, city TEXT,
@@ -313,6 +321,7 @@ const DEFAULTS = {
     properties: ['inventory', 'accounts', 'sales_head', 'admin'],
     // the student consultancy module. Only meaningful for companies the platform has switched Edu on for
     edu: ['agent', ...MGMT, 'owner'],
+    therapy: ['agent', ...MGMT, 'owner'], // Special Needs Therapy module
   },
   // the admission journey, in order. `stage` on edu_students always holds one of these.
   edu_stages: ['New Inquiry', 'Initial Counseling', 'Profile Evaluation', 'Documents Collection', 'University Application', 'Offer Received', 'Fee Payment', 'Visa Processing', 'Visa Decision', 'Enrolled'],
@@ -787,8 +796,11 @@ app.post('/api/register', async (req, res) => {
   if (one('SELECT 1 FROM users WHERE email=?', email)) throw err(400, 'An account with that email already exists')
   const plan = pickPlan(req.body.plan)
   const trialEnds = trialEndsAt()
-  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,created_at) VALUES(?,?,?,?,0,1,?,?,?,?)',
-    name, email, phone, 'admin', hash(pass), plan.id, trialEnds, now()).lastInsertRowid
+  // optional products the company picked at sign-up; Property CRM is always on (see modulesOf)
+  const picked = Array.isArray(req.body.modules) ? req.body.modules.filter(m => MODULE_IDS.includes(m)) : []
+  const modules = JSON.stringify([...new Set(['property', ...picked])])
+  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,created_at) VALUES(?,?,?,?,0,1,?,?,?,?,?)',
+    name, email, phone, 'admin', hash(pass), plan.id, trialEnds, modules, now()).lastInsertRowid
   audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
   // Generate and store a 32-byte verification token
   const rawToken = crypto.randomBytes(32).toString('hex')
@@ -2705,6 +2717,76 @@ app.delete('/api/media/:id', (req, res) => {
   mediaGuard(req.user, m.entity, m.entity_id)
   run('DELETE FROM media WHERE id=?', m.id)
   log(req, 'delete_media', m.entity, m.entity_id, { media_id: m.id, name: m.name })
+  res.json({ ok: true })
+})
+
+// ---------- Special Needs Therapy module ----------
+// Same two gates as edu: module switched on for the company, then the role's `therapy` permission.
+// A child belongs to the company of whoever added them (accountWhere), so companies never see each other's.
+const therapyGuard = (req, _res, next) => (modulesOf(req.user).includes('therapy') && can(req.user, 'therapy')
+  ? next() : next(err(403, 'Special Needs Therapy is not enabled for your account')))
+const THERAPY_AREAS = ['speech', 'behavior', 'motor', 'social']
+const therapyChild = (u, id) => {
+  const [w, p] = accountWhere('c', u)
+  const c = one(`SELECT c.* FROM therapy_children c WHERE c.id=? AND ${w}`, +id, ...p)
+  if (!c) throw err(404, 'Child not found')
+  return c
+}
+const THERAPY_SYSTEM = `You are an experienced special-education and speech-language therapy planning assistant supporting a therapist or parent.
+Given a child's profile, area, current level and past 3-month reviews, propose the NEXT 3-month plan: move the child exactly one small step beyond the current level (e.g. if the child says "I food", target 2-3 word phrases like "I want food", then expand).
+Be concrete and practical. Use simple, evidence-based approaches (modeling, expansion, prompt fading, visual supports, routines, reinforcement, task analysis, AAC as support). Never diagnose. If something looks like a medical or safety concern, say to consult a specialist.
+If a previous review shows the goal was not met, change the approach: break the step smaller, change prompts/reinforcers/setting, and explain why.
+Reply with JSON only: {"summary":str,"next_goal":str,"steps":[str],"activities":[str],"home_practice":[str],"if_stuck":[{"problem":str,"try":str}],"review_in_3_months_check":[str]}`
+const therapyPlan = r => ({ ...r, plan: JSON.parse(r.plan) })
+app.get('/api/therapy/children', therapyGuard, (req, res) => {
+  const [w, p] = accountWhere('c', req.user)
+  res.json(all(`SELECT c.id, c.name, c.age, c.created_at,
+    (SELECT count(*) FROM therapy_plans t WHERE t.child_id=c.id) plans,
+    (SELECT max(created_at) FROM therapy_plans t WHERE t.child_id=c.id) last_plan_at,
+    (SELECT area || ': ' || current_level FROM therapy_plans t WHERE t.child_id=c.id ORDER BY id DESC LIMIT 1) last_level
+    FROM therapy_children c WHERE ${w} ORDER BY c.id DESC`, ...p))
+})
+app.post('/api/therapy/children', therapyGuard, (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 80)
+  if (!name) throw err(400, 'Name is required')
+  const id = run('INSERT INTO therapy_children(name,age,notes,created_by,created_at) VALUES(?,?,?,?,?)',
+    name, String(req.body.age || '').slice(0, 40), String(req.body.notes || '').slice(0, 2000), req.user.id, now()).lastInsertRowid
+  log(req, 'create', 'therapy_child', id, { name })
+  res.json({ id })
+})
+app.get('/api/therapy/children/:id', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  res.json({ child: c, plans: all('SELECT * FROM therapy_plans WHERE child_id=? ORDER BY id DESC', c.id).map(therapyPlan) })
+})
+app.post('/api/therapy/children/:id/plan', therapyGuard, async (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const key = process.env.GROQ_API_KEY
+  if (!key) throw err(503, 'The planner is not configured yet (missing GROQ_API_KEY)')
+  rateHit(rateKey('therapy-plan', req.user.id), 20, 3600e3, 'Too many plans requested. Try again later.')
+  const area = req.body.area, current = String(req.body.current || '').trim().slice(0, 500), concerns = String(req.body.concerns || '').trim().slice(0, 1000)
+  if (!THERAPY_AREAS.includes(area)) throw err(400, 'Pick an area')
+  if (!current) throw err(400, 'Say where the child is now')
+  const hist = all('SELECT * FROM therapy_plans WHERE child_id=? AND area=? ORDER BY id DESC LIMIT 3', c.id, area).reverse()
+    .map(r => `${r.created_at.slice(0, 10)}: level="${r.current_level}" goal="${JSON.parse(r.plan).next_goal}" outcome="${r.outcome || 'not reviewed yet'}"`).join('\n')
+  const user = `Child: ${c.name}, age ${c.age || 'unknown'}. Background: ${c.notes || 'none'}\nArea: ${area}\nCurrent level: ${current}\nConcerns: ${concerns || 'none'}\nPast reviews:\n${hist || 'none (first plan)'}\nWrite the plan in ${req.body.lang === 'ur' ? 'Roman Urdu (Urdu written in English letters)' : 'English'}. JSON keys stay in English.`
+  const r = await fetch(`${GROQ_URL()}/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, response_format: { type: 'json_object' },
+      messages: [{ role: 'system', content: THERAPY_SYSTEM }, { role: 'user', content: user }] }),
+  })
+  if (!r.ok) throw err(502, 'The planner is unavailable right now. Try again in a minute.')
+  let plan
+  try { plan = JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The planner gave an unreadable answer. Try again.') }
+  const id = run('INSERT INTO therapy_plans(child_id,area,current_level,concerns,plan,created_by,created_at) VALUES(?,?,?,?,?,?,?)',
+    c.id, area, current, concerns, JSON.stringify(plan), req.user.id, now()).lastInsertRowid
+  log(req, 'plan', 'therapy_child', c.id, { area })
+  res.json({ id })
+})
+app.patch('/api/therapy/plans/:id', therapyGuard, (req, res) => {
+  const t = one('SELECT * FROM therapy_plans WHERE id=?', +req.params.id)
+  if (!t) throw err(404, 'Plan not found')
+  therapyChild(req.user, t.child_id) // account check
+  run('UPDATE therapy_plans SET outcome=? WHERE id=?', String(req.body.outcome || '').slice(0, 1000), t.id)
   res.json({ ok: true })
 })
 

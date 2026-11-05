@@ -30,6 +30,7 @@ export const limitLine = plan => PLAN_LIMITS.map(w => limitLabel(plan, w)).join(
 export const MODULES = [
   { id: 'property', name: 'Property CRM', blurb: 'Leads, projects, inventory, allotments and collections.' },
   { id: 'edu', name: 'Student Consultancy', blurb: 'Student leads, universities and courses, applications, documents, visas and appointments.', perm: 'edu' },
+  { id: 'therapy', name: 'Special Needs Therapy', blurb: 'Children, 3-month goals, AI next-step plans and what to try when a child is stuck.', perm: 'therapy' },
 ]
 
 export const moduleOf = id => MODULES.find(m => m.id === id) || null

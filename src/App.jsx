@@ -18,10 +18,11 @@ import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
+import Therapy, { TherapyChild } from './Therapy.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
-import { PLANS, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, MODULES, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
 
@@ -49,7 +50,7 @@ function Login() {
         return
       }
       if (signup) {
-        const r = await api('/register', { body })
+        const r = await api('/register', { body: { ...body, modules: new FormData(e.target).getAll('modules') } })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
         setNotice(r.email_sent
           ? `Account created! Check ${body.email} for a verification link.`
@@ -107,6 +108,13 @@ function Login() {
               </label>
             ))}
             <small className="muted">7-day free trial on every plan. No card.</small>
+          </fieldset>}
+          {signup && <fieldset className="plan-picker">
+            <legend>Add-on modules</legend>
+            {MODULES.filter(x => x.id !== 'property').map(x => (
+              <label key={x.id}><input type="checkbox" name="modules" value={x.id} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
+            ))}
+            <small className="muted">Property CRM is included. Change these later in Settings.</small>
           </fieldset>}
           {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
           {needCode && (
@@ -379,6 +387,8 @@ const EDU_NAV = [
   ['/universities', 'Universities', 'book', 'edu', 'wide'], ['/courses', 'Courses', 'layers', 'edu', 'wide'],
 ]
 
+const THERAPY_NAV = [['/therapy', 'Therapy', 'heart', 'therapy', 'all']]
+
 // The platform owner manages sign-ups only, so their whole app is the Users page
 const PLATFORM_NAV = [['/users', 'Accounts', 'users', null, 'all']]
 
@@ -471,6 +481,8 @@ export default function App() {
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
   const eduOn = (meta.me.modules || []).includes('edu') && meta.perms.includes('edu')
   const propertyOn = (meta.me.modules || []).includes('property')
+  const therapyOn = (meta.me.modules || []).includes('therapy') && meta.perms.includes('therapy')
+  const therapyId = therapyOn ? path.match(/^\/therapy\/(\d+)/)?.[1] : null
   const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
   const universityId = eduOn ? path.match(/^\/universities\/(\d+)/)?.[1] : null
 
@@ -490,11 +502,12 @@ export default function App() {
           ['/settings', 'Settings', 'settings', null, 'more'],
           ['/audit', 'Audit', 'audit', 'audit', 'more'],
         ]
-      : eduOn ? [...NAV, ...EDU_NAV] : NAV
+      : [...NAV, ...(eduOn ? EDU_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
     : leadId && propertyOn ? <Lead id={leadId} key={leadId} />
+    : therapyId ? <TherapyChild id={therapyId} key={therapyId} />
     : studentId ? <Student id={studentId} key={studentId} />
     : universityId ? <University id={universityId} key={universityId} />
     : propertyId && propertyOn ? <PropertyPage id={propertyId} key={propertyId} />
@@ -521,6 +534,7 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
+        ...(therapyOn ? { '/therapy': <Therapy /> } : {}),
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
           '/applications': <Applications query={query} key={query} />,
@@ -530,7 +544,7 @@ export default function App() {
         } : {})
       }[path]
     ?? <p>Not found</p>
-  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
+  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : therapyId ? 'Child' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
   const home = path === homePath
 
