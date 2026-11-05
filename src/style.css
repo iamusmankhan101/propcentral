@@ -833,3 +833,16 @@ svg.drawing .plot { pointer-events: none; }
 .module-picker label { flex-wrap: wrap; align-items: flex-start; padding: 14px 16px; }
 .module-picker label > small { flex: 1 0 100%; margin: 2px 0 0 26px; line-height: 1.4; }
 @media (max-width: 480px) { .steps li { font-size: 0; gap: 0; justify-content: center; } .steps li span { font-size: 11px; } }
+
+/* module cards in sign-up step 2 */
+.module-picker { gap: 12px; }
+.module-picker label { display: grid; grid-template-columns: 44px 1fr 22px; align-items: center; gap: 14px; padding: 16px 18px; flex-wrap: nowrap; }
+.module-picker .mod-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: #f1f2f5; color: var(--muted); }
+.module-picker label:has(input:checked) .mod-icon { background: var(--s1); color: #fff; }
+.module-picker .mod-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.module-picker .mod-text b { font-size: 15px; line-height: 1.25; }
+.module-picker .mod-text small { margin: 0; font-size: 13px; line-height: 1.45; font-weight: 500; color: var(--muted); }
+.module-picker label > input { grid-column: 3; grid-row: 1; width: 20px; height: 20px; accent-color: var(--s1); }
+.module-picker > small { grid-column: 1 / -1; }
+.step-nav { display: flex; gap: 10px; }
+.step-nav button:last-child { flex: 1; }

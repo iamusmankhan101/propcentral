@@ -111,7 +111,11 @@ function Login() {
             {step === 1 && <fieldset className="plan-picker module-picker">
               <legend>What will you use Estate Centric for?</legend>
               {MODULES.map(x => (
-                <label key={x.id}><input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setF('module')} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
+                <label key={x.id}>
+                  <span className="mod-icon"><Icon name={{ property: 'building', edu: 'cap', therapy: 'heart' }[x.id] || 'layers'} size={22} /></span>
+                  <span className="mod-text"><b>{x.name}</b><small>{x.blurb}</small></span>
+                  <input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setF('module')} />
+                </label>
               ))}
               <small className="muted">Pick one. You can change it later in Settings.</small>
             </fieldset>}
@@ -162,7 +166,7 @@ function Login() {
             <p className="muted">Nothing is deleted — activate the plan and sign straight back in.</p>
             <a className="button" href={waLink(trial.support, `I'd like to activate my ${planName(trial.plan)} plan on Estate Centric`)} target="_blank" rel="noreferrer">WhatsApp to activate</a>
           </div>}
-          {signup ? <div className="row">
+          {signup ? <div className="row step-nav">
             {step > 0 && <button type="button" className="ghost" onClick={() => { setError(''); setStep(step - 1) }}>Back</button>}
             <button disabled={busy}>{step < 2 ? 'Continue' : busy ? 'Creating…' : 'Create account'}</button>
           </div> : <button disabled={busy}>{forgot ? 'Request reset link' : 'Continue'}</button>}
