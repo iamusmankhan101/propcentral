@@ -18,7 +18,7 @@ import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
-import Therapy, { TherapyChild } from './Therapy.jsx'
+import Therapy, { TherapyChild, ParentPortal, TherapyLibrary } from './Therapy.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -40,9 +40,14 @@ function Login() {
   const [resending, setResending] = useState(false)
   const [resendError, setResendError] = useState('')
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  const switchTo = m => { setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify(''); setResendError('') }
+  // sign-up is three steps; its fields live in state because each step renders only its own inputs
+  const [step, setStep] = useState(0)
+  const [su, setSu] = useState({ name: '', email: '', phone: '', password: '', website: '', module: 'property', plan: 'solo' })
+  const setF = k => e => setSu({ ...su, [k]: e.target.value })
+  const switchTo = m => { setStep(0); setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify(''); setResendError('') }
   const submit = e => {
-    const body = formData(e)
+    if (signup && step < 2) { e.preventDefault(); setError(''); setStep(step + 1); return } // native validation already passed for this step's fields
+    const body = signup ? (e.preventDefault(), su) : formData(e)
     run(async () => {
       if (forgot) {
         await api('/forgot-password', { body: { email: body.email } })
@@ -50,10 +55,9 @@ function Login() {
         return
       }
       if (signup) {
-        const modules = new FormData(e.target).getAll('modules')
-        if (!modules.length) throw new Error('Pick at least one module')
-        const r = await api('/register', { body: { ...body, modules } })
-        setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false)
+        const { module, ...rest } = body
+        const r = await api('/register', { body: { ...rest, modules: [module] } })
+        setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false); setStep(0); setSu({ ...su, password: '' })
         setNotice(r.email_sent
           ? `Account created! Check ${body.email} for a verification link.`
           : `Account created, but the verification email to ${body.email} could not be sent. Sign in and use "Resend verification email".`)
@@ -94,31 +98,40 @@ function Login() {
       <div className="login-side">
         <form className="login" onSubmit={submit}>
           <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Pick the plan that fits your team — every plan starts with a 7-day free trial.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
-          {signup && <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />}
-          {signup && <label>Name<span className="field"><Icon name="users" size={16} /><input name="name" placeholder="Full name" maxLength={80} required autoFocus /></span></label>}
-          <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus={!signup} /></span></label>
-          {signup && <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" placeholder="03xx xxxxxxx" maxLength={30} /></span></label>}
-          {signup && <fieldset className="plan-picker">
-            <legend>Your plan</legend>
-            {PLANS.map(p => (
-              <label key={p.id}>
-                <input type="radio" name="plan" value={p.id} defaultChecked={p.id === 'solo'} />
-                <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
-                <span className="plan-price">PKR {p.monthly.toLocaleString('en-PK')}<small>/mo</small></span>
-                <ul className="plan-limits">{PLAN_LIMITS.map(w => <li key={w}>{limitLabel(p, w)}</li>)}</ul>
-              </label>
-            ))}
-            <small className="muted">7-day free trial on every plan. No card.</small>
-          </fieldset>}
-          {signup && <fieldset className="plan-picker">
-            <legend>Your modules</legend>
-            {MODULES.map(x => (
-              <label key={x.id}><input type="checkbox" name="modules" value={x.id} defaultChecked={x.id === 'property'} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
-            ))}
-            <small className="muted">Pick at least one. Change these later in Settings.</small>
-          </fieldset>}
-          {!forgot && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder={signup ? '10+ characters, letters and numbers' : 'Your password'} minLength={signup ? 10 : undefined} maxLength={200} required autoFocus={signup} /></span></label>}
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Three quick steps. Every plan starts with a 7-day free trial.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
+          {signup && <>
+            <ol className="steps" aria-label="Sign-up progress">{['Your details', 'Product', 'Plan'].map((t, i) => <li key={t} className={i === step ? 'on' : i < step ? 'done' : ''}><span>{i < step ? '✓' : i + 1}</span>{t}</li>)}</ol>
+            {step === 0 && <>
+              <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={su.website} onChange={setF('website')} />
+              <label>Full name<span className="field"><Icon name="users" size={16} /><input name="name" autoComplete="name" placeholder="Full name" maxLength={80} required autoFocus value={su.name} onChange={setF('name')} /></span></label>
+              <label>Work email<span className="field"><Icon name="mail" size={16} /><input name="email" type="email" autoComplete="email" placeholder="mail@example.com" maxLength={254} required value={su.email} onChange={setF('email')} /></span></label>
+              <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" autoComplete="tel" placeholder="03xx xxxxxxx" maxLength={30} value={su.phone} onChange={setF('phone')} /></span></label>
+              <label>Password<span className="field"><Icon name="lock" size={16} /><input name="password" type="password" autoComplete="new-password" placeholder="10+ characters, letters and numbers" minLength={10} maxLength={200} required value={su.password} onChange={setF('password')} /></span></label>
+            </>}
+            {step === 1 && <fieldset className="plan-picker module-picker">
+              <legend>What will you use Estate Centric for?</legend>
+              {MODULES.map(x => (
+                <label key={x.id}><input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setF('module')} /><b>{x.name}</b><small className="muted">{x.blurb}</small></label>
+              ))}
+              <small className="muted">Pick one. You can change it later in Settings.</small>
+            </fieldset>}
+            {step === 2 && <>
+              <fieldset className="plan-picker">
+                <legend>Choose your plan</legend>
+                {PLANS.map(p => (
+                  <label key={p.id}>
+                    <input type="radio" name="plan" value={p.id} checked={su.plan === p.id} onChange={setF('plan')} />
+                    <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
+                    <span className="plan-price">PKR {p.monthly.toLocaleString('en-PK')}<small>/mo</small></span>
+                    <ul className="plan-limits">{PLAN_LIMITS.map(w => <li key={w}>{limitLabel(p, w)}</li>)}</ul>
+                  </label>
+                ))}
+              </fieldset>
+              <p className="muted">{MODULES.find(x => x.id === su.module)?.name} · {PLANS.find(x => x.id === su.plan)?.name} plan · 7-day free trial, no card.</p>
+            </>}
+          </>}
+          {!signup && <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus /></span></label>}
+          {!forgot && !signup && <label>Password<span className="field"><Icon name="lock" size={16} /><input key={mode + email} name="password" type="password" placeholder="Your password" maxLength={200} required /></span></label>}
           {needCode && (
             <label>
               {twoFactorInfo?.method === 'email' ? 'Email verification code' : 'Authenticator code'}
@@ -149,7 +162,10 @@ function Login() {
             <p className="muted">Nothing is deleted — activate the plan and sign straight back in.</p>
             <a className="button" href={waLink(trial.support, `I'd like to activate my ${planName(trial.plan)} plan on Estate Centric`)} target="_blank" rel="noreferrer">WhatsApp to activate</a>
           </div>}
-          <button disabled={busy}>{forgot ? 'Request reset link' : signup ? 'Create account' : 'Continue'}</button>
+          {signup ? <div className="row">
+            {step > 0 && <button type="button" className="ghost" onClick={() => { setError(''); setStep(step - 1) }}>Back</button>}
+            <button disabled={busy}>{step < 2 ? 'Continue' : busy ? 'Creating…' : 'Create account'}</button>
+          </div> : <button disabled={busy}>{forgot ? 'Request reset link' : 'Continue'}</button>}
           {!signup && !forgot && <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('forgot') }}>Forgot password?</a></p>}
           {forgot ? <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('signin') }}>Back to sign in</a></p> : (
             <p className="auth-switch muted">
@@ -482,7 +498,8 @@ export default function App() {
   const propertyId = path.match(/^\/properties\/(\d+)/)?.[1]
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
   const eduOn = (meta.me.modules || []).includes('edu') && meta.perms.includes('edu')
-  const propertyOn = (meta.me.modules || []).includes('property')
+  const isParent = meta.me.role === 'parent'
+  const propertyOn = !isParent && (meta.me.modules || []).includes('property')
   const therapyOn = (meta.me.modules || []).includes('therapy') && meta.perms.includes('therapy')
   const therapyId = therapyOn ? path.match(/^\/therapy\/(\d+)/)?.[1] : null
   const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
@@ -490,6 +507,7 @@ export default function App() {
 
   // If company only has edu, show ONLY edu nav items and common admin/settings (no real estate items)
   const nav = isPlatform ? PLATFORM_NAV
+    : isParent ? [['/', 'My child', 'heart', null, 'all']]
     : !propertyOn && eduOn
       ? [
           ['/', 'Dashboard', 'dashboard', null, 'all'],
@@ -511,6 +529,7 @@ export default function App() {
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
+    : isParent ? <ParentPortal />
     : leadId && propertyOn ? <Lead id={leadId} key={leadId} />
     : therapyId ? <TherapyChild id={therapyId} key={therapyId} />
     : studentId ? <Student id={studentId} key={studentId} />
@@ -539,7 +558,7 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
-        ...(therapyOn ? { '/therapy': <Therapy /> } : {}),
+        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/library': <TherapyLibrary /> } : {}),
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
           '/applications': <Applications query={query} key={query} />,

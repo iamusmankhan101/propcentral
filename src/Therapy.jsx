@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, useApi, useAction, formData, go, fmt } from './api.js'
+import { api, useApi, useAction, formData, go, fmt, shrinkImage, useMeta } from './api.js'
 import { Select, Status } from './Leads.jsx'
 
 const L = ({ title, items }) => items?.length ? <><h4>{title}</h4><ul>{items.map((x, i) => <li key={i}>{typeof x === 'string' ? x : JSON.stringify(x)}</li>)}</ul></> : null
@@ -18,7 +18,8 @@ export default function Therapy() {
     <section>
       <div className="row between">
         <h2>Special Needs Therapy</h2>
-        <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button>
+        <div className="row"><a className="button ghost" href="#/therapy/library">Skills library</a>
+          <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add child'}</button></div>
       </div>
       <p className="muted">AI drafts assessments, goals, lessons and reviews from what you record. A professional approves everything. It never diagnoses.</p>
       <div className="grid">
@@ -46,6 +47,7 @@ export default function Therapy() {
         {dash?.flags.length === 0 && <p className="muted">Nothing flagged. Flags come from your records: reassessment needed, reviews due, no recent sessions.</p>}
         <ul>{dash?.flags.map((f, i) => <li key={i}><a href={'#/therapy/' + f.child_id}>{f.text}</a></li>)}</ul>
       </div>
+      <Insights />
       <Err e={loadError} />
       <div className="card scroll">
         <table>
@@ -67,7 +69,7 @@ export default function Therapy() {
 }
 
 // ---------- one child ----------
-const TABS = [['profile', 'Profile & assessment'], ['goals', 'Goals'], ['lessons', 'Lessons'], ['sessions', 'Sessions'], ['review', '3-month review']]
+const TABS = [['profile', 'Profile & assessment'], ['goals', 'Goals'], ['lessons', 'Lessons'], ['sessions', 'Sessions'], ['review', '3-month review'], ['home', 'Team, parents & home'], ['reports', 'Reports']]
 
 export function TherapyChild({ id }) {
   const [data, reload, loadError] = useApi('/therapy/children/' + id)
@@ -81,7 +83,7 @@ export function TherapyChild({ id }) {
     <section>
       <div className="back-nav"><a className="button soft back-btn" href="#/therapy">← Back to children</a></div>
       <div className="row between">
-        <div><h2>{child.name}</h2><p className="muted">{child.age != null ? child.age + ' years' : 'Age unknown'}{child.guardian && ' · ' + child.guardian}{!child.consent && ' · ⚠ consent not recorded'}</p></div>
+        <div className="row"><Photo child={child} reload={reload} id={id} /><div><h2>{child.name}</h2><p className="muted">{child.age != null ? child.age + ' years' : 'Age unknown'}{child.guardian && ' · ' + child.guardian}{!child.consent && ' · ⚠ consent not recorded'}</p></div></div>
         <label>AI language<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
       </div>
       <div className="seg">{TABS.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
@@ -90,6 +92,8 @@ export function TherapyChild({ id }) {
       {tab === 'lessons' && <Lessons {...props} />}
       {tab === 'sessions' && <Sessions {...props} />}
       {tab === 'review' && <Review {...props} />}
+      {tab === 'home' && <Home {...props} />}
+      {tab === 'reports' && <Reports {...props} />}
     </section>
   )
 }
@@ -122,14 +126,14 @@ function Profile({ data, reload, lang, id }) {
         <Err e={ai.error} />
         <button disabled={ai.busy}>{ai.busy ? 'Organising…' : 'Draft assessment with AI'}</button>
       </form>
-      {assessments.map(a => <Assessment key={a.id} a={a} reload={reload} />)}
+      {assessments.map(a => <Assessment key={a.id} a={a} reload={reload} can={data.can_approve} />)}
     </>
   )
 }
 
 const ASSESS_LISTS = [['reported_difficulties', 'Reported difficulties'], ['demonstrated_abilities', 'Demonstrated abilities'], ['strengths', 'Strengths'],
   ['areas_needing_further_assessment', 'Needs further assessment'], ['suggested_questions', 'Suggested questions'], ['baseline_methods', 'Ways to establish a baseline']]
-function Assessment({ a, reload }) {
+function Assessment({ a, reload, can }) {
   const { run, error, busy } = useAction()
   const [edit, setEdit] = useState(false)
   const r = a.result || {}
@@ -152,7 +156,7 @@ function Assessment({ a, reload }) {
         {r.learning_priorities?.length > 0 && <><h4>Learning priorities</h4><ul>{r.learning_priorities.map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
       </>}
       <Err e={error} />
-      {!a.approved && !edit && <div className="row"><button onClick={() => patch({ approve: true })} disabled={busy}>Approve</button><button className="ghost" onClick={() => setEdit(true)}>Edit</button></div>}
+      {!a.approved && !edit && <div className="row">{can && <button onClick={() => patch({ approve: true })} disabled={busy}>Approve</button>}<button className="ghost" onClick={() => setEdit(true)}>Edit</button></div>}
     </div>
   )
 }
@@ -162,7 +166,7 @@ const GOAL_LABELS = [['current_skill', 'Current skill'], ['target_skill', 'Targe
   ['activities', 'Activities'], ['success_criteria', 'Success criteria'], ['measure', 'How progress is measured'], ['timeframe', 'Timeframe']]
 const KIND = { long: 'Long-term', short: 'Short-term', three_month: '3-month' }
 
-function Goal({ g, reload, progress }) {
+function Goal({ g, reload, progress, can }) {
   const { run, error, busy } = useAction()
   const [edit, setEdit] = useState(false)
   const patch = body => run(async () => { await api('/therapy/goals/' + g.id, { method: 'PATCH', body }); setEdit(false); reload() })
@@ -180,9 +184,9 @@ function Goal({ g, reload, progress }) {
       ) : <dl>{GOAL_LABELS.map(([k, l]) => g[k] && <div key={k}><dt className="muted">{l}</dt><dd style={{ margin: '0 0 8px' }}>{g[k]}</dd></div>)}</dl>}
       <Err e={error} />
       {g.status === 'proposed' && !edit && <div className="row">
-        <button disabled={busy} onClick={() => patch({ status: 'approved' })}>Approve</button>
+        {can && <button disabled={busy} onClick={() => patch({ status: 'approved' })}>Approve</button>}
         <button className="ghost" onClick={() => setEdit(true)}>Edit</button>
-        <button className="ghost" disabled={busy} onClick={() => patch({ status: 'rejected' })}>Reject</button></div>}
+        {can && <button className="ghost" disabled={busy} onClick={() => patch({ status: 'rejected' })}>Reject</button>}</div>}
       {g.status === 'approved' && <label>Progress<Select value={g.progress} options={progress} blank={null} onChange={e => patch({ progress: e.target.value })} /></label>}
     </div>
   )
@@ -211,7 +215,7 @@ function Goals({ data, reload, lang, id }) {
         {GOAL_LABELS.map(([k, l]) => <label key={k} className={k === 'target_skill' ? '' : 'wide'}>{l}{k === 'target_skill' ? ' *' : ''}<input name={k} required={k === 'target_skill'} /></label>)}
         <Err e={manual.error} /><div className="wide row"><button disabled={manual.busy}>Add as approved</button></div></form>}
       {goals.length === 0 && <p className="muted">No goals yet.</p>}
-      {goals.map(g => <Goal key={g.id} g={g} reload={reload} progress={lists.progress} />)}
+      {goals.map(g => <Goal key={g.id} g={g} reload={reload} progress={lists.progress} can={data.can_approve} />)}
     </>
   )
 }
@@ -237,6 +241,7 @@ function Lessons({ data, reload, lang }) {
 function Lesson({ l, goal, reload }) {
   const c = l.content || {}
   const { run, busy } = useAction()
+  const [sent, setSent] = useState(false)
   return (
     <div className="card">
       <div className="row between"><b>{c.title || 'Lesson plan'}</b><span className="muted">{l.kind} · {ymd(l.created_at)}{goal && ' · ' + goal.target_skill}</span></div>
@@ -247,6 +252,7 @@ function Lesson({ l, goal, reload }) {
       <L title="Alternative activities" items={c.alternative_activities} /><L title="Home practice" items={c.home_practice} />
       {c.progress_measurement && <><h4>Measuring progress</h4><p>{c.progress_measurement}</p></>}
       <div className="row"><button className="ghost" onClick={() => window.print()}>Print</button>
+        {c.home_practice?.length > 0 && <button className="ghost" disabled={busy} onClick={() => run(async () => { await api(`/therapy/children/${l.child_id}/homework`, { body: { goal_id: l.goal_id, texts: c.home_practice } }); setSent(true); reload() })}>{sent ? 'Sent to parents ✓' : 'Send home practice to parents'}</button>}
         <button className="ghost" disabled={busy} onClick={() => run(async () => { await api('/therapy/lessons/' + l.id, { method: 'DELETE' }); reload() })}>Delete</button></div>
     </div>
   )
@@ -321,12 +327,12 @@ function Review({ data, reload, lang, id }) {
         <Err e={error} />
         <button onClick={gen} disabled={busy || !active}>{busy ? 'Analysing records…' : 'Generate review & next plan'}</button>
       </div>
-      {reviewed.map(c => <ReviewCard key={c.id} c={c} goals={data.goals} onApprove={() => approve(c.id)} busy={busy} />)}
+      {reviewed.map(c => <ReviewCard key={c.id} c={c} goals={data.goals} onApprove={() => approve(c.id)} busy={busy} can={data.can_approve} />)}
       {draft.length > 0 && <p className="muted">{draft.length} proposed goals for the next quarter are waiting on the Goals tab for individual approval.</p>}
     </>
   )
 }
-function ReviewCard({ c, goals, onApprove, busy }) {
+function ReviewCard({ c, goals, onApprove, busy, can }) {
   const r = c.review
   return (
     <div className="card">
@@ -337,7 +343,280 @@ function ReviewCard({ c, goals, onApprove, busy }) {
       <L title="Strategies that worked" items={r.intervention_analysis?.effective} /><L title="Strategies to modify" items={r.intervention_analysis?.needs_modification} />
       <L title="Next-step recommendations" items={r.next_step_recommendations} /><L title="Missing information" items={r.missing_information} />
       <div className="row"><button className="ghost" onClick={() => window.print()}>Print</button>
-        {!c.review_approved_at && c.status === 'active' && <button onClick={onApprove} disabled={busy}>Approve review & close quarter</button>}</div>
+        {can && !c.review_approved_at && c.status === 'active' && <button onClick={onApprove} disabled={busy}>Approve review & close quarter</button>}</div>
     </div>
+  )
+}
+
+// ---------- photo ----------
+function Photo({ child, reload, id }) {
+  const { run, error } = useAction()
+  const pick = e => { const f = e.target.files[0]; if (f) run(async () => { await api('/therapy/children/' + id, { method: 'PATCH', body: { photo: await shrinkImage(f, 320) } }); reload() }) }
+  return (
+    <label title="Change photo" style={{ cursor: 'pointer' }}>
+      {child.photo ? <img src={child.photo} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover' }} />
+        : <span className="avatar" style={{ display: 'inline-flex', width: 64, height: 64, alignItems: 'center', justifyContent: 'center' }}>{child.name[0]}</span>}
+      <input type="file" accept="image/*" hidden onChange={pick} />{error && <small className="error">{error}</small>}
+    </label>
+  )
+}
+
+// ---------- dashboard AI insights (only when asked) ----------
+function Insights() {
+  const { run, error, busy } = useAction()
+  const [res, setRes] = useState(null)
+  return (
+    <div className="card">
+      <div className="row between"><h3>AI insights</h3>
+        <button className="ghost" disabled={busy} onClick={() => run(async () => setRes(await api('/therapy/dashboard/insights', { body: {} })))}>{busy ? 'Reading records…' : res ? 'Refresh' : 'Generate insights'}</button></div>
+      <p className="muted">Based only on recorded goals and sessions from the last 30 days. Suggestions for a professional to review.</p>
+      <Err e={error} />
+      {res?.insights.length === 0 && <p className="muted">Nothing stands out in the current records.</p>}
+      {res?.insights.map((i, k) => <p key={k}><a href={'#/therapy/' + i.child_id}><b>{i.title}</b></a> <small className="muted">({i.type.replace(/_/g, ' ')})</small><br />{i.why} <i>{i.suggestion}</i></p>)}
+      <L title="Missing information" items={res?.missing_information} />
+    </div>
+  )
+}
+
+// ---------- team, parents, home practice, messages ----------
+function Home({ data, reload, id }) {
+  const m = useMeta()
+  const { staff, staff_options, parents, homework, messages, goals, can_approve } = data
+  const a1 = useAction(), a2 = useAction(), a3 = useAction(), a4 = useAction()
+  const [sel, setSel] = useState(staff.map(x => x.id))
+  const roleName = k => (m.roles || []).find(r => r.key === k)?.label || k
+  return (
+    <>
+      <div className="card">
+        <h3>Assigned team</h3>
+        {staff_options.map(u => <label key={u.id}><input type="checkbox" style={{ width: 'auto' }} disabled={!can_approve} checked={sel.includes(u.id)}
+          onChange={e => setSel(e.target.checked ? [...sel, u.id] : sel.filter(x => x !== u.id))} /> {u.name} <small className="muted">{roleName(u.role)}</small></label>)}
+        <Err e={a1.error} />
+        {can_approve ? <button disabled={a1.busy} onClick={() => a1.run(async () => { await api(`/therapy/children/${id}/staff`, { method: 'PUT', body: { user_ids: sel } }); reload() })}>Save team</button>
+          : <p className="muted">Only a therapist, special educator or admin can change the team.</p>}
+      </div>
+      <div className="card">
+        <h3>Parent / guardian access</h3>
+        {parents.length === 0 && <p className="muted">No parent has portal access yet.</p>}
+        {parents.map(p => <p key={p.id}>{p.name} · {p.email} {can_approve && <button className="ghost" onClick={() => a2.run(async () => { await api(`/therapy/children/${id}/parent/${p.id}`, { method: 'DELETE' }); reload() })}>Remove</button>}</p>)}
+        {can_approve && <form className="grid" onSubmit={e => { const body = formData(e); a2.run(async () => { await api(`/therapy/children/${id}/parent`, { body }); e.target.reset(); reload() }) }}>
+          <label>Name<input name="name" required /></label><label>Email<input name="email" type="email" required /></label>
+          <label>Password<input name="password" type="password" minLength={10} required placeholder="10+ characters" /></label>
+          <div className="wide row"><button disabled={a2.busy}>Give parent access</button></div></form>}
+        <Err e={a2.error} />
+        <p className="muted">Parents see approved goals, progress, reports and home practice. They cannot change professional assessments or plans.</p>
+      </div>
+      <div className="card">
+        <h3>Home practice</h3>
+        <form className="grid" onSubmit={e => { const body = formData(e); a3.run(async () => { await api(`/therapy/children/${id}/homework`, { body }); e.target.reset(); reload() }) }}>
+          <label className="wide">Task<input name="text" required maxLength={600} placeholder="e.g. Name 3 foods at dinner using two words" /></label>
+          <label>Goal<Select name="goal_id" options={goals.filter(g => g.status === 'approved').map(g => [g.id, g.target_skill])} blank="None" /></label>
+          <label>Due<input name="due" type="date" /></label>
+          <div className="wide row"><button disabled={a3.busy}>Assign</button></div></form>
+        <Err e={a3.error} />
+        <ul>{homework.map(h => <li key={h.id}>{h.done_at ? '✓ ' : '○ '}{h.text}{h.due && <small className="muted"> · due {h.due}</small>}{h.done_note && <small className="muted"> · parent: {h.done_note}</small>}
+          {' '}<button className="ghost" onClick={() => a3.run(async () => { await api('/therapy/homework/' + h.id, { method: 'DELETE' }); reload() })}>×</button></li>)}</ul>
+      </div>
+      <div className="card">
+        <h3>Messages with the parent</h3>
+        <form onSubmit={e => { const body = formData(e); a4.run(async () => { await api(`/therapy/children/${id}/messages`, { body }); e.target.reset(); reload() }) }}>
+          <textarea name="body" rows={2} required placeholder="Write to the parent" /><button disabled={a4.busy}>Send</button></form>
+        <Err e={a4.error} />
+        {messages.map(x => <p key={x.id}><b>{x.sender || x.sender_role}</b> <small className="muted">{fmt(x.created_at)}{x.kind === 'observation' && ' · observation from home'}</small><br />{x.body}</p>)}
+      </div>
+    </>
+  )
+}
+
+// ---------- reports (print to PDF) ----------
+const REPORTS = [['assessment', 'Initial assessment'], ['iep', 'Individualized Education Plan'], ['session', 'Daily session report'], ['weekly', 'Weekly progress'],
+  ['monthly', 'Monthly progress'], ['quarterly', 'Quarterly development report'], ['goals', 'Goal achievement'], ['domain', 'Domain-wise development'], ['parent', 'Parent progress report']]
+const RANK = ['Not introduced', 'Emerging', 'Developing', 'Progressing', 'Achieved']
+const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10)
+
+function Reports({ id }) {
+  const [type, setType] = useState('quarterly')
+  const [from, setFrom] = useState(day(30)), [to, setTo] = useState(day(0))
+  const [comment, setComment] = useState('')
+  const pickType = t => { setType(t); if (t === 'weekly') { setFrom(day(7)); setTo(day(0)) } if (t === 'monthly') { setFrom(day(30)); setTo(day(0)) } if (t === 'session') { setFrom(day(0)); setTo(day(0)) } }
+  const [r] = useApi(`/therapy/children/${id}/report?from=${from}&to=${to}`)
+  return (
+    <>
+      <div className="card grid">
+        <label>Report<Select value={type} onChange={e => pickType(e.target.value)} options={REPORTS} blank={null} /></label>
+        {['session', 'weekly', 'monthly'].includes(type) && <><label>From<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>To<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label></>}
+        <label className="wide">Professional comments (printed on the report)<textarea rows={2} value={comment} onChange={e => setComment(e.target.value)} /></label>
+        <div className="wide row"><button onClick={() => window.print()} disabled={!r}>Download PDF (print)</button></div>
+      </div>
+      {!r ? <p className="muted">Loading…</p> : <ReportPage r={r} type={type} comment={comment} />}
+    </>
+  )
+}
+
+// Bars: [{label, value, max}] ; Line: independent % per session
+const Bars = ({ rows }) => (
+  <svg viewBox={`0 0 520 ${rows.length * 26 + 6}`} width="100%" role="img" aria-label="Progress by area">
+    {rows.map((x, i) => <g key={i} transform={`translate(0 ${i * 26})`}>
+      <text x="0" y="16" fontSize="11" fill="currentColor">{x.label.slice(0, 26)}</text>
+      <rect x="190" y="4" width="300" height="14" rx="4" fill="#e5e7eb" /><rect x="190" y="4" width={Math.max(2, 300 * x.value / x.max)} height="14" rx="4" fill="#0d9488" />
+      <text x="496" y="16" fontSize="11" fill="currentColor">{x.text}</text></g>)}
+  </svg>
+)
+const Trend = ({ pts }) => {
+  if (pts.length < 2) return <p className="muted">Not enough sessions with trial counts to draw a trend yet.</p>
+  const W = 520, H = 140, x = i => 30 + i * (W - 50) / (pts.length - 1), y = v => H - 20 - v * (H - 40) / 100
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Independent responses over sessions">
+      {[0, 50, 100].map(v => <g key={v}><line x1="30" x2={W - 10} y1={y(v)} y2={y(v)} stroke="#e5e7eb" /><text x="0" y={y(v) + 4} fontSize="10" fill="currentColor">{v}%</text></g>)}
+      <polyline fill="none" stroke="#0d9488" strokeWidth="2" points={pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')} />
+      {pts.map((p, i) => <circle key={i} cx={x(i)} cy={y(p.v)} r="3" fill="#0d9488"><title>{p.d}: {p.v}%</title></circle>)}
+    </svg>
+  )
+}
+const trend = (sessions, goalId) => sessions.filter(s => s.trials > 0 && s.independent != null && (goalId == null || s.goal_id === goalId)).map(s => ({ d: s.date, v: Math.round(100 * s.independent / s.trials) }))
+
+function ReportPage({ r, type, comment }) {
+  const c = r.child, goals = r.goals.filter(g => g.status === 'approved')
+  const asm = r.assessment?.result
+  const gname = id => r.goals.find(g => g.id === id)?.target_skill || '—'
+  const quarter = r.cycles.find(y => y.review)
+  const areas = [...new Set(goals.map(g => g.area || 'General'))]
+  const domain = areas.map(a => { const gs = goals.filter(g => (g.area || 'General') === a); const avg = gs.reduce((t, g) => t + Math.max(0, RANK.indexOf(g.progress)), 0) / gs.length; return { label: a, value: avg, max: 4, text: `${gs.length} goal${gs.length > 1 ? 's' : ''}` } })
+  const sessions = r.sessions
+  const title = REPORTS.find(x => x[0] === type)[1]
+  return (
+    <div className="card print-area">
+      <h2 style={{ marginBottom: 0 }}>{title}</h2>
+      <p className="muted">{r.organization} · {c.name}{c.age != null && `, ${c.age} years`}{c.guardian && ` · Guardian: ${c.guardian}`} · Generated {r.generated_at.slice(0, 10)} by {r.generated_by}{['session', 'weekly', 'monthly'].includes(type) && ` · ${r.from} to ${r.to}`}</p>
+
+      {type === 'assessment' && (asm ? <>
+        <p className="muted">Approved {r.assessment.approved_at?.slice(0, 10)} by {r.assessment.approved_by_name}</p>
+        <L title="Reported difficulties" items={asm.reported_difficulties} /><L title="Demonstrated abilities" items={asm.demonstrated_abilities} /><L title="Strengths" items={asm.strengths} />
+        <L title="Areas needing further assessment" items={asm.areas_needing_further_assessment} /><L title="Baseline methods" items={asm.baseline_methods} />
+        {asm.learning_priorities?.length > 0 && <><h4>Learning priorities</h4><ul>{asm.learning_priorities.map((x, i) => <li key={i}><b>{x.area}</b> ({x.priority}): {x.why}</li>)}</ul></>}
+      </> : <p className="muted">No approved assessment yet.</p>)}
+
+      {(type === 'iep') && (goals.length ? goals.map(g => <div key={g.id} style={{ breakInside: 'avoid', marginBottom: 12 }}>
+        <h4>{g.target_skill} <small className="muted">({g.kind.replace('_', '-')}, {g.area}, priority {g.priority})</small></h4>
+        <p><b>Now:</b> {g.current_skill}<br /><b>Why:</b> {g.rationale}<br /><b>Teaching:</b> {g.teaching}<br /><b>Success criteria:</b> {g.success_criteria}<br /><b>Measured by:</b> {g.measure} · {g.timeframe}<br />
+          <small className="muted">Approved {g.approved_at?.slice(0, 10)} by {g.approved_by_name}</small></p></div>) : <p className="muted">No approved goals yet.</p>)}
+
+      {['session', 'weekly', 'monthly'].includes(type) && <>
+        {type !== 'session' && <><h4>Independent responses over time</h4><Trend pts={trend(sessions)} /></>}
+        <p>{sessions.length} session{sessions.length === 1 ? '' : 's'} recorded in this period.</p>
+        {sessions.map(s => <p key={s.id} style={{ breakInside: 'avoid' }}><b>{s.date}</b> · {s.educator} · {gname(s.goal_id)}{s.progress && ` · ${s.progress}`}<br />
+          {s.activities && <>Activities: {s.activities}<br /></>}{s.response && <>Response: {s.response}<br /></>}
+          {s.trials != null && <>Trials {s.trials}, independent {s.independent ?? '—'}, prompted {s.prompted ?? '—'}{s.assistance && `, ${s.assistance}`}<br /></>}
+          {s.difficulties && <>Difficulties: {s.difficulties}</>}</p>)}
+      </>}
+
+      {(type === 'quarterly') && (quarter ? <>
+        <p className="muted">Quarter {quarter.start_date} to {quarter.review_date} · {quarter.review_approved_at ? `Approved ${quarter.review_approved_at.slice(0, 10)} by ${quarter.approved_by_name}` : 'DRAFT: not yet approved'}</p>
+        <h4>Goal outcomes</h4><ul>{quarter.review.outcomes?.map((o, i) => <li key={i}><b>{gname(o.goal_id)}:</b> {o.outcome}. {o.evidence}</li>)}</ul>
+        <L title="What improved" items={quarter.review.developmental_progress?.improved} /><L title="Remaining difficulties" items={quarter.review.developmental_progress?.remaining_difficulties} />
+        <L title="Effective strategies" items={quarter.review.intervention_analysis?.effective} /><L title="Strategies to modify" items={quarter.review.intervention_analysis?.needs_modification} />
+        <L title="Next-step recommendations" items={quarter.review.next_step_recommendations} />
+      </> : <p className="muted">No three-month review has been generated yet.</p>)}
+
+      {(type === 'goals') && <table><thead><tr><th>Goal</th><th>Area</th><th>Progress</th><th>Approved</th></tr></thead>
+        <tbody>{goals.map(g => <tr key={g.id}><td>{g.target_skill}</td><td>{g.area}</td><td>{g.progress}</td><td>{g.approved_at?.slice(0, 10)}</td></tr>)}</tbody></table>}
+      {(type === 'goals') && <p>{goals.filter(g => g.progress === 'Achieved').length} of {goals.length} approved goals achieved.</p>}
+
+      {(type === 'domain') && (domain.length ? <><p className="muted">Average progress of approved goals per area (0 = not introduced, 4 = achieved).</p><Bars rows={domain} /></> : <p className="muted">No approved goals yet.</p>)}
+
+      {type === 'parent' && <>
+        <h4>What we are working on</h4>
+        <ul>{goals.map(g => <li key={g.id}><b>{g.target_skill}</b>: {g.progress}</li>)}</ul>
+        <h4>Progress</h4><Trend pts={trend(r.all_sessions)} />
+        <h4>Home practice</h4><ul>{r.homework.map(h => <li key={h.id}>{h.done_at ? '✓' : '○'} {h.text}</li>)}</ul>
+        {quarter?.review_approved_at && <L title="Next steps" items={quarter.review.next_step_recommendations} />}
+      </>}
+
+      {comment && <><h4>Professional comments</h4><p style={{ whiteSpace: 'pre-wrap' }}>{comment}</p></>}
+      <p className="muted"><small>This report supports, and does not replace, professional judgement. It makes no diagnosis.</small></p>
+    </div>
+  )
+}
+
+// ---------- parent portal ----------
+export function ParentPortal() {
+  const [kids, , err0] = useApi('/therapy/portal')
+  const [sel, setSel] = useState(null)
+  const id = sel || kids?.[0]?.id
+  return (
+    <section>
+      <h2>My child</h2>
+      <Err e={err0} />
+      {kids?.length === 0 && <p className="muted">No child is linked to your account yet. Please ask the centre.</p>}
+      {kids?.length > 1 && <div className="seg">{kids.map(k => <button key={k.id} className={k.id === id ? 'on' : ''} onClick={() => setSel(k.id)}>{k.name}</button>)}</div>}
+      {id && <PortalChild id={id} key={id} />}
+    </section>
+  )
+}
+function PortalChild({ id }) {
+  const [d, reload, e0] = useApi('/therapy/portal/' + id)
+  const a1 = useAction(), a2 = useAction()
+  if (e0) return <p className="error">{e0}</p>
+  if (!d) return <p className="muted">Loading…</p>
+  const send = (kind, e) => { const { body } = formData(e); a2.run(async () => { await api(`/therapy/portal/${id}/messages`, { body: { body, kind } }); e.target.reset(); reload() }) }
+  return (
+    <>
+      <div className="row">{d.child.photo && <img src={d.child.photo} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover' }} />}
+        <div><h3>{d.child.name}</h3><p className="muted">{d.child.age != null && d.child.age + ' years'}</p></div></div>
+      <div className="card"><h3>Goals we are working on</h3>
+        {d.goals.length === 0 && <p className="muted">Goals appear here once the team has approved them.</p>}
+        {d.goals.map(g => <p key={g.id}><b>{g.target_skill}</b> <Status s={g.progress} /><br /><span className="muted">{g.area} · now: {g.current_skill} · success: {g.success_criteria}</span></p>)}</div>
+      <div className="card"><h3>Home practice</h3>
+        <Err e={a1.error} />
+        {d.homework.length === 0 && <p className="muted">No tasks assigned.</p>}
+        {d.homework.map(h => <p key={h.id}><label><input type="checkbox" style={{ width: 'auto' }} checked={!!h.done_at}
+          onChange={ev => a1.run(async () => { await api(`/therapy/portal/${id}/homework/${h.id}/done`, { body: { undo: !ev.target.checked } }); reload() })} /> {h.text}</label>
+          {h.due && <small className="muted"> · due {h.due}</small>}</p>)}</div>
+      <div className="card"><h3>Quarterly reports</h3>
+        {d.reports.length === 0 && <p className="muted">Reports appear after the team approves each three-month review.</p>}
+        {d.reports.map(r => <div key={r.id}><p className="muted">{r.start_date} to {r.review_date}</p>
+          <ul>{r.outcomes.map((o, i) => <li key={i}><b>{o.goal}:</b> {o.outcome}</li>)}</ul>
+          <L title="What improved" items={r.improved} /><L title="Still working on" items={r.remaining} /><L title="Next steps" items={r.next_steps} /></div>)}</div>
+      <div className="card"><h3>Messages & observations</h3>
+        <form onSubmit={e => (e.preventDefault(), send('message', e))}><textarea name="body" rows={2} required placeholder="Write to the team, or share something you noticed at home" />
+          <div className="row"><button disabled={a2.busy}>Send message</button>
+            <button type="button" className="ghost" disabled={a2.busy} onClick={e => send('observation', { target: e.target.form, preventDefault() {} })}>Send as observation</button></div></form>
+        <Err e={a2.error} />
+        {d.messages.map(x => <p key={x.id}><b>{x.sender || x.sender_role}</b> <small className="muted">{fmt(x.created_at)}{x.kind === 'observation' && ' · observation'}</small><br />{x.body}</p>)}</div>
+    </>
+  )
+}
+
+// ---------- skills & activity library ----------
+export function TherapyLibrary() {
+  const [f, setF] = useState({ q: '', category: '' })
+  const [d, reload] = useApi('/therapy/skills?' + new URLSearchParams(f))
+  const [open, setOpen] = useState(null)
+  const [adding, setAdding] = useState(false)
+  const { run, error, busy } = useAction()
+  const FIELD = [['description', 'Description'], ['prerequisites', 'Prerequisite skills'], ['behaviours', 'Observable behaviours'], ['assessment', 'Assessment methods'], ['teaching', 'Teaching instructions'],
+    ['activities', 'Activities'], ['materials', 'Required materials'], ['measurement', 'Measurement criteria'], ['alternatives', 'Alternative strategies'], ['refs', 'References']]
+  return (
+    <section>
+      <div className="back-nav"><a className="button soft back-btn" href="#/therapy">← Back to therapy</a></div>
+      <div className="row between"><h2>Skills & activity library</h2><button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add skill'}</button></div>
+      <p className="muted">Starter skills are general teaching guides without external citations. Add your centre's own skills and references. The AI uses this library when it suggests goals.</p>
+      {adding && <form className="card grid" onSubmit={e => { const body = formData(e); run(async () => { await api('/therapy/skills', { body }); setAdding(false); reload() }) }}>
+        <label>Category<Select name="category" options={d?.categories || []} required /></label><label>Name *<input name="name" required /></label>
+        {FIELD.map(([k, l]) => <label key={k} className="wide">{l}<textarea name={k} rows={2} /></label>)}
+        <Err e={error} /><div className="wide row"><button disabled={busy}>Save skill</button></div></form>}
+      <div className="filters">
+        <input placeholder="Search skills…" value={f.q} onChange={e => setF({ ...f, q: e.target.value })} />
+        <Select value={f.category} onChange={e => setF({ ...f, category: e.target.value })} options={d?.categories || []} blank="All categories" />
+      </div>
+      {d?.skills.map(s => (
+        <div key={s.id} className="card">
+          <div className="row between" style={{ cursor: 'pointer' }} onClick={() => setOpen(open === s.id ? null : s.id)}><b>{s.name}</b><span className="muted">{s.category}{s.built_in ? '' : ' · yours'}</span></div>
+          {open === s.id && <>{FIELD.map(([k, l]) => s[k] ? <p key={k}><b>{l}:</b> {s[k]}</p> : null)}
+            {!s.built_in && <button className="ghost" onClick={() => run(async () => { await api('/therapy/skills/' + s.id, { method: 'DELETE' }); reload() })}>Delete</button>}</>}
+        </div>
+      ))}
+      {d?.skills.length === 0 && <p className="muted">No skills match.</p>}
+    </section>
   )
 }

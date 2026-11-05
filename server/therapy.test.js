@@ -43,7 +43,8 @@ function fakeAI(t) {
     let b = ''; req.on('data', d => (b += d)); req.on('end', () => {
       const u = JSON.parse(b).messages[1].content
       const goal = { area: 'Speech and language', kind: 'three_month', current_skill: 'says single words', target_skill: 'two-word phrases', rationale: 'next step', prerequisites: 'single words', teaching: 'model and expand', activities: 'snack time', success_criteria: '8/10 trials', measure: 'trial count', timeframe: '3 months', priority: 'high' }
-      const out = u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: [], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
+      const out = u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
+        : u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: [], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
         : u.includes('"goals"') ? { goals: [goal], missing_information: ['hearing check'] }
         : u.includes('"reported_difficulties"') ? { reported_difficulties: ['few words'], demonstrated_abilities: [], strengths: [], areas_needing_further_assessment: [], suggested_questions: [], baseline_methods: [], learning_priorities: [] }
         : u.includes('"learning_objective"') ? { title: 'Lesson', learning_objective: 'obj', steps: ['s'] }
@@ -132,4 +133,90 @@ test('modules picked at sign-up are saved; unknown ones ignored', async t => {
   await call(base, 'POST', `/users/${main.id}/activate`, boss)
   const token = await login(base, 'pick@example.com')
   assert.equal((await call(base, 'POST', '/therapy/children', token, { name: 'Sara' })).status, 200, 'therapy was on from sign-up')
+})
+
+const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA='
+async function staffUser(base, adminTok, name, email, role) {
+  const r = await J(await call(base, 'POST', '/users', adminTok, { name, email, role, password: 'Passw0rd12345' }))
+  await call(base, 'POST', `/users/${r.id}/activate`, adminTok)
+  return { id: r.id, token: await login(base, email) }
+}
+
+test('therapy: roles, assigned staff, parent portal, home practice, messages', async t => {
+  const base = await boot(t)
+  const admin = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const other = await company(base, 'Clinic B', 'b@example.com', ['therapy'])
+  const kid = (await J(await call(base, 'POST', '/therapy/children', admin, { name: 'Ali' }))).id
+  const kid2 = (await J(await call(base, 'POST', '/therapy/children', admin, { name: 'Sara' }))).id
+  const slt = await staffUser(base, admin, 'Speech T', 'slt@example.com', 'speech_therapist')
+  const agent = await staffUser(base, admin, 'Plain Agent', 'agent@example.com', 'agent')
+
+  assert.equal((await J(await call(base, 'GET', '/therapy/children', slt.token))).length, 0, 'an unassigned therapist sees no children')
+  assert.equal((await call(base, 'GET', `/therapy/children/${kid}`, slt.token)).status, 404)
+  assert.equal((await call(base, 'PUT', `/therapy/children/${kid}/staff`, agent.token, { user_ids: [slt.id] })).status, 404, 'a user outside the child team cannot even see them')
+  assert.equal((await call(base, 'PUT', `/therapy/children/${kid}/staff`, admin, { user_ids: [slt.id] })).status, 200)
+  assert.deepEqual((await J(await call(base, 'GET', '/therapy/children', slt.token))).map(c => c.name), ['Ali'], 'sees only the assigned child')
+  assert.equal((await call(base, 'GET', `/therapy/children/${kid2}`, slt.token)).status, 404)
+
+  // a goal added by a non-approver stays a draft and cannot be approved by them
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/goals`, agent.token, { target_skill: 'x' })).status, 404)
+  const mine = (await J(await call(base, 'POST', `/therapy/children/${kid}/goals`, slt.token, { target_skill: 'two-word phrases', area: 'Speech and language', success_criteria: '8/10' }))).id
+  const draft = (await J(await call(base, 'POST', `/therapy/children/${kid}/goals`, admin, { target_skill: 'ok' }))).id
+  assert.ok(mine && draft)
+  let d = await J(await call(base, 'GET', `/therapy/children/${kid}`, admin))
+  assert.equal(d.goals.find(g => g.id === mine).status, 'approved', 'a professional own goal is approved')
+  assert.equal(d.can_approve, true)
+
+  // photo
+  assert.equal((await call(base, 'PATCH', `/therapy/children/${kid}`, admin, { photo: 'data:text/html;base64,AAAA' })).status, 400)
+  assert.equal((await call(base, 'PATCH', `/therapy/children/${kid}`, admin, { photo: TINY_JPEG })).status, 200)
+
+  // parent portal
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/parent`, agent.token, { name: 'P', email: 'p@example.com', password: 'Passw0rd12345' })).status, 404)
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/parent`, admin, { name: 'Mrs Ali', email: 'mom@example.com', password: 'short' })).status, 400)
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/parent`, admin, { name: 'Mrs Ali', email: 'mom@example.com', password: 'Passw0rd12345' })).status, 200)
+  const mom = await login(base, 'mom@example.com')
+  assert.equal((await call(base, 'GET', '/therapy/children', mom)).status, 403, 'a parent cannot use the professional side')
+  assert.equal((await call(base, 'PATCH', `/therapy/goals/${mine}`, mom, { progress: 'Achieved' })).status, 403, 'nor change goals')
+  assert.equal((await call(base, 'PATCH', `/therapy/goals/${draft}`, admin, { status: 'rejected' })).status, 200)
+  const portal = await J(await call(base, 'GET', `/therapy/portal/${kid}`, mom))
+  assert.deepEqual(portal.goals.map(g => g.target_skill), ['two-word phrases'], 'only approved goals are visible, not rejected ones')
+  assert.equal((await call(base, 'GET', `/therapy/portal/${kid2}`, mom)).status, 404, 'only their own child')
+  const dad = await company(base, 'Elsewhere', 'e@example.com', ['therapy'])
+  assert.equal((await call(base, 'GET', `/therapy/portal/${kid}`, dad)).status, 403, 'not a parent')
+
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/homework`, slt.token, { goal_id: mine, text: 'Name foods at dinner' })).status, 200)
+  const hw = (await J(await call(base, 'GET', `/therapy/portal/${kid}`, mom))).homework[0]
+  assert.equal((await call(base, 'POST', `/therapy/portal/${kid}/homework/${hw.id}/done`, mom, { note: 'did it' })).status, 200)
+  assert.equal((await call(base, 'POST', `/therapy/portal/${kid}/messages`, mom, { body: 'He said "more juice"', kind: 'observation' })).status, 200)
+  d = await J(await call(base, 'GET', `/therapy/children/${kid}`, slt.token))
+  assert.ok(d.homework[0].done_at, 'staff see the task done')
+  assert.equal(d.messages[0].kind, 'observation')
+  assert.equal(d.parents.length, 1)
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/messages`, slt.token, { body: 'Great!' })).status, 200)
+  assert.equal((await J(await call(base, 'GET', `/therapy/portal/${kid}`, mom))).messages.length, 2)
+  void other
+})
+
+test('therapy: reports, skills library, AI insights', async t => {
+  process.env.FAKE_AI = await fakeAI(t)
+  const base = await boot(t)
+  delete process.env.FAKE_AI
+  const a = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const id = (await J(await call(base, 'POST', '/therapy/children', a, { name: 'Ali' }))).id
+  const rep = await J(await call(base, 'GET', `/therapy/children/${id}/report?from=2020-01-01`, a))
+  assert.equal(rep.organization, 'Clinic A'); assert.equal(rep.child.name, 'Ali'); assert.equal(rep.from, '2020-01-01')
+
+  const lib = await J(await call(base, 'GET', '/therapy/skills', a))
+  assert.equal(lib.categories.length, 14); assert.ok(lib.skills.length >= 14)
+  assert.ok((await J(await call(base, 'GET', '/therapy/skills?q=pincer', a))).skills.length >= 1, 'search works')
+  assert.equal((await call(base, 'POST', '/therapy/skills', a, { name: 'x', category: 'bogus' })).status, 400)
+  const sk = (await J(await call(base, 'POST', '/therapy/skills', a, { name: 'My skill', category: 'Self-care' }))).id
+  const b = await company(base, 'Clinic B', 'b@example.com', ['therapy'])
+  assert.equal((await J(await call(base, 'GET', '/therapy/skills?q=My skill', b))).skills.length, 0, "another company's skills stay private")
+  assert.equal((await call(base, 'DELETE', `/therapy/skills/${sk}`, a)).status, 200)
+  assert.equal((await call(base, 'DELETE', '/therapy/skills/b0', a)).status, 404, 'starter skills stay')
+
+  const ins = await J(await call(base, 'POST', '/therapy/dashboard/insights', a, {}))
+  assert.equal(ins.insights.length, 1, 'insights about children outside the company are dropped')
 })

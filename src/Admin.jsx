@@ -516,6 +516,7 @@ const PERMS = [
   ['unit_status', 'Change unit status & allot plots'], ['payments', 'Payments, commissions & dealers'],
   ['edu', 'Student Consultancy', 'Only shows the Edu nav when the platform has switched the module on for this company'],
   ['therapy', 'Special Needs Therapy', 'Only shows the Therapy nav when the platform has switched the module on for this company'],
+  ['therapy_approve', 'Approve therapy plans', 'Approve assessments, goals and reviews, assign staff and invite parents'],
   ['settings', 'Change company settings'], ['manage_users', 'Manage users'], ['audit', 'View audit log'],
 ]
 const LOCKED = ['settings', 'manage_users'] // admins always keep these, so nobody locks themselves out

@@ -814,3 +814,22 @@ svg.drawing .plot { pointer-events: none; }
   .assistant-fab { right: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); }
   .assistant-panel { right: 8px; left: 8px; width: auto; bottom: calc(74px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 120px); }
 }
+
+/* Therapy reports print to PDF: show only the report */
+@media print {
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none; border: 0; }
+}
+
+/* multi-step sign-up */
+.steps { display: flex; gap: 8px; list-style: none; margin: 4px 0 16px; padding: 0; }
+.steps li { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); padding-bottom: 8px; border-bottom: 3px solid #e3e4e8; }
+.steps li span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #e3e4e8; color: #555; font-size: 11px; }
+.steps li.on { color: var(--text); border-color: var(--s1); }
+.steps li.on span, .steps li.done span { background: var(--s1); color: #fff; }
+.steps li.done { border-color: var(--s1); }
+.module-picker { grid-template-columns: 1fr; }
+.module-picker label { flex-wrap: wrap; align-items: flex-start; padding: 14px 16px; }
+.module-picker label > small { flex: 1 0 100%; margin: 2px 0 0 26px; line-height: 1.4; }
+@media (max-width: 480px) { .steps li { font-size: 0; gap: 0; justify-content: center; } .steps li span { font-size: 11px; } }

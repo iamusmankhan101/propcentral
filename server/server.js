@@ -189,6 +189,14 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     difficulties TEXT, notes TEXT, progress TEXT, analysis TEXT, created_at TEXT NOT NULL)`)
   db.exec(`CREATE TABLE IF NOT EXISTS therapy_lessons(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES therapy_children(id), goal_id INTEGER,
     kind TEXT, content TEXT NOT NULL, created_by INTEGER, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_staff(child_id INTEGER NOT NULL, user_id INTEGER NOT NULL, PRIMARY KEY(child_id, user_id))`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_parents(child_id INTEGER NOT NULL, user_id INTEGER NOT NULL, PRIMARY KEY(child_id, user_id))`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_homework(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL, goal_id INTEGER, text TEXT NOT NULL, due TEXT,
+    done_at TEXT, done_note TEXT, created_by INTEGER, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_messages(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL, sender_id INTEGER, sender_role TEXT, kind TEXT DEFAULT 'message',
+    body TEXT NOT NULL, created_at TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS therapy_skills(id INTEGER PRIMARY KEY, category TEXT NOT NULL, name TEXT NOT NULL, description TEXT, prerequisites TEXT, behaviours TEXT,
+    assessment TEXT, teaching TEXT, activities TEXT, materials TEXT, measurement TEXT, alternatives TEXT, refs TEXT, created_by INTEGER NOT NULL, created_at TEXT NOT NULL)`)
   db.exec('CREATE INDEX IF NOT EXISTS therapy_goals_child ON therapy_goals(child_id, status)')
   db.exec('CREATE INDEX IF NOT EXISTS therapy_sessions_child ON therapy_sessions(child_id, date)')
 
@@ -244,6 +252,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'owner_id', 'INTEGER') // NULL = main account (a sign-up); else the main account this user was added under
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
     addColumn('therapy_children', 'dob', 'TEXT')
+    addColumn('therapy_children', 'photo', 'TEXT') // small JPEG data URL, shrunk in the browser
     addColumn('therapy_children', 'guardian', 'TEXT')
     addColumn('therapy_children', 'guardian_phone', 'TEXT')
     addColumn('therapy_children', 'difficulties', 'TEXT')
@@ -307,6 +316,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
 
 // ---------- settings (M22: everything configurable from admin) ----------
 const MGMT = ['team_lead', 'branch_manager', 'sales_head', 'admin']
+const T_PRO = ['special_educator', 'speech_therapist', 'occupational_therapist', 'psychologist'] // Special Needs Therapy professionals
 const DEFAULTS = {
   statuses: ['New', 'Contacted', 'Not Reachable', 'Qualified', 'Visit Scheduled', 'Visit Done', 'Negotiation', 'Booked', 'Lost', 'Junk'],
   closed_statuses: ['Booked', 'Lost', 'Junk'],
@@ -345,7 +355,8 @@ const DEFAULTS = {
     properties: ['inventory', 'accounts', 'sales_head', 'admin'],
     // the student consultancy module. Only meaningful for companies the platform has switched Edu on for
     edu: ['agent', ...MGMT, 'owner'],
-    therapy: ['agent', ...MGMT, 'owner'], // Special Needs Therapy module
+    therapy: ['agent', ...MGMT, 'owner', ...T_PRO], // Special Needs Therapy module
+    therapy_approve: ['admin', 'owner', ...T_PRO], // approve assessments, goals and reviews; assign staff; invite parents
   },
   // the admission journey, in order. `stage` on edu_students always holds one of these.
   edu_stages: ['New Inquiry', 'Initial Counseling', 'Profile Evaluation', 'Documents Collection', 'University Application', 'Offer Received', 'Fee Payment', 'Visa Processing', 'Visa Decision', 'Enrolled'],
@@ -370,6 +381,8 @@ const DEFAULTS = {
 const BUILT_IN_ROLES = [
   ['agent', 'Agent', 'own'], ['team_lead', 'Team lead', 'team'], ['branch_manager', 'Branch manager', 'branch'], ['sales_head', 'Sales head', 'all'],
   ['marketing', 'Marketing', 'all'], ['inventory', 'Inventory', 'none'], ['accounts', 'Accounts', 'none'], ['owner', 'Owner', 'all'], ['admin', 'Admin', 'all'],
+  ['special_educator', 'Special educator', 'none'], ['speech_therapist', 'Speech therapist', 'none'], ['occupational_therapist', 'Occupational therapist', 'none'],
+  ['psychologist', 'Psychologist', 'none'], ['parent', 'Parent / guardian', 'none'],
   ['platform', 'Platform', 'none'],
 ].map(([key, label, access]) => ({ key, label, access, built_in: true }))
 const ACCESS = ['own', 'team', 'branch', 'all', 'none']
@@ -404,7 +417,7 @@ const trialDaysLeft = u => Math.max(0, Math.ceil((new Date(u.trial_ends_at) - Da
 // A plan is sold per company, so every cap counts the whole database: no branch or project gets its own allowance.
 const COUNT = {
   // seats count per main account's tree (it plus the users added under it)
-  users: actor => { const root = actor.owner_id ?? actor.id; return one("SELECT count(*) n FROM users WHERE active=1 AND role!='platform' AND (id=? OR owner_id=?)", root, root).n },
+  users: actor => { const root = actor.owner_id ?? actor.id; return one("SELECT count(*) n FROM users WHERE active=1 AND role NOT IN ('platform','parent') AND (id=? OR owner_id=?)", root, root).n },
   branches: () => one('SELECT count(*) n FROM branches').n,
   projects: () => one('SELECT count(*) n FROM projects').n,
   units: () => one('SELECT count(*) n FROM units').n,
@@ -822,7 +835,8 @@ app.post('/api/register', async (req, res) => {
   const trialEnds = trialEndsAt()
   // products the company picked at sign-up; a request that names none keeps the original default (Property CRM)
   const picked = Array.isArray(req.body.modules) ? [...new Set(req.body.modules.filter(m => MODULE_IDS.includes(m)))] : ['property']
-  if (!picked.length) throw err(400, 'Pick at least one module')
+  if (!picked.length) throw err(400, 'Pick a module')
+  if (picked.length > 1) throw err(400, 'Pick one module to start with. More can be added later in Settings')
   const modules = JSON.stringify(picked)
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,created_at) VALUES(?,?,?,?,0,1,?,?,?,?,?)',
     name, email, phone, 'admin', hash(pass), plan.id, trialEnds, modules, now()).lastInsertRowid
@@ -1146,7 +1160,7 @@ app.get('/api/meta', (req, res) => {
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), ...edu, projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
-    users: all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' ORDER BY name"),
+    users: u.role === 'parent' ? [{ id: u.id, name: u.name, role: u.role, active: 1 }] : all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' ORDER BY name"),
     branches: all('SELECT * FROM branches'), teams: all('SELECT * FROM teams'),
     dealers: all('SELECT id, name, company, active FROM dealers ORDER BY name'),
     roles: roles().map(r => ({ key: r.key, label: r.label })),
@@ -2757,9 +2771,15 @@ const T_AREAS = ['Speech and language', 'Cognitive development', 'Social develop
   'Fine motor skills', 'Gross motor skills', 'Self-care and daily living', 'Academic readiness', 'Communication and AAC']
 const T_PROGRESS = ['Not introduced', 'Emerging', 'Developing', 'Progressing', 'Achieved', 'Requires reassessment']
 const T_ASSIST = ['Independent', 'Gestural prompt', 'Verbal prompt', 'Model', 'Partial physical', 'Full physical']
-const CHILD_FIELDS = ['name', 'dob', 'guardian', 'guardian_phone', 'difficulties', 'abilities', 'strengths', 'history', 'communication', 'learning_prefs', 'sensory', 'notes', 'consent']
-const therapyChild = (u, id) => {
+const CHILD_FIELDS = ['photo', 'name', 'dob', 'guardian', 'guardian_phone', 'difficulties', 'abilities', 'strengths', 'history', 'communication', 'learning_prefs', 'sensory', 'notes', 'consent']
+// everyone but admins/owners sees only the children they added or are assigned to
+const childWhere = u => {
   const [w, p] = accountWhere('c', u)
+  return !['admin', 'owner', 'platform'].includes(u.role) ? [`${w} AND (c.created_by=? OR c.id IN (SELECT child_id FROM therapy_staff WHERE user_id=?))`, [...p, u.id, u.id]] : [w, p]
+}
+const photoOk = v => v == null || (typeof v === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(v) && v.length < 400000)
+const therapyChild = (u, id) => {
+  const [w, p] = childWhere(u)
   const c = one(`SELECT c.* FROM therapy_children c WHERE c.id=? AND ${w}`, +id, ...p)
   if (!c) throw err(404, 'Child not found')
   return c
@@ -2796,7 +2816,7 @@ const sessionFacts = s => ({ date: s.date, goal_id: s.goal_id, activities: s.act
 const goalFacts = g => ({ id: g.id, area: g.area, kind: g.kind, current_skill: g.current_skill, target_skill: g.target_skill, success_criteria: g.success_criteria, progress: g.progress, status: g.status })
 
 app.get('/api/therapy/dashboard', therapyGuard, (req, res) => {
-  const [w, p] = accountWhere('c', req.user)
+  const [w, p] = childWhere(req.user)
   const kids = all(`SELECT c.id, c.name FROM therapy_children c WHERE ${w}`, ...p), ids = kids.map(k => k.id)
   const inIds = `(${ids.map(() => '?').join(',') || 'NULL'})`
   const goals = all(`SELECT * FROM therapy_goals WHERE child_id IN ${inIds} AND status='approved'`, ...ids)
@@ -2824,7 +2844,7 @@ app.get('/api/therapy/dashboard', therapyGuard, (req, res) => {
   })
 })
 app.get('/api/therapy/children', therapyGuard, (req, res) => {
-  const [w, p] = accountWhere('c', req.user)
+  const [w, p] = childWhere(req.user)
   res.json(all(`SELECT c.id, c.name, c.dob, c.guardian,
     (SELECT count(*) FROM therapy_goals g WHERE g.child_id=c.id AND g.status='approved') goals,
     (SELECT review_date FROM therapy_cycles y WHERE y.child_id=c.id AND y.status='active') review_date,
@@ -2834,7 +2854,8 @@ app.get('/api/therapy/children', therapyGuard, (req, res) => {
 app.post('/api/therapy/children', therapyGuard, (req, res) => {
   const f = pick(req.body, CHILD_FIELDS)
   if (!String(f.name || '').trim()) throw err(400, 'Name is required')
-  for (const k of Object.keys(f)) if (typeof f[k] === 'string') f[k] = f[k].slice(0, 2000)
+  if (!photoOk(f.photo)) throw err(400, 'The photo must be a small JPEG')
+  for (const k of Object.keys(f)) if (typeof f[k] === 'string' && k !== 'photo') f[k] = f[k].slice(0, 2000)
   f.consent = f.consent ? 1 : 0
   const cols = [...Object.keys(f), 'created_by', 'created_at']
   const id = run(`INSERT INTO therapy_children(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), req.user.id, now()).lastInsertRowid
@@ -2844,7 +2865,8 @@ app.post('/api/therapy/children', therapyGuard, (req, res) => {
 app.patch('/api/therapy/children/:id', therapyGuard, (req, res) => {
   const c = therapyChild(req.user, req.params.id)
   const f = pick(req.body, CHILD_FIELDS)
-  for (const k of Object.keys(f)) if (typeof f[k] === 'string') f[k] = f[k].slice(0, 2000)
+  if (!photoOk(f.photo)) throw err(400, 'The photo must be a small JPEG')
+  for (const k of Object.keys(f)) if (typeof f[k] === 'string' && k !== 'photo') f[k] = f[k].slice(0, 2000)
   if ('consent' in f) f.consent = f.consent ? 1 : 0
   if ('name' in f && !String(f.name || '').trim()) throw err(400, 'Name is required')
   if (Object.keys(f).length) run(`UPDATE therapy_children SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), c.id)
@@ -2862,6 +2884,11 @@ app.get('/api/therapy/children/:id', therapyGuard, (req, res) => {
     lessons: all('SELECT * FROM therapy_lessons WHERE child_id=? ORDER BY id DESC', c.id).map(l => ({ ...l, content: j(l.content) })),
     sessions: all(`SELECT s.*, u.name educator FROM therapy_sessions s LEFT JOIN users u ON u.id=s.educator_id WHERE s.child_id=? ORDER BY s.date DESC, s.id DESC LIMIT 200`, c.id)
       .map(s => ({ ...s, analysis: j(s.analysis) })),
+    staff: all('SELECT u.id, u.name, u.role FROM therapy_staff s JOIN users u ON u.id=s.user_id WHERE s.child_id=?', c.id),
+    staff_options: staffOptions(req.user),
+    parents: all('SELECT u.id, u.name, u.email FROM therapy_parents p JOIN users u ON u.id=p.user_id WHERE p.child_id=?', c.id),
+    homework: homeworkOf(c.id), messages: messagesOf(c.id),
+    can_approve: can(req.user, 'therapy_approve'),
     lists: { areas: T_AREAS, progress: T_PROGRESS, assistance: T_ASSIST },
   })
 })
@@ -2883,6 +2910,7 @@ app.patch('/api/therapy/assessments/:id', therapyGuard, (req, res) => {
   if (!a) throw err(404, 'Assessment not found')
   therapyChild(req.user, a.child_id)
   if (typeof req.body.result === 'object' && req.body.result && !a.approved) run('UPDATE therapy_assessments SET result=? WHERE id=?', JSON.stringify(req.body.result), a.id)
+  if (req.body.approve) needApprover(req.user)
   if (req.body.approve && !a.approved) run('UPDATE therapy_assessments SET approved=1, approved_by=?, approved_at=? WHERE id=?', req.user.id, now(), a.id) // history is kept: an approved one is never edited
   res.json({ ok: true })
 })
@@ -2907,8 +2935,8 @@ app.post('/api/therapy/children/:id/goals/generate', therapyGuard, async (req, r
   if (!ass) throw err(400, 'Approve an initial assessment first: goals are built on it')
   const cycle = openCycle(c.id)
   const area = T_AREAS.includes(req.body.area) ? req.body.area : null
-  const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed.`, GOAL_SHAPE,
-    { child: childFacts(c), approved_assessment: j(ass.result), existing_goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts) }, req.body.lang)
+  const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed. Where a skill_library entry fits, build on its prerequisites and measurement.`, GOAL_SHAPE,
+    { child: childFacts(c), approved_assessment: j(ass.result), skill_library: skillsFor(req.user).filter(k => !area || CAT_AREA[k.category] === area).slice(0, 14).map(k => ({ category: k.category, name: k.name, prerequisites: k.prerequisites, teaching: k.teaching, measurement: k.measurement })), existing_goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts) }, req.body.lang)
   const ids = insertGoals(c.id, cycle.id, Array.isArray(out.goals) ? out.goals : [], 'ai')
   log(req, 'goals', 'therapy_child', c.id, { n: ids.length })
   res.json({ added: ids.length, missing_information: out.missing_information || [] })
@@ -2918,8 +2946,10 @@ app.post('/api/therapy/children/:id/goals', therapyGuard, (req, res) => { // a p
   if (!String(req.body.target_skill || '').trim()) throw err(400, 'Say what the target skill is')
   const cycle = openCycle(c.id)
   const [id] = insertGoals(c.id, cycle.id, [req.body], 'manual')
-  run("UPDATE therapy_goals SET status='approved', approved_by=?, approved_at=? WHERE id=?", req.user.id, now(), id)
-  run("UPDATE therapy_cycles SET status='active' WHERE id=? AND status='draft'", cycle.id)
+  if (can(req.user, 'therapy_approve')) { // a professional's own goal is approved as it is added; anyone else's waits
+    run("UPDATE therapy_goals SET status='approved', approved_by=?, approved_at=? WHERE id=?", req.user.id, now(), id)
+    run("UPDATE therapy_cycles SET status='active' WHERE id=? AND status='draft'", cycle.id)
+  }
   res.json({ id })
 })
 const GOAL_EDIT = ['area', 'current_skill', 'target_skill', 'rationale', 'prerequisites', 'teaching', 'activities', 'success_criteria', 'measure', 'timeframe', 'priority']
@@ -2927,6 +2957,7 @@ app.patch('/api/therapy/goals/:id', therapyGuard, (req, res) => {
   const g = therapyGoal(req.user, req.params.id), f = pick(req.body, GOAL_EDIT)
   if (g.status === 'approved' && Object.keys(f).length) throw err(400, 'An approved goal is locked. Reject it and add a new one to change it')
   if (req.body.status !== undefined) {
+    needApprover(req.user)
     if (!['approved', 'rejected', 'proposed'].includes(req.body.status)) throw err(400, 'Unknown status')
     if (g.status === 'approved' && req.body.status === 'proposed') throw err(400, 'An approved goal cannot go back to draft')
     f.status = req.body.status; f.approved_by = req.body.status === 'approved' ? req.user.id : null; f.approved_at = req.body.status === 'approved' ? now() : null
@@ -3019,10 +3050,201 @@ app.post('/api/therapy/cycles/:id/approve-review', therapyGuard, (req, res) => {
   const y = one('SELECT * FROM therapy_cycles WHERE id=?', +req.params.id)
   if (!y) throw err(404, 'Plan not found')
   therapyChild(req.user, y.child_id)
+  needApprover(req.user)
   if (!y.review) throw err(400, 'No review to approve')
   run("UPDATE therapy_cycles SET status='closed', review_approved_by=?, review_approved_at=? WHERE id=?", req.user.id, now(), y.id)
   log(req, 'approve_review', 'therapy_cycle', y.id, {})
   res.json({ ok: true }) // the next quarter's draft goals now wait for individual approval
+})
+
+// ---- staff assignment, parents, home practice, messages ----
+const staffOptions = u => all("SELECT id, name, role FROM users WHERE active=1 AND (id=? OR owner_id=?) AND role!='parent' ORDER BY name", accountRoot(u), accountRoot(u))
+const needApprover = u => { if (!can(u, 'therapy_approve')) throw err(403, 'Only a therapist, special educator or admin can approve this') }
+app.put('/api/therapy/children/:id/staff', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  needApprover(req.user)
+  const allowed = new Set(staffOptions(req.user).map(x => x.id))
+  const ids = [...new Set((Array.isArray(req.body.user_ids) ? req.body.user_ids : []).map(Number))].filter(x => allowed.has(x))
+  run('DELETE FROM therapy_staff WHERE child_id=?', c.id)
+  for (const id of ids) run('INSERT INTO therapy_staff(child_id,user_id) VALUES(?,?)', c.id, id)
+  log(req, 'assign_staff', 'therapy_child', c.id, { ids })
+  res.json({ ok: true })
+})
+app.post('/api/therapy/children/:id/parent', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  needApprover(req.user)
+  const name = String(req.body.name || '').trim().slice(0, 80), email = String(req.body.email || '').trim().toLowerCase()
+  const pass = typeof req.body.password === 'string' ? req.body.password : ''
+  if (!name) throw err(400, 'Parent name is required')
+  if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'Enter a valid email address')
+  const problem = L.passwordProblem(pass)
+  if (problem) throw err(400, problem)
+  const existing = one('SELECT * FROM users WHERE email=?', email)
+  if (existing && !(existing.role === 'parent' && existing.owner_id === accountRoot(req.user))) throw err(400, 'An account with that email already exists')
+  const uid = existing?.id ?? run('INSERT INTO users(name,email,role,active,available,pass,owner_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
+    name, email, 'parent', 1, 1, hash(pass), accountRoot(req.user), now()).lastInsertRowid
+  if (!one('SELECT 1 FROM therapy_parents WHERE child_id=? AND user_id=?', c.id, uid)) run('INSERT INTO therapy_parents(child_id,user_id) VALUES(?,?)', c.id, uid)
+  log(req, 'add_parent', 'therapy_child', c.id, { email })
+  res.json({ id: uid })
+})
+app.delete('/api/therapy/children/:id/parent/:uid', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  needApprover(req.user)
+  run('DELETE FROM therapy_parents WHERE child_id=? AND user_id=?', c.id, +req.params.uid)
+  res.json({ ok: true })
+})
+app.post('/api/therapy/children/:id/homework', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const goal = req.body.goal_id ? therapyGoal(req.user, req.body.goal_id) : null
+  if (goal && goal.child_id !== c.id) throw err(400, 'That goal belongs to another child')
+  const texts = (Array.isArray(req.body.texts) ? req.body.texts : [req.body.text]).map(t => String(t || '').trim().slice(0, 600)).filter(Boolean).slice(0, 20)
+  if (!texts.length) throw err(400, 'Write the home practice task')
+  const due = /^\d{4}-\d\d-\d\d$/.test(req.body.due || '') ? req.body.due : null
+  for (const t of texts) run('INSERT INTO therapy_homework(child_id,goal_id,text,due,created_by,created_at) VALUES(?,?,?,?,?,?)', c.id, goal?.id ?? null, t, due, req.user.id, now())
+  res.json({ added: texts.length })
+})
+app.delete('/api/therapy/homework/:id', therapyGuard, (req, res) => {
+  const h = one('SELECT * FROM therapy_homework WHERE id=?', +req.params.id)
+  if (!h) throw err(404, 'Task not found')
+  therapyChild(req.user, h.child_id)
+  run('DELETE FROM therapy_homework WHERE id=?', h.id)
+  res.json({ ok: true })
+})
+app.post('/api/therapy/children/:id/messages', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const body = String(req.body.body || '').trim().slice(0, 2000)
+  if (!body) throw err(400, 'Write a message first')
+  run('INSERT INTO therapy_messages(child_id,sender_id,sender_role,kind,body,created_at) VALUES(?,?,?,?,?,?)', c.id, req.user.id, req.user.role, 'message', body, now())
+  res.json({ ok: true })
+})
+const messagesOf = childId => all(`SELECT m.id, m.kind, m.body, m.created_at, m.sender_role, u.name sender FROM therapy_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.child_id=? ORDER BY m.id DESC LIMIT 100`, childId)
+const homeworkOf = childId => all(`SELECT h.*, g.target_skill FROM therapy_homework h LEFT JOIN therapy_goals g ON g.id=h.goal_id WHERE h.child_id=? ORDER BY h.id DESC`, childId)
+
+// ---- parent portal: read-only on professional work, only approved material is shown ----
+const parentGuard = (req, _res, next) => (req.user.role === 'parent' && modulesOf(req.user).includes('therapy')
+  ? next() : next(err(403, 'This is for parents or guardians')))
+const parentChild = (u, id) => {
+  const c = one('SELECT c.* FROM therapy_children c JOIN therapy_parents p ON p.child_id=c.id WHERE c.id=? AND p.user_id=?', +id, u.id)
+  if (!c) throw err(404, 'Child not found')
+  return c
+}
+app.get('/api/therapy/portal', parentGuard, (req, res) => {
+  res.json(all('SELECT c.id, c.name, c.dob, c.photo FROM therapy_children c JOIN therapy_parents p ON p.child_id=c.id WHERE p.user_id=?', req.user.id).map(c => ({ ...c, age: ageOf(c.dob) })))
+})
+app.get('/api/therapy/portal/:id', parentGuard, (req, res) => {
+  const c = parentChild(req.user, req.params.id)
+  const goals = all("SELECT * FROM therapy_goals WHERE child_id=? AND status='approved' ORDER BY id DESC", c.id)
+  const nameOf = id => goals.find(g => g.id === id)?.target_skill || `Goal ${id}`
+  res.json({
+    child: { id: c.id, name: c.name, age: ageOf(c.dob), photo: c.photo },
+    goals: goals.map(g => ({ id: g.id, area: g.area, kind: g.kind, current_skill: g.current_skill, target_skill: g.target_skill, success_criteria: g.success_criteria, timeframe: g.timeframe, progress: g.progress })),
+    homework: homeworkOf(c.id),
+    messages: messagesOf(c.id),
+    reports: all("SELECT * FROM therapy_cycles WHERE child_id=? AND review_approved_at IS NOT NULL ORDER BY id DESC", c.id).map(y => {
+      const r = j(y.review) || {}
+      return { id: y.id, start_date: y.start_date, review_date: y.review_date, approved_at: y.review_approved_at,
+        outcomes: (r.outcomes || []).map(o => ({ goal: nameOf(o.goal_id), outcome: o.outcome })), improved: r.developmental_progress?.improved || [],
+        remaining: r.developmental_progress?.remaining_difficulties || [], next_steps: r.next_step_recommendations || [] }
+    }),
+  })
+})
+app.post('/api/therapy/portal/:id/homework/:hid/done', parentGuard, (req, res) => {
+  const c = parentChild(req.user, req.params.id)
+  const h = one('SELECT * FROM therapy_homework WHERE id=? AND child_id=?', +req.params.hid, c.id)
+  if (!h) throw err(404, 'Task not found')
+  run('UPDATE therapy_homework SET done_at=?, done_note=? WHERE id=?', req.body.undo ? null : now(), String(req.body.note || '').slice(0, 500), h.id)
+  res.json({ ok: true })
+})
+app.post('/api/therapy/portal/:id/messages', parentGuard, (req, res) => {
+  const c = parentChild(req.user, req.params.id)
+  const body = String(req.body.body || '').trim().slice(0, 2000)
+  if (!body) throw err(400, 'Write a message first')
+  rateHit(rateKey('therapy-parent-msg', req.user.id), 30, 3600e3, 'Too many messages. Try again later.')
+  run('INSERT INTO therapy_messages(child_id,sender_id,sender_role,kind,body,created_at) VALUES(?,?,?,?,?,?)', c.id, req.user.id, 'parent', req.body.kind === 'observation' ? 'observation' : 'message', body, now())
+  for (const s of all('SELECT user_id FROM therapy_staff WHERE child_id=?', c.id)) notify(s.user_id, `${c.name}: new ${req.body.kind === 'observation' ? 'parent observation' : 'message from the parent'}`, null)
+  res.json({ ok: true })
+})
+
+// ---- reports: assembled from records, no AI; the page prints to PDF ----
+app.get('/api/therapy/children/:id/report', therapyGuard, (req, res) => {
+  const c = therapyChild(req.user, req.params.id)
+  const day = v => (/^\d{4}-\d\d-\d\d$/.test(v || '') ? v : null)
+  const to = day(req.query.to) || now().slice(0, 10), from = day(req.query.from) || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  const name = id => (id ? one('SELECT name FROM users WHERE id=?', id)?.name : null)
+  const asm = one('SELECT * FROM therapy_assessments WHERE child_id=? AND approved=1 ORDER BY id DESC', c.id)
+  res.json({
+    organization: one('SELECT name FROM users WHERE id=?', accountRoot(req.user))?.name, generated_by: req.user.name, generated_at: now(), from, to,
+    child: { ...c, age: ageOf(c.dob), photo: undefined },
+    assessment: asm && { ...asm, result: j(asm.result), approved_by_name: name(asm.approved_by) },
+    goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected' ORDER BY id", c.id).map(g => ({ ...g, approved_by_name: name(g.approved_by) })),
+    sessions: all('SELECT s.*, u.name educator FROM therapy_sessions s LEFT JOIN users u ON u.id=s.educator_id WHERE s.child_id=? AND s.date>=? AND s.date<=? ORDER BY s.date, s.id', c.id, from, to),
+    all_sessions: all('SELECT id, goal_id, date, trials, independent, prompted FROM therapy_sessions WHERE child_id=? ORDER BY date, id', c.id),
+    cycles: all('SELECT * FROM therapy_cycles WHERE child_id=? ORDER BY id DESC', c.id).map(y => ({ ...y, review: j(y.review), approved_by_name: name(y.review_approved_by) })),
+    homework: homeworkOf(c.id),
+  })
+})
+
+// ---- skills and activity library: curated starters plus the company's own ----
+// No external citations are bundled: references are added by the centre, so nothing here claims a source it cannot show.
+const SK = (category, name, description, prerequisites, behaviours, assessment, teaching, activities, materials, measurement, alternatives) =>
+  ({ category, name, description, prerequisites, behaviours, assessment, teaching, activities, materials, measurement, alternatives, refs: '' })
+const T_SKILLS = [
+  SK('Speech and language', 'Combining words into short phrases', 'Moving from single words to two- and three-word phrases to ask, name and comment.', 'Uses at least 10-20 single words consistently; imitates words.', 'Says "want juice", "big ball" in play or routines.', 'Language sample across 3 settings; count different word combinations in 15 minutes.', 'Model one word longer than the child (child "ball" → "big ball"); wait 5 seconds; accept approximations and expand.', 'Snack time requests; toy play with action words; picture books naming + action.', 'Favourite foods and toys, picture cards.', 'Number of spontaneous 2-word phrases per session; % of opportunities with a phrase.', 'Visual word-order strips; gesture + word pairing; AAC phrase buttons.'),
+  SK('Receptive language', 'Following one- and two-step instructions', 'Understanding and acting on spoken directions.', 'Responds to name; attends to a speaker for a few seconds.', 'Gets the cup then gives it to a parent when asked.', 'Give 10 instructions without gestures; record correct responses.', 'Short clear instruction, one repetition, then a gesture prompt, then a physical prompt; fade prompts.', 'Simon Says style games; household errands; obstacle courses.', 'Everyday objects.', '% of instructions followed independently over 10 trials.', 'Pair with pictures; reduce to one key word; reduce distractions.'),
+  SK('Expressive language', 'Requesting wants and needs', 'Using words, signs or pictures to ask for items and help.', 'Shows interest in objects; basic imitation.', 'Child asks for "more", "help", "drink" without being led.', 'Observe natural opportunities; count independent requests per hour.', 'Create need: place desired item in view but out of reach; wait; prompt then fade; reward immediately with the item.', 'Snack and play routines; sabotage a routine (missing spoon).', 'Preferred items, containers.', 'Independent requests per session; variety of request words.', 'Picture exchange, signs, speech-generating device.'),
+  SK('Cognitive development', 'Sorting and matching by one feature', 'Grouping objects by colour, shape or category.', 'Matches identical objects.', 'Puts all red blocks together without help.', 'Present 10 mixed items; record correct placements.', 'Start with two clearly different categories; model; guide hand-over-hand; fade; add a third category.', 'Laundry sorting, shape sorters, cutlery drawer.', 'Sorting bins, coloured objects.', '% correct over 10 items; number of categories managed.', 'Reduce set size; use picture mats as a guide.'),
+  SK('Memory and attention', 'Sustained attention to a table activity', 'Staying with a structured task for gradually longer periods.', 'Sits with support; tolerates adult presence.', 'Completes a 3-minute puzzle without leaving.', 'Timed observation of on-task time over 3 sessions.', 'Short, enjoyable tasks; visual timer; reward at the end; extend time in small steps only after the current length is reliable.', 'Puzzles, bead stringing, sticker tasks.', 'Visual timer, reward items.', 'Minutes on task; number of redirections.', 'Movement breaks; choice of task; smaller task chunks.'),
+  SK('Social interaction', 'Turn-taking in play', 'Waiting for and exchanging turns with a partner.', 'Tolerates another person nearby; shared attention for a few seconds.', 'Rolls a ball back and forth for 5 exchanges.', 'Observe a 10-minute play session; count turns exchanged.', 'Use a "my turn / your turn" cue; start with 1-2 exchanges; use a turn card; increase gradually.', 'Ball rolling, board games with few steps, building blocks.', 'Ball, turn card.', 'Number of successful exchanges; prompts needed.', 'Visual turn cards; sand timer; a peer buddy.'),
+  SK('Emotional regulation', 'Naming feelings and using a calming strategy', 'Recognising basic emotions and choosing a coping step.', 'Looks at faces; basic matching of pictures.', 'Points to "angry" card and takes deep breaths with a prompt.', 'Feelings card task; caregiver report of frequency and length of upset.', 'Teach when calm, not mid-meltdown; model the strategy; practise with a visual routine; prompt early then fade.', 'Emotion cards, breathing games, calm-down corner.', 'Emotion cards, calm-down kit.', 'Frequency and duration of upsets; number of times the strategy is used independently.', 'Sensory tools, choice board, visual schedule.'),
+  SK('Behavioural support', 'Replacing a challenging behaviour with a communication skill', 'Teaching a functional alternative to hitting, screaming or running away.', 'Some means of communication; a record of when the behaviour occurs.', 'Child hands a "break" card instead of pushing materials away.', 'Record what happens before, during and after the behaviour (ABC) for at least a week.', 'Work out the purpose first; teach an easier, faster way to get the same result; reinforce it every time at first; review with the team.', 'Break cards, help cards, structured choices.', 'Break card, timer, reinforcers.', 'Incidents per week; independent use of the alternative.', 'Consult a psychologist or behaviour specialist for severe or unsafe behaviour.'),
+  SK('Fine motor skills', 'Pincer grasp and controlled hand use', 'Picking up small items with thumb and index finger and using them purposefully.', 'Reaches, grasps and releases objects.', 'Picks up a raisin or bead and drops it into a container.', 'Offer small items of different size and record grasp and accuracy.', 'Start with larger items; use tongs or tweezers later; hand-under-hand support; build endurance gradually.', 'Playdough, bead threading, peg boards, tearing paper.', 'Beads, pegs, tweezers, playdough.', 'Items placed correctly in 1 minute; type of grasp used.', 'Chunky tools, grip aids, positioning at a stable table.'),
+  SK('Gross motor skills', 'Balance and coordinated walking', 'Walking on varied surfaces and stepping over obstacles with steadiness.', 'Walks independently on flat ground.', 'Walks along a line and steps over a low obstacle.', 'Observe walking, balance on one foot and obstacle crossing; note falls.', 'Break the movement down; practise on a line then a beam; guard closely; celebrate small gains.', 'Obstacle courses, stepping stones, ball games.', 'Floor tape, cushions, low beam.', 'Seconds balanced; obstacles crossed without help.', 'Support rails; therapist-led programme if there is a medical concern.'),
+  SK('Self-care', 'Washing and drying hands', 'Completing the hand-washing routine with decreasing help.', 'Tolerates water; follows simple steps with prompts.', 'Does all steps with only a picture reminder.', 'Task analysis: check each step independent / prompted.', 'Forward or backward chaining with a picture sequence; support the last steps first for quick success.', 'Hand-washing song, picture sequence at the sink.', 'Picture sequence, soap, towel.', 'Steps completed independently out of total.', 'Step stool; adapted soap dispenser.'),
+  SK('Daily living', 'Dressing with help reduced', 'Putting on simple clothes like a t-shirt or trousers.', 'Cooperates with dressing; understands "arms", "legs".', 'Puts on a t-shirt with only a verbal reminder.', 'Task analysis of dressing steps and prompt level.', 'Backward chaining: adult does most, child completes the last step, then the last two steps; fade support.', 'Doll dressing practice, routine at bedtime.', 'Loose clothing, picture steps.', 'Steps independent; time taken.', 'Easier clothing (elastic waist); mirrors and visual guides.'),
+  SK('Academic readiness', 'Pre-writing strokes', 'Copying lines and shapes as a base for writing.', 'Holds a crayon; makes marks.', 'Copies vertical and horizontal lines and a circle.', 'Ask the child to copy each stroke; record accuracy.', 'Tracing then copying; large movements first (air, sand, paint), then paper; check posture and grip.', 'Sand writing, finger painting, tracing mazes.', 'Thick crayons, tracing sheets.', 'Strokes copied accurately out of those offered.', 'Slanted board, grip aids, trace-and-fade worksheets.'),
+  SK('Alternative communication', 'Exchanging a picture to request', 'Using picture cards to communicate when speech is limited.', 'Shows clear preference for items; reaches for desired things.', 'Hands a picture to a partner and receives the item.', 'Preference assessment; observe whether the child will hand over an object.', 'Two people at first (one prompts, one receives); prompt physically then fade quickly; expand to a book and to sentences.', 'Snack and toy requests across settings.', 'Picture cards, communication book.', 'Independent exchanges per session; distance and variety of partners.', 'Speech-generating device; signs. A speech-language therapist should guide AAC choices.'),
+]
+const CAT_AREA = { 'Speech and language': 'Speech and language', 'Receptive language': 'Speech and language', 'Expressive language': 'Speech and language',
+  'Cognitive development': 'Cognitive development', 'Memory and attention': 'Cognitive development', 'Social interaction': 'Social development',
+  'Emotional regulation': 'Emotional development', 'Behavioural support': 'Behavioural development', 'Fine motor skills': 'Fine motor skills',
+  'Gross motor skills': 'Gross motor skills', 'Self-care': 'Self-care and daily living', 'Daily living': 'Self-care and daily living',
+  'Academic readiness': 'Academic readiness', 'Alternative communication': 'Communication and AAC' }
+const SKILL_FIELDS = ['category', 'name', 'description', 'prerequisites', 'behaviours', 'assessment', 'teaching', 'activities', 'materials', 'measurement', 'alternatives', 'refs']
+const skillsFor = u => [...T_SKILLS.map((s, i) => ({ ...s, id: 'b' + i, built_in: true })),
+  ...all(`SELECT k.* FROM therapy_skills k WHERE EXISTS (SELECT 1 FROM users c WHERE c.id=k.created_by AND (c.id=? OR c.owner_id=?))`, accountRoot(u), accountRoot(u))]
+app.get('/api/therapy/skills', therapyGuard, (req, res) => {
+  const q = String(req.query.q || '').toLowerCase(), cat = req.query.category
+  res.json({ categories: Object.keys(CAT_AREA), skills: skillsFor(req.user).filter(s => (!cat || s.category === cat) && (!q || SKILL_FIELDS.some(k => String(s[k] || '').toLowerCase().includes(q)))) })
+})
+app.post('/api/therapy/skills', therapyGuard, (req, res) => {
+  const f = pick(req.body, SKILL_FIELDS)
+  if (!String(f.name || '').trim() || !CAT_AREA[f.category]) throw err(400, 'A category and a name are required')
+  for (const k of Object.keys(f)) f[k] = String(f[k] ?? '').slice(0, 1500)
+  const cols = [...Object.keys(f), 'created_by', 'created_at']
+  const id = run(`INSERT INTO therapy_skills(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), req.user.id, now()).lastInsertRowid
+  res.json({ id })
+})
+app.delete('/api/therapy/skills/:id', therapyGuard, (req, res) => {
+  const k = skillsFor(req.user).find(s => String(s.id) === req.params.id && !s.built_in)
+  if (!k) throw err(404, 'Skill not found (starter skills cannot be deleted)')
+  run('DELETE FROM therapy_skills WHERE id=?', k.id)
+  res.json({ ok: true })
+})
+
+// ---- AI insights on the dashboard: only on request, from recorded facts ----
+app.post('/api/therapy/dashboard/insights', therapyGuard, async (req, res) => {
+  const [w, p] = childWhere(req.user)
+  const kids = all(`SELECT c.id, c.name, c.dob FROM therapy_children c WHERE ${w}`, ...p)
+  if (!kids.length) throw err(400, 'Add a child first')
+  const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
+  const facts = kids.map(k => ({ child_id: k.id, name: k.name, age_years: ageOf(k.dob),
+    approved_goals: all("SELECT id, area, target_skill, progress FROM therapy_goals WHERE child_id=? AND status='approved'", k.id),
+    sessions_last_30_days: all('SELECT date, goal_id, trials, independent, prompted, assistance, difficulties, progress FROM therapy_sessions WHERE child_id=? AND date>=? ORDER BY date', k.id, since),
+    cycle: one("SELECT start_date, review_date FROM therapy_cycles WHERE child_id=? AND status='active'", k.id) || null }))
+  const out = await therapyAI(req, 'Review these children\'s recorded data and point out who may need additional attention, goals that need review, and teaching adjustments to consider. Only use what is recorded; where there is too little data say so instead of guessing.',
+    '{"insights":[{"child_id":int,"type":"attention"|"goal_review"|"teaching_adjustment"|"insufficient_data","title":str,"why":str,"suggestion":str}],"missing_information":[str]}', { children: facts }, req.body.lang)
+  const ok = new Set(kids.map(k => k.id))
+  res.json({ insights: (Array.isArray(out.insights) ? out.insights : []).filter(i => ok.has(i.child_id)).slice(0, 20), missing_information: out.missing_information || [] })
 })
 
 // ---------- Student Consultancy (the edu module) ----------
