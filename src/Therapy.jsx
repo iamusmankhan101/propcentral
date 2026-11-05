@@ -20,6 +20,12 @@ export default function Therapy() {
     <section className="dash">
       <Hero title="Therapy overview" />
       <div className="kpis glass">{kpis.map(([l, v]) => <div key={l} className="kpi"><small>{l}</small><b>{v ?? 0}</b></div>)}</div>
+      <div className="t-charts">
+        <WeeklyChart rows={dash?.charts.weekly} />
+        <ProgressDonut rows={dash?.charts.progress} />
+        <AreaBars rows={dash?.charts.areas} />
+        <IndependenceChart rows={dash?.charts.weekly} />
+      </div>
       <div className="board">
         <div>
           <div className="card">
@@ -687,5 +693,81 @@ export function TherapyOrg() {
           <tbody>{d.team.map(m => <tr key={m.id}><td>{m.name}</td><td>{m.email}</td><td>{m.role.replace(/_/g, ' ')}</td><td>{m.children}</td><td>{m.active ? 'Active' : 'Inactive'}</td></tr>)}</tbody></table>
       </div>
     </section>
+  )
+}
+
+// ---------- dashboard charts (drawn from recorded data; empty states say so) ----------
+const COLORS = { 'Not introduced': '#cbd5e1', Emerging: '#fbbf24', Developing: '#fb923c', Progressing: '#0d9488', Achieved: '#16a34a', 'Requires reassessment': '#dc2626' }
+const dayLabel = d => new Date(d + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+
+function LineChart({ title, sub, rows, field, unit = '', max: fixedMax, empty }) {
+  const [hover, setHover] = useState(null)
+  const W = 520, H = 200, L = 34, R = 12, T = 14, B = 28
+  const pts = rows?.map((r, i) => ({ i, v: r[field], d: r.label })) || []
+  const max = fixedMax || Math.max(4, Math.ceil(Math.max(0, ...pts.map(p => p.v ?? 0)) / 4) * 4)
+  const x = i => L + i * (W - L - R) / Math.max(1, pts.length - 1), y = v => T + (H - T - B) * (1 - v / max)
+  const have = pts.filter(p => p.v != null)
+  const path = have.map((p, k) => `${k ? 'L' : 'M'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join('')
+  const h = hover != null ? pts[hover] : null
+  return (
+    <div className="card trend" style={{ margin: 0 }}>
+      <h3>{title}</h3><p className="muted" style={{ margin: '0 0 8px' }}>{sub}</p>
+      {!rows ? <p className="muted">Loading…</p> : have.length < 2 ? <p className="muted">{empty}</p> : (
+        <div className="plot">
+          <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${title}. ${have.map(p => `${dayLabel(p.d)} ${p.v}${unit}`).join(', ')}`} onPointerLeave={() => setHover(null)}
+            onPointerMove={e => { const r = e.currentTarget.getBoundingClientRect(); setHover(Math.max(0, Math.min(pts.length - 1, Math.round(((e.clientX - r.left) / r.width * W - L) / (W - L - R) * (pts.length - 1))))) }}>
+            {[0, 1, 2, 3, 4].map(t => <g key={t}><line x1={L} x2={W - R} y1={y(max * t / 4)} y2={y(max * t / 4)} stroke="var(--line)" /><text x={L - 6} y={y(max * t / 4) + 4} textAnchor="end" fontSize="10" fill="var(--muted)">{Math.round(max * t / 4)}{unit}</text></g>)}
+            {pts.map(p => p.i % 2 === 0 && <text key={p.i} x={x(p.i)} y={H - 8} textAnchor="middle" fontSize="10" fill="var(--muted)">{dayLabel(p.d)}</text>)}
+            <path d={`${path}L${x(have.at(-1).i)},${y(0)}L${x(have[0].i)},${y(0)}Z`} fill="var(--s1)" opacity=".12" />
+            <path d={path} fill="none" stroke="var(--s1)" strokeWidth="2.5" strokeLinejoin="round" />
+            {have.map(p => <circle key={p.i} cx={x(p.i)} cy={y(p.v)} r={hover === p.i ? 5 : 3} fill="var(--s1)" />)}
+            {h && h.v != null && <text x={Math.min(W - 70, x(h.i))} y={y(h.v) - 10} fontSize="12" fontWeight="700" fill="var(--text)">{h.v}{unit}</text>}
+          </svg>
+        </div>
+      )}
+    </div>
+  )
+}
+const WeeklyChart = ({ rows }) => <LineChart title="Sessions per week" sub="Recorded sessions, last 8 weeks" rows={rows} field="sessions" empty="Record at least two weeks of sessions to see a trend." />
+const IndependenceChart = ({ rows }) => <LineChart title="Independent responses" sub="Share of trials answered without help, per week" rows={rows} field="independent_pct" unit="%" max={100} empty="Record sessions with trial counts (trials and independent correct) to see this." />
+
+function ProgressDonut({ rows }) {
+  const [hover, setHover] = useState(null)
+  const total = rows?.reduce((s, r) => s + r.n, 0) || 0
+  const r = 70, C = 2 * Math.PI * r
+  let off = 0
+  const focus = rows?.[hover]
+  return (
+    <div className="card" style={{ margin: 0 }}>
+      <h3>Goal progress</h3>
+      {!rows ? <p className="muted">Loading…</p> : total === 0 ? <p className="muted">No approved goals yet.</p> : (
+        <div className="composition">
+          <ul>{rows.map((x, i) => <li key={x.label} className={hover === i ? 'on' : ''} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}>
+            <small><i className="swatch" style={{ background: COLORS[x.label] }} />{x.label}</small><div><b>{x.n}</b> <span className="muted">{Math.round(100 * x.n / total)}%</span></div></li>)}</ul>
+          <svg viewBox="0 0 180 180" role="img" aria-label={rows.map(x => `${x.label} ${x.n}`).join(', ')}>
+            <circle cx="90" cy="90" r={r} className="ring" />
+            {rows.map((x, i) => { const len = x.n / total * C, o = off; off += len; return x.n ? <circle key={x.label} cx="90" cy="90" r={r} fill="none" stroke={COLORS[x.label]} strokeWidth={hover === i ? 30 : 26} strokeDasharray={`${Math.max(0.1, len - 3)} ${C}`} strokeDashoffset={-o} transform="rotate(-90 90 90)" onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} /> : null })}
+            <text x="90" y="86" textAnchor="middle" className="donut-total">{focus ? focus.n : total}</text>
+            <text x="90" y="106" textAnchor="middle" className="donut-label">{focus ? focus.label : 'goals'}</text>
+          </svg>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AreaBars({ rows }) {
+  return (
+    <div className="card" style={{ margin: 0 }}>
+      <h3>Progress by developmental area</h3><p className="muted" style={{ margin: '0 0 8px' }}>Average of approved goals (0 = not introduced, 4 = achieved)</p>
+      {!rows ? <p className="muted">Loading…</p> : rows.length === 0 ? <p className="muted">No approved goals yet.</p> : (
+        <svg viewBox={`0 0 520 ${rows.length * 30 + 4}`} width="100%" role="img" aria-label={rows.map(a => `${a.area} ${a.avg} of 4`).join(', ')}>
+          {rows.map((a, i) => <g key={a.area} transform={`translate(0 ${i * 30})`}>
+            <text x="0" y="17" fontSize="12" fill="var(--text)">{a.area.length > 26 ? a.area.slice(0, 25) + '…' : a.area}</text>
+            <rect x="190" y="4" width="270" height="14" rx="5" fill="var(--field)" /><rect x="190" y="4" width={Math.max(4, 270 * a.avg / 4)} height="14" rx="5" fill="var(--s1)" />
+            <text x="468" y="16" fontSize="11" fill="var(--muted)">{a.avg} · {a.n}</text></g>)}
+        </svg>
+      )}
+    </div>
   )
 }

@@ -113,6 +113,11 @@ test('therapy: assessment -> goals -> lesson -> session -> intervention -> revie
 
   const dash = await J(await call(base, 'GET', '/therapy/dashboard', a))
   assert.deepEqual([dash.children, dash.active_plans, dash.in_progress], [1, 1, 1])
+  assert.equal(dash.charts.weekly.length, 8)
+  assert.equal(dash.charts.weekly.at(-1).sessions, 1, 'this week has the session just recorded')
+  assert.equal(dash.charts.weekly.at(-1).independent_pct, 30, '3 of 10 trials independent')
+  assert.equal(dash.charts.progress.find(x => x.label === 'Developing').n, 1)
+  assert.deepEqual(dash.charts.areas.map(x => [x.area, x.n]), [['Speech and language', 1]])
 
   assert.equal((await call(base, 'POST', `/therapy/children/${id}/review`, a, {})).status, 200)
   d = await get()

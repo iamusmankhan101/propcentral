@@ -2831,7 +2831,23 @@ app.get('/api/therapy/dashboard', therapyGuard, (req, res) => {
     ...cycles.filter(c => c.review_date <= soon).map(c => ({ child_id: c.child_id, text: `${name(c.child_id)}: 3-month review ${c.review_date < today ? 'overdue since' : 'due'} ${c.review_date}` })),
     ...cycles.filter(c => (lastSession[c.child_id] || c.start_date) < stale).map(c => ({ child_id: c.child_id, text: `${name(c.child_id)}: no session recorded in 14+ days` })),
   ]
+  // chart data from the records: 8 weekly buckets ending today, goal progress, and progress per area
+  const weekly = Array.from({ length: 8 }, (_, i) => {
+    const end = new Date(Date.now() - (7 - i) * 7 * 864e5), start = new Date(+end - 6 * 864e5)
+    return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10), sessions: 0, trials: 0, independent: 0 }
+  })
+  for (const r of all(`SELECT date, trials, independent FROM therapy_sessions WHERE child_id IN ${inIds} AND date>=?`, ...ids, weekly[0].from)) {
+    const w = weekly.find(x => r.date >= x.from && r.date <= x.to)
+    if (w) { w.sessions++; if (r.trials > 0 && r.independent != null) { w.trials += r.trials; w.independent += r.independent } }
+  }
+  const areas = {}
+  for (const g of goals) { const a = (areas[g.area || 'General'] ||= { area: g.area || 'General', n: 0, sum: 0 }); a.n++; a.sum += Math.max(0, T_PROGRESS.indexOf(g.progress)) }
   res.json({
+    charts: {
+      weekly: weekly.map(w => ({ label: w.to, sessions: w.sessions, independent_pct: w.trials ? Math.round(100 * w.independent / w.trials) : null })),
+      progress: T_PROGRESS.map(label => ({ label, n: goals.filter(g => g.progress === label).length })),
+      areas: Object.values(areas).map(a => ({ area: a.area, n: a.n, avg: +(a.sum / a.n).toFixed(1) })),
+    },
     children: kids.length, active_plans: cycles.length,
     in_progress: goals.filter(g => ['Emerging', 'Developing', 'Progressing'].includes(g.progress)).length,
     achieved: goals.filter(g => g.progress === 'Achieved').length,
