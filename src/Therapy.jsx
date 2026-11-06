@@ -746,6 +746,7 @@ export function TherapyOrg() {
         <Err e={error} />{saved && <p className="ok wide">Saved.</p>}
         {d.can_edit ? <div className="wide row"><button disabled={busy}>Save settings</button></div> : <p className="muted wide">Only the organization admin can change these.</p>}
       </form>
+      <AiSettings d={d} reload={reload} />
       <div className="card scroll">
         <div className="row between"><h3>Team</h3><a className="button ghost" href="#/users">Manage users & roles</a></div>
         <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Assigned children</th><th>Status</th></tr></thead>
@@ -892,5 +893,37 @@ function Ask() {
       ))}
       {log.length > 0 && <button type="button" className="ghost" onClick={() => setLog([])}>Clear answers</button>}
     </div>
+  )
+}
+
+function AiSettings({ d, reload }) {
+  const ai = d.ai
+  const { run, error, busy } = useAction()
+  const [provider, setProvider] = useState(ai.provider)
+  const [test, setTest] = useState(null)
+  const prov = ai.providers.find(p => p.id === provider)
+  const save = e => { e.preventDefault(); const body = formData(e); run(async () => { await api('/therapy/org', { method: 'PUT', body: { ai_provider: provider, ai_model: body.ai_model, ai_key: body.ai_key } }); setTest(null); reload() }) }
+  const check = () => run(async () => setTest(await api('/therapy/org/ai-test', { body: {} })))
+  return (
+    <form className="card grid" onSubmit={save} key={ai.provider + ai.model + ai.has_key}>
+      <h3 className="wide">AI provider</h3>
+      <p className="muted wide" style={{ margin: 0 }}>
+        {ai.using === 'own' ? 'Your own AI account is being used.' : ai.using === 'platform' ? 'The platform\'s shared AI is being used. You can switch to your own account below.' : 'No AI is configured yet. Add your own provider key below.'}
+      </p>
+      <label>Provider<Select value={provider} onChange={e => setProvider(e.target.value)} options={ai.providers.map(p => [p.id, p.label])} blank="Platform AI (default)" disabled={!d.can_edit} /></label>
+      {provider && <>
+        <label>Model<input name="ai_model" defaultValue={ai.model} placeholder={prov?.model} disabled={!d.can_edit} /></label>
+        <label className="wide">API key<input name="ai_key" type="password" autoComplete="off" placeholder={ai.has_key ? `Saved ${ai.key_hint || ''}. Leave blank to keep it` : 'Paste your API key'} disabled={!d.can_edit} /></label>
+        {!ai.can_store && <p className="error wide">This server has no AI_KEY_SECRET, so it cannot store keys safely yet.</p>}
+        <small className="muted wide">Keys are encrypted before they are stored and are never shown again. Plans and assessments are sent to this provider: choose one whose data policy suits your children's records.</small>
+      </>}
+      <Err e={error} />
+      {test && <p className="ok wide">Connected to {test.provider} ({test.model}) ✓</p>}
+      {d.can_edit && <div className="wide row">
+        <button disabled={busy}>Save AI settings</button>
+        <button type="button" className="ghost" disabled={busy || ai.using === 'none'} onClick={check}>{busy ? 'Testing…' : 'Test connection'}</button>
+        {ai.has_key && <button type="button" className="ghost danger" disabled={busy} onClick={() => run(async () => { await api('/therapy/org', { method: 'PUT', body: { ai_provider: '', clear_ai_key: true } }); setProvider(''); reload() })}>Remove my key</button>}
+      </div>}
+    </form>
   )
 }

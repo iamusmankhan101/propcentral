@@ -17,7 +17,7 @@ async function boot(t) {
   const dbPath = path.join(os.tmpdir(), `prop-central-therapy-${port}.db`)
   const child = spawn(process.execPath, ['server/server.js'], {
     cwd: root,
-    env: { ...process.env, DB_PATH: dbPath, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', PORT: String(port), VERCEL: '', GROQ_API_KEY: process.env.FAKE_AI ? 'test-key' : '', GROQ_BASE_URL: process.env.FAKE_AI || '',
+    env: { ...process.env, DB_PATH: dbPath, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', PORT: String(port), VERCEL: '', AI_KEY_SECRET: 'test-secret', GROQ_API_KEY: process.env.FAKE_AI ? 'test-key' : '', GROQ_BASE_URL: process.env.FAKE_AI || '',
       PLATFORM_ADMIN_EMAIL: PLATFORM.email, PLATFORM_ADMIN_PASSWORD: PLATFORM.password },
     stdio: 'ignore',
   })
@@ -41,7 +41,9 @@ const login = (base, email, password = 'Passw0rd12345') => call(base, 'POST', '/
 function fakeAI(t) {
   const srv = http.createServer((req, res) => {
     let b = ''; req.on('data', d => (b += d)); req.on('end', () => {
-      const u = JSON.parse(b).messages[1].content
+      const u = JSON.parse(b).messages.at(-1).content
+      if (u.includes('FORCE402')) { res.statusCode = 402; return res.end('{}') }
+      if (u.includes('FORCE401')) { res.statusCode = 401; return res.end('{}') }
       const goal = { area: 'Speech and language', kind: 'three_month', current_skill: 'says single words', target_skill: 'two-word phrases', rationale: 'next step', prerequisites: 'single words', teaching: 'model and expand', activities: 'snack time', success_criteria: '8/10 trials', measure: 'trial count', timeframe: '3 months', priority: 'high' }
       const out = u.includes('"consult_specialist"') ? { answer: u.includes('one child') ? 'child-specific' : 'general', suggestions: ['try x'], based_on: [], missing_information: [], consult_specialist: null }
         : u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
@@ -285,4 +287,33 @@ test('therapy: ask the planner (child-specific, general, scoped)', async t => {
   assert.equal((await J(await call(base, 'POST', '/therapy/ask', a, { question: 'How do I help?', child_id: kid }))).answer, 'child-specific')
   assert.equal((await J(await call(base, 'POST', '/therapy/ask', a, { question: 'Why do children lose interest?' }))).answer, 'general')
   assert.equal((await call(base, 'POST', '/therapy/ask', b, { question: 'x', child_id: kid })).status, 404, "cannot ask about another company's child")
+})
+
+test('therapy: per-organization AI settings are validated, sealed and never returned', async t => {
+  process.env.FAKE_AI = await fakeAI(t)
+  const base = await boot(t)
+  delete process.env.FAKE_AI
+  const a = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const slt = await staffUser(base, a, 'Speech T', 'slt@example.com', 'speech_therapist')
+  const kid = (await J(await call(base, 'POST', '/therapy/children', a, { name: 'Ali' }))).id
+
+  // provider errors become plain messages
+  const e402 = await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'FORCE402' })
+  assert.equal(e402.status, 502); assert.match((await J(e402)).error, /out of credit/)
+  assert.match((await J(await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'FORCE401' }))).error, /key on the server was rejected/)
+
+  assert.equal((await call(base, 'PUT', '/therapy/org', slt.token, { ai_provider: 'openrouter', ai_key: 'sk-x' })).status, 403, 'only the org admin')
+  assert.equal((await call(base, 'PUT', '/therapy/org', a, { ai_provider: 'http://evil.local', ai_key: 'sk-x' })).status, 400, 'only listed providers: no arbitrary address')
+  assert.equal((await call(base, 'PUT', '/therapy/org', a, { ai_provider: 'openrouter' })).status, 400, 'a provider needs a key')
+  assert.equal((await call(base, 'PUT', '/therapy/org', a, { ai_provider: 'openrouter', ai_model: 'openai/gpt-4o-mini', ai_key: 'sk-or-secret-1234' })).status, 200)
+  const org = await J(await call(base, 'GET', '/therapy/org', a))
+  assert.equal(org.ai.provider, 'openrouter'); assert.equal(org.ai.has_key, true); assert.equal(org.ai.key_hint, '••••1234'); assert.equal(org.ai.using, 'own')
+  assert.equal(JSON.stringify(org).includes('sk-or-secret'), false, 'the key is never returned')
+  assert.equal(JSON.stringify(await J(await call(base, 'GET', `/therapy/children/${kid}`, a))).includes('sk-or-secret'), false)
+  // other org settings survive an AI-only save
+  await call(base, 'PUT', '/therapy/org', a, { display_name: 'Bright Steps' })
+  assert.equal((await J(await call(base, 'GET', '/therapy/org', a))).ai.has_key, true, 'saving other settings keeps the key')
+  assert.equal((await call(base, 'PUT', '/therapy/org', a, { ai_provider: '', clear_ai_key: true })).status, 200)
+  const after = await J(await call(base, 'GET', '/therapy/org', a))
+  assert.equal(after.ai.has_key, false); assert.equal(after.ai.using, 'platform')
 })

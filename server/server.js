@@ -44,7 +44,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '15' // 15: therapy_children profile columns
+const SCHEMA_VERSION = '16' // 15: therapy_children profile columns; 16: per-organization AI settings
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -253,6 +253,9 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('users', 'owner_id', 'INTEGER') // NULL = main account (a sign-up); else the main account this user was added under
     addColumn('users', 'paid_at', 'TEXT') // an admin marked the plan paid; the trial lock stops applying
     addColumn('therapy_children', 'dob', 'TEXT')
+    addColumn('therapy_org', 'ai_provider', 'TEXT')
+    addColumn('therapy_org', 'ai_model', 'TEXT')
+    addColumn('therapy_org', 'ai_key', 'TEXT') // sealed with AI_KEY_SECRET, never returned by the API
     addColumn('therapy_children', 'photo', 'TEXT') // small JPEG data URL, shrunk in the browser
     addColumn('therapy_children', 'guardian', 'TEXT')
     addColumn('therapy_children', 'guardian_phone', 'TEXT')
@@ -2797,19 +2800,60 @@ const ageOf = dob => dob ? Math.floor((Date.now() - new Date(dob)) / 31557600000
 const T_RULES = `You assist special-education professionals; you never replace them.
 Rules: do not diagnose any disability or disorder. Every recommendation needs a short explanation. Say what information is missing. Be individualized to this child. Goals must be measurable (a behaviour, a count or percentage, a prompt level, a setting). Base statements about progress ONLY on the recorded data given; if there is not enough, say "insufficient evidence", never invent progress. Respect prerequisite skills: do not jump to a harder skill because time has passed, only when the recorded evidence shows readiness. If an approach has not worked, propose a different one. Anything medical or safety-related: advise consulting the relevant specialist. Reply with JSON only, matching the requested shape.`
 
-async function therapyAI(req, task, shape, data, lang) {
-  const key = process.env.GROQ_API_KEY
-  if (!key) throw err(503, 'AI is not configured yet (missing GROQ_API_KEY)')
-  rateHit(rateKey('therapy-ai', req.user.id), 60, 3600e3, 'Too many AI requests this hour. Try again later.')
-  const r = await fetch(`${GROQ_URL()}/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
-    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, max_tokens: 4000, response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
-        { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] }),
+// AI provider: an organization can bring its own account (provider + key + model); otherwise the server's GROQ_* settings are used.
+// Only well-known provider hosts are allowed, so the server never connects to an address a user typed in.
+const AI_PROVIDERS = {
+  openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+  groq: { label: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' },
+  gemini: { label: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+  openai: { label: 'OpenAI', url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  mistral: { label: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+  cerebras: { label: 'Cerebras', url: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b' },
+}
+const aiSecret = () => (process.env.AI_KEY_SECRET ? crypto.createHash('sha256').update(process.env.AI_KEY_SECRET).digest() : null)
+function sealKey(plain) {
+  const k = aiSecret(); if (!k) throw err(400, 'This server cannot store AI keys yet: set AI_KEY_SECRET on the server first')
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', k, iv)
+  const ct = Buffer.concat([c.update(plain, 'utf8'), c.final()])
+  return [iv, c.getAuthTag(), ct].map(b => b.toString('base64')).join('.')
+}
+function openKey(sealed) {
+  try {
+    const k = aiSecret(); if (!k || !sealed) return null
+    const [iv, tag, ct] = sealed.split('.').map(x => Buffer.from(x, 'base64'))
+    const d = crypto.createDecipheriv('aes-256-gcm', k, iv); d.setAuthTag(tag)
+    return Buffer.concat([d.update(ct), d.final()]).toString('utf8')
+  } catch { return null }
+}
+function aiConfig(u) {
+  const row = one('SELECT ai_provider, ai_model, ai_key FROM therapy_org WHERE owner_id=?', accountRoot(u))
+  const prov = AI_PROVIDERS[row?.ai_provider], key = row?.ai_key && openKey(row.ai_key)
+  if (prov && key) return { own: true, label: prov.label, base: prov.url, key, model: row.ai_model || prov.model }
+  return { own: false, label: 'the platform AI', base: GROQ_URL(), key: process.env.GROQ_API_KEY, model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b' }
+}
+async function aiChat(cfg, body) {
+  const r = await fetch(`${cfg.base}/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
+    body: JSON.stringify({ model: cfg.model, ...body }),
   })
-  if (!r.ok) throw err(502, 'The AI is unavailable right now. Try again in a minute.')
+  if (r.ok) return r.json()
+  const who = cfg.own ? `your ${cfg.label} account` : 'the AI service'
+  if (r.status === 401 || r.status === 403) throw err(502, cfg.own ? `${cfg.label} rejected the API key. Check it in Organization settings.` : 'The AI key on the server was rejected. Ask the platform admin to check it.')
+  if (r.status === 402) throw err(502, `${who[0].toUpperCase() + who.slice(1)} is out of credit. Add credit and try again.`)
+  if (r.status === 404) throw err(502, `${cfg.label} does not have the model "${cfg.model}". Check the model name${cfg.own ? ' in Organization settings' : ''}.`)
+  if (r.status === 429) throw err(502, `${who[0].toUpperCase() + who.slice(1)} is busy or its rate limit was reached. Wait a minute and try again.`)
+  throw err(502, 'The AI is unavailable right now. Try again in a minute.')
+}
+async function therapyAI(req, task, shape, data, lang) {
+  const cfg = aiConfig(req.user)
+  if (!cfg.key) throw err(503, 'AI is not configured yet. Add a provider key in Organization settings, or ask the platform admin to set one')
+  rateHit(rateKey('therapy-ai', req.user.id), 60, 3600e3, 'Too many AI requests this hour. Try again later.')
+  const j2 = await aiChat(cfg, { temperature: 0.3, max_tokens: 4000, response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
+      { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] })
   let out
-  try { out = JSON.parse((await r.json()).choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+  try { out = JSON.parse(j2.choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
   return fixLists(out)
 }
 // Models sometimes answer a list field with one string (or null). Screens and reports expect arrays, so fix the shape once, here.
@@ -2969,7 +3013,7 @@ app.post('/api/therapy/children/:id/goals/generate', therapyGuard, async (req, r
   if (!ass) throw err(400, 'Approve an initial assessment first: goals are built on it')
   const cycle = openCycle(c.id, req.user)
   const area = T_AREAS.includes(req.body.area) ? req.body.area : null
-  const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed. Where a skill_library entry fits, build on its prerequisites and measurement.`, GOAL_SHAPE,
+  const out = await therapyAI(req, `Propose individualized development goals (long-term, short-term and three-month) ${area ? 'for ' + area : 'for the highest priorities'}. Each must name the exact current skill (what the child CAN do now, stated positively and observably, never what they cannot do) and the next target skill that follows from it, with prerequisites and a measurable success criterion. Do not repeat goals already listed. Where a skill_library entry fits, build on its prerequisites and measurement.`, GOAL_SHAPE,
     { child: childFacts(c), approved_assessment: j(ass.result), skill_library: skillsFor(req.user).filter(k => !area || CAT_AREA[k.category] === area).slice(0, 14).map(k => ({ category: k.category, name: k.name, prerequisites: k.prerequisites, teaching: k.teaching, measurement: k.measurement })), existing_goals: all("SELECT * FROM therapy_goals WHERE child_id=? AND status!='rejected'", c.id).map(goalFacts) }, req.body.lang)
   const ids = insertGoals(c.id, cycle.id, Array.isArray(out.goals) ? out.goals : [], 'ai')
   log(req, 'goals', 'therapy_child', c.id, { n: ids.length })
@@ -3232,14 +3276,18 @@ app.get('/api/therapy/children/:id/report', therapyGuard, (req, res) => {
 
 // ---- organization settings (one row per company, keyed by its main account) ----
 const ORG_DEFAULTS = { display_name: '', report_footer: '', default_lang: 'en', cycle_days: 91, guidelines: '' }
-const orgOf = u => ({ ...ORG_DEFAULTS, ...(one('SELECT * FROM therapy_org WHERE owner_id=?', accountRoot(u)) || {}) })
+const orgOf = u => { const { ai_key, ai_provider, ai_model, ...rest } = one('SELECT * FROM therapy_org WHERE owner_id=?', accountRoot(u)) || {}; return { ...ORG_DEFAULTS, ...rest } } // never carries the AI key
 const cycleMs = u => Math.min(366, Math.max(28, orgOf(u).cycle_days || 91)) * 864e5
 const orgAdmin = u => ['admin', 'owner', 'platform'].includes(u.role)
 app.get('/api/therapy/org', therapyGuard, (req, res) => {
   const root = accountRoot(req.user)
   const inAcct = `(u.id=? OR u.owner_id=?)`
   res.json({
-    org: orgOf(req.user), account_name: one('SELECT name FROM users WHERE id=?', root)?.name, can_edit: orgAdmin(req.user),
+    org: orgOf(req.user),
+    ai: (() => { const r = one('SELECT ai_provider, ai_model, ai_key FROM therapy_org WHERE owner_id=?', accountRoot(req.user)); const k = r?.ai_key && openKey(r.ai_key)
+      return { provider: AI_PROVIDERS[r?.ai_provider] ? r.ai_provider : '', model: r?.ai_model || '', has_key: !!r?.ai_key, key_hint: k ? '••••' + k.slice(-4) : null, can_store: !!aiSecret(),
+        providers: Object.entries(AI_PROVIDERS).map(([id, p]) => ({ id, label: p.label, model: p.model })), using: aiConfig(req.user).own ? 'own' : aiConfig(req.user).key ? 'platform' : 'none' } })(),
+    account_name: one('SELECT name FROM users WHERE id=?', root)?.name, can_edit: orgAdmin(req.user),
     team: all(`SELECT u.id, u.name, u.email, u.role, u.active FROM users u WHERE ${inAcct} AND u.role!='parent' ORDER BY u.name`, root, root)
       .map(m => ({ ...m, children: one('SELECT count(*) n FROM therapy_staff WHERE user_id=?', m.id).n })),
     counts: {
@@ -3250,15 +3298,33 @@ app.get('/api/therapy/org', therapyGuard, (req, res) => {
 })
 app.put('/api/therapy/org', therapyGuard, (req, res) => {
   if (!orgAdmin(req.user)) throw err(403, 'Only the organization admin can change these settings')
-  const b = req.body
-  const lang = ['en', 'ur'].includes(b.default_lang) ? b.default_lang : 'en'
-  const days = Math.min(366, Math.max(28, Math.round(+b.cycle_days) || 91))
-  const v = [String(b.display_name || '').slice(0, 120), String(b.report_footer || '').slice(0, 500), lang, days, String(b.guidelines || '').slice(0, 2000)]
-  run(`INSERT INTO therapy_org(owner_id,display_name,report_footer,default_lang,cycle_days,guidelines) VALUES(?,?,?,?,?,?)
-    ON CONFLICT(owner_id) DO UPDATE SET display_name=excluded.display_name, report_footer=excluded.report_footer, default_lang=excluded.default_lang, cycle_days=excluded.cycle_days, guidelines=excluded.guidelines`,
-  accountRoot(req.user), ...v)
-  log(req, 'org_settings', 'therapy_org', accountRoot(req.user), { cycle_days: days })
+  const b = req.body, root = accountRoot(req.user)
+  const old = one('SELECT * FROM therapy_org WHERE owner_id=?', root) || {}
+  const pick2 = (k, f) => (b[k] === undefined ? old[k] ?? ORG_DEFAULTS[k] ?? null : f(b[k]))
+  const row = {
+    display_name: pick2('display_name', v => String(v || '').slice(0, 120)), report_footer: pick2('report_footer', v => String(v || '').slice(0, 500)),
+    default_lang: pick2('default_lang', v => (['en', 'ur'].includes(v) ? v : 'en')), cycle_days: pick2('cycle_days', v => Math.min(366, Math.max(28, Math.round(+v) || 91))),
+    guidelines: pick2('guidelines', v => String(v || '').slice(0, 2000)),
+    ai_provider: pick2('ai_provider', v => { if (v && !AI_PROVIDERS[v]) throw err(400, 'Pick one of the listed AI providers'); return v || null }),
+    ai_model: pick2('ai_model', v => String(v || '').trim().slice(0, 120) || null),
+    ai_key: b.clear_ai_key ? null : typeof b.ai_key === 'string' && b.ai_key.trim() ? sealKey(b.ai_key.trim().slice(0, 300)) : old.ai_key ?? null,
+  }
+  if (row.ai_provider && !row.ai_key) throw err(400, 'Enter the API key for that provider, or switch back to the platform AI')
+  run(`INSERT INTO therapy_org(owner_id,display_name,report_footer,default_lang,cycle_days,guidelines,ai_provider,ai_model,ai_key) VALUES(?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(owner_id) DO UPDATE SET display_name=excluded.display_name, report_footer=excluded.report_footer, default_lang=excluded.default_lang, cycle_days=excluded.cycle_days,
+      guidelines=excluded.guidelines, ai_provider=excluded.ai_provider, ai_model=excluded.ai_model, ai_key=excluded.ai_key`,
+  root, row.display_name, row.report_footer, row.default_lang, row.cycle_days, row.guidelines, row.ai_provider, row.ai_model, row.ai_key)
+  log(req, 'org_settings', 'therapy_org', root, { cycle_days: row.cycle_days, ai_provider: row.ai_provider, ai_key_changed: !!b.ai_key || !!b.clear_ai_key })
   res.json({ ok: true })
+})
+// "Test connection": one tiny request with the saved settings, so a wrong key or model is found before a plan fails
+app.post('/api/therapy/org/ai-test', therapyGuard, async (req, res) => {
+  if (!orgAdmin(req.user)) throw err(403, 'Only the organization admin can test this')
+  const cfg = aiConfig(req.user)
+  if (!cfg.key) throw err(503, 'No AI key is set yet')
+  rateHit(rateKey('ai-test', req.user.id), 10, 3600e3, 'Too many tests. Try again later.')
+  const out = await aiChat(cfg, { max_tokens: 30, temperature: 0, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: 'Reply with the JSON {"ok":true}' }] })
+  res.json({ ok: true, provider: cfg.label, model: cfg.model, own: cfg.own, reply: String(out.choices?.[0]?.message?.content || '').slice(0, 60) })
 })
 
 // ---- delete a child and everything recorded about them ----
