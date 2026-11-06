@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, useApi, useAction, formData, go, fmt, shrinkImage, useMeta, downloadBlob } from './api.js'
 import { Select, Status } from './Leads.jsx'
+import Icon from './Icon.jsx'
 
 // AI text can arrive as a string or null: never call .map on it directly
 const arr = v => (Array.isArray(v) ? v : v ? [v] : [])
@@ -841,39 +842,55 @@ function NextStep({ d, setTab }) {
 }
 
 // ---------- ask the planner ----------
+const EXAMPLES = name => name
+  ? [`What can I try to help ${name} say longer sentences?`, `Why might ${name} be losing interest in lessons?`, `What should ${name} learn next?`, `How can I help ${name} when frustrated?`]
+  : ['How do I help a child who hits when an activity ends?', 'Why might a child lose interest during lessons?', 'What are good first steps for a child who says only single words?', 'How can parents practise at home?']
+
 function Ask() {
   const [kids] = useApi('/therapy/children')
   const [log, setLog] = useState([])
+  const [childId, setChildId] = useState('')
+  const [lang, setLang] = useState('en')
+  const [q, setQ] = useState('')
   const { run, error, busy } = useAction()
-  const submit = e => {
-    const body = formData(e)
+  const name = kids?.find(k => String(k.id) === childId)?.name
+  const ask = () => {
+    const question = q.trim()
+    if (!question || busy) return
     run(async () => {
-      const r = await api('/therapy/ask', { body: { question: body.question, child_id: body.child_id || null, lang: body.lang } })
-      setLog([{ q: body.question, who: kids?.find(k => String(k.id) === body.child_id)?.name || 'General', r }, ...log])
-      e.target.elements.question.value = ''
+      const r = await api('/therapy/ask', { body: { question, child_id: childId || null, lang } })
+      setLog(l => [{ q: question, who: name || 'General', r }, ...l]); setQ('')
     })
   }
   return (
-    <div className="card">
-      <h3>Ask about a child or a problem</h3>
-      <p className="muted">For example: "What can I try to help Ali say full sentences?" or "Why might a child lose interest during lessons?" Answers use the child's recorded profile, goals and sessions, and are suggestions for a professional to review.</p>
-      <form onSubmit={submit}>
-        <div className="row">
-          <Select name="child_id" options={(kids || []).map(k => [k.id, k.name])} blank="General question (no child)" />
-          <Select name="lang" options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} />
-        </div>
-        <textarea name="question" rows={2} required maxLength={1500} placeholder="Type your question…" />
-        <Err e={error} />
-        <button disabled={busy}>{busy ? 'Thinking…' : 'Ask'}</button>
-      </form>
+    <div className="card ask">
+      <div className="ask-head"><span className="ask-ic"><Icon name="ask" size={20} /></span>
+        <div><h3>Ask about a child or a problem</h3><p className="muted">Answers use the child's recorded profile, goals and sessions. They are suggestions for a professional to review.</p></div></div>
+      <div className="ask-row">
+        <label>About<Select value={childId} onChange={e => setChildId(e.target.value)} options={(kids || []).map(k => [k.id, k.name])} blank="General question (no child)" /></label>
+        <label>Answer in<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
+      </div>
+      <textarea className="ask-box" rows={3} maxLength={1500} value={q} onChange={e => setQ(e.target.value)} placeholder={name ? `Ask anything about ${name}…` : 'Describe a problem or ask a question…'}
+        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask() } }} />
+      <div className="ask-foot">
+        <div className="ask-chips">{EXAMPLES(name).slice(0, 3).map(x => <button type="button" key={x} className="ask-chip" onClick={() => setQ(x)}>{x}</button>)}</div>
+        <button onClick={ask} disabled={busy || !q.trim()}>{busy ? 'Thinking…' : 'Ask'}</button>
+      </div>
+      <Err e={error} />
+      {busy && <p className="muted ask-wait">Reading the records and thinking it through…</p>}
       {log.map((x, i) => (
-        <div key={i} className="card" style={{ marginTop: 12 }}>
-          <p className="muted" style={{ margin: 0 }}>{x.who}: {x.q}</p>
-          <p>{x.r.answer}</p>
-          <L title="What to try" items={x.r.suggestions} /><L title="Based on" items={x.r.based_on} /><L title="Missing information" items={x.r.missing_information} />
-          {x.r.consult_specialist && <p><b>See a specialist:</b> {x.r.consult_specialist}</p>}
+        <div key={i} className="ask-answer">
+          <p className="ask-q"><span>{x.who}</span>{x.q}</p>
+          <div className="ask-a">
+            <p>{x.r.answer}</p>
+            {arr(x.r.suggestions).length > 0 && <><h4>What to try</h4><ol>{arr(x.r.suggestions).map((t, k) => <li key={k}>{t}</li>)}</ol></>}
+            {x.r.consult_specialist && <p className="ask-warn"><b>Consider a specialist:</b> {x.r.consult_specialist}</p>}
+            {(arr(x.r.based_on).length > 0 || arr(x.r.missing_information).length > 0) && <details><summary className="muted">Sources and gaps</summary>
+              <L title="Based on" items={x.r.based_on} /><L title="Missing information" items={x.r.missing_information} /></details>}
+          </div>
         </div>
       ))}
+      {log.length > 0 && <button type="button" className="ghost" onClick={() => setLog([])}>Clear answers</button>}
     </div>
   )
 }

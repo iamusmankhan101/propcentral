@@ -2802,8 +2802,8 @@ async function therapyAI(req, task, shape, data, lang) {
   if (!key) throw err(503, 'AI is not configured yet (missing GROQ_API_KEY)')
   rateHit(rateKey('therapy-ai', req.user.id), 60, 3600e3, 'Too many AI requests this hour. Try again later.')
   const r = await fetch(`${GROQ_URL()}/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, response_format: { type: 'json_object' },
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
+    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', temperature: 0.3, max_tokens: 4000, response_format: { type: 'json_object' },
       messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
         { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] }),
   })
@@ -4379,7 +4379,7 @@ app.post('/api/assistant', async (req, res) => {
   const ask = withTools => fetch(`${GROQ_URL()}/chat/completions`, {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', messages: msgs, temperature: 0.2, ...(withTools ? { tools: ASSISTANT_SCHEMAS } : {}) }),
+    body: JSON.stringify({ model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', messages: msgs, temperature: 0.2, max_tokens: 2000, ...(withTools ? { tools: ASSISTANT_SCHEMAS } : {}) }),
   }).then(async r => {
     const d = await r.json().catch(() => ({}))
     if (!r.ok) throw err(502, `Assistant provider error: ${d.error?.message || r.statusText}`)

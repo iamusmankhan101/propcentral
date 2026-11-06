@@ -881,3 +881,27 @@ details > summary { cursor: pointer; }
 .form-bar { display: flex; align-items: center; gap: 14px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
 .form-bar .danger { margin-left: auto; color: var(--down); }
 @media (max-width: 700px) { .form-sec { grid-template-columns: minmax(0, 1fr); } .child-id h2 { font-size: 22px; } }
+
+/* therapy: ask the planner */
+.ask-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 14px; }
+.ask-head h3 { margin: 0 0 2px; }
+.ask-head p { margin: 0; }
+.ask-ic { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--s1); color: #fff; }
+.ask-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; margin-bottom: 10px; }
+.ask-row label { font-size: 12px; }
+.ask-box { width: 100%; min-height: 84px; resize: vertical; font-size: 15px; }
+.ask-foot { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; margin-top: 10px; }
+.ask-chips { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.ask-chip { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 12px; font-weight: 600; text-align: left; }
+.ask-chip:hover { border-color: var(--s1); }
+.ask-foot > button { flex: none; min-width: 110px; }
+.ask-wait { margin: 12px 0 0; }
+.ask-answer { margin-top: 18px; display: grid; gap: 8px; }
+.ask-q { margin: 0; align-self: end; justify-self: end; max-width: 80%; background: var(--field); border-radius: 14px 14px 4px 14px; padding: 9px 14px; font-size: 14px; }
+.ask-q span { display: block; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 2px; }
+.ask-a { border: 1px solid var(--line); border-left: 4px solid var(--s1); border-radius: 4px 14px 14px 14px; padding: 14px 18px; background: #fff; }
+.ask-a p { margin: 0 0 10px; line-height: 1.55; }
+.ask-a h4 { margin: 12px 0 6px; }
+.ask-a ol { margin: 0 0 10px; padding-left: 20px; display: grid; gap: 6px; line-height: 1.5; }
+.ask-warn { background: #fffbeb; border-radius: 10px; padding: 9px 12px; }
+@media (max-width: 700px) { .ask-row { grid-template-columns: minmax(0, 1fr); } .ask-foot { flex-direction: column; align-items: stretch; } .ask-q { max-width: 100%; } }
