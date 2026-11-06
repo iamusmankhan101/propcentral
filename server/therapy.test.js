@@ -142,8 +142,8 @@ test('modules picked at sign-up are saved; unknown ones ignored', async t => {
   assert.equal((await call(base, 'POST', '/register', null, { name: 'None Co', email: 'none@example.com', password: 'Passw0rd12345', plan: 'starter', modules: ['bogus'] })).status, 400, 'at least one real module')
   await call(base, 'POST', '/register', null, { name: 'Pick Co', email: 'pick@example.com', password: 'Passw0rd12345', plan: 'starter', modules: ['therapy', 'bogus'] })
   const main = (await J(await call(base, 'GET', '/platform/accounts', boss))).find(a => a.email === 'pick@example.com')
-  await call(base, 'POST', `/users/${main.id}/activate`, boss)
-  const token = await login(base, 'pick@example.com')
+  const token = await login(base, 'pick@example.com') // no activation step: email verification is off by default
+  assert.ok(token, 'a new sign-up can sign in straight away')
   assert.equal((await call(base, 'POST', '/therapy/children', token, { name: 'Sara' })).status, 200, 'therapy was on from sign-up')
 })
 

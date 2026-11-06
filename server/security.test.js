@@ -37,7 +37,7 @@ const post = (base, path, body, headers = {}) =>
   fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
 
 test('API refuses abusive requests and replies with security headers', async t => {
-  const base = await boot(t, portA)
+  const base = await boot(t, portA, { EMAIL_VERIFICATION: 'on' }) // the emailed-link flow stays covered while the default is off
 
   const health = await fetch(`${base}/health`)
   assert.equal(health.headers.get('x-content-type-options'), 'nosniff')

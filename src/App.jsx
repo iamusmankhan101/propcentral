@@ -58,7 +58,7 @@ function Login() {
         const { module, ...rest } = body
         const r = await api('/register', { body: { ...rest, modules: [module] } })
         setEmail(body.email); setMode('signin'); setError(''); setNeedCode(false); setStep(0); setSu({ ...su, password: '' })
-        setNotice(r.email_sent
+        setNotice(r.verified ? 'Account created! You can sign in now.' : r.email_sent
           ? `Account created! Check ${body.email} for a verification link.`
           : `Account created, but the verification email to ${body.email} could not be sent. Sign in and use "Resend verification email".`)
         return

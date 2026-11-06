@@ -842,9 +842,12 @@ app.post('/api/register', async (req, res) => {
   if (!picked.length) throw err(400, 'Pick a module')
   if (picked.length > 1) throw err(400, 'Pick one module to start with. More can be added later in Settings')
   const modules = JSON.stringify(picked)
-  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,created_at) VALUES(?,?,?,?,0,1,?,?,?,?,?)',
-    name, email, phone, 'admin', hash(pass), plan.id, trialEnds, modules, now()).lastInsertRowid
-  audit(null, 'register', 'user', id, { email, plan: plan.id }, req.ip)
+  // Email verification is off for now: the account is active at once. Set EMAIL_VERIFICATION=on to require the emailed link again.
+  const verify = process.env.EMAIL_VERIFICATION === 'on'
+  const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,email_verified,created_at) VALUES(?,?,?,?,?,1,?,?,?,?,?,?)',
+    name, email, phone, 'admin', verify ? 0 : 1, hash(pass), plan.id, trialEnds, modules, verify ? 0 : 1, now()).lastInsertRowid
+  audit(null, 'register', 'user', id, { email, plan: plan.id, verified_by_email: verify }, req.ip)
+  if (!verify) return res.json({ ok: true, plan: plan.id, trial_ends_at: trialEnds, email_sent: false, verified: true })
   // Generate and store a 32-byte verification token
   const rawToken = crypto.randomBytes(32).toString('hex')
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
@@ -2836,7 +2839,8 @@ async function aiChat(cfg, body) {
   // a slow or hung model must not hold the request open for minutes (free reasoning models can)
   const r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
-    body: JSON.stringify({ model: cfg.model, ...body }), signal: AbortSignal.timeout(+process.env.AI_TIMEOUT_MS || 90000),
+    // OpenRouter only: keep "thinking" models from spending the whole answer budget on reasoning (AI_REASONING=off to omit)
+    body: JSON.stringify({ model: cfg.model, ...(cfg.base.includes('openrouter.ai') && process.env.AI_REASONING !== 'off' && body.response_format ? { reasoning: { effort: process.env.AI_REASONING || 'low' } } : {}), ...body }), signal: AbortSignal.timeout(+process.env.AI_TIMEOUT_MS || 90000),
   }).catch(e => { throw err(504, e?.name === 'TimeoutError' ? `${cfg.label} took too long to answer with "${cfg.model}". Try again, or pick a faster model.` : 'Could not reach the AI service. Check the connection and try again.') })
   if (r.ok) return r.json().catch(e => { throw err(504, e?.name === 'TimeoutError' ? `${cfg.label} took too long to answer with "${cfg.model}". Try again, or pick a faster model.` : 'The AI answer was cut off. Try again.') })
   const who = cfg.own ? `your ${cfg.label} account` : 'the AI service'
@@ -2854,7 +2858,11 @@ async function therapyAI(req, task, shape, data, lang) {
     messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
       { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] })
   let out
-  try { out = parseAiJson(j2.choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+  try { out = parseAiJson(j2.choices[0].message.content) } catch {
+    // log the shape of the failure, never the content (it can hold a child's details)
+    console.warn(`[therapy-ai] unreadable answer from ${cfg.model}: finish=${j2.choices?.[0]?.finish_reason}, content_length=${String(j2.choices?.[0]?.message?.content ?? '').length}, completion_tokens=${j2.usage?.completion_tokens}`)
+    throw err(502, 'The AI gave an unreadable answer. Try again.')
+  }
   return fixLists(out)
 }
 // Some models wrap the JSON in ```json fences or add a sentence around it
