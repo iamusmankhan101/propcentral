@@ -1,4 +1,6 @@
-import { useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import JsBarcode from 'jsbarcode'
+import { createPortal } from 'react-dom'
 import { api, useApi, useMeta, useAction, formData, fmt, pkr, go, phone, shrinkImage, readFile } from './api.js'
 import logoImg from './assets/logo.png'
 import { Select, Status } from './Leads.jsx'
@@ -86,6 +88,7 @@ export function Project({ id }) {
   const [plotRef, setPlotRef] = useState(null) // an unlinked map plot picked for linking
   const [view, setView] = useState('grid')
   const [f, setF] = useState({ status: '', type: '', q: '', by: 'block' })
+  const [labels, setLabels] = useState(false)
   const [mapText, reloadMap, mapError] = useApi(data?.project.has_map ? `/projects/${id}/map` : null)
   const map = useMemo(() => mapText && parseMap(mapText), [mapText])
   if (loadError) return <p className="error">{loadError}</p>
@@ -119,6 +122,7 @@ export function Project({ id }) {
         </div>
       </div>
 
+      {labels && <BarcodeSheet p={p} units={shown} onClose={() => setLabels(false)} />}
       {tab === 'inventory' && (
         <>
           <div className="filters">
@@ -126,6 +130,7 @@ export function Project({ id }) {
             <Select value={f.status} onChange={set('status')} options={m.settings.unit_statuses} blank="Any status" />
             <Select value={f.type} onChange={set('type')} options={[...new Set(units.map(u => u.unit_type))]} blank="Any type" />
             {view === 'grid' && <Select value={f.by} onChange={set('by')} options={[['block', 'Group by ' + LEVELS[p.kind][1].toLowerCase()], ['size', 'Group by size']]} blank={null} />}
+            <button className="ghost" onClick={() => setLabels(true)} disabled={!shown.length}>Print barcodes</button>
             {p.has_map && view === 'map' && m.can('manage_inventory') && <ShareMap p={p} reload={reload} />}
             {p.has_map && <div className="seg small">{[['grid', 'Grid'], ['map', 'Map']].map(([k, l]) => <button key={k} className={view === k ? 'on' : ''} onClick={() => setView(k)}>{l}</button>)}</div>}
           </div>
@@ -1136,5 +1141,27 @@ export function AllotmentLetter({ id }) {
         <footer><small>Issued by {a.created_by_name || 'Estate Centric'} · This letter is valid only with the company stamp and an authorised signature.</small></footer>
       </article>
     </section>
+  )
+}
+
+// Printable sheet of Code 128 barcode labels, one per unit shown (so the filters above choose which). Code is U + unit id.
+function BarcodeSheet({ p, units, onClose }) {
+  const box = useRef()
+  useEffect(() => { box.current.querySelectorAll('svg[data-code]').forEach(el => JsBarcode(el, el.dataset.code, { format: 'CODE128', height: 40, width: 1.6, fontSize: 11, margin: 0 })) }, [units])
+  return createPortal(
+    <div className="barcode-sheet" ref={box}>
+      <div className="no-print row between">
+        <b>{units.length} barcode label{units.length === 1 ? '' : 's'}</b>
+        <div className="row"><button onClick={() => print()}>Print</button><button className="ghost" onClick={onClose}>Close</button></div>
+      </div>
+      <div className="barcode-grid">
+        {units.map(u => <div key={u.id} className="barcode-label">
+          <small>{p.name}</small>
+          <b>{[u.phase, u.block, u.street].filter(Boolean).join(' / ')} #{u.unit_no}</b>
+          <svg data-code={'U' + u.id} />
+        </div>)}
+      </div>
+    </div>,
+    document.body
   )
 }
