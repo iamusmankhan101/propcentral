@@ -847,8 +847,8 @@ app.post('/api/register', async (req, res) => {
   if (picked.length > 1) throw err(400, 'Pick one module to start with. More can be added later in Settings')
   if (!plansFor(picked[0]).some(p => p.id === plan.id)) throw err(400, picked[0] === 'therapy' ? 'Special Needs Therapy has its own plan (PKR 8,500 per month). Choose that plan' : 'That plan is for Special Needs Therapy only. Choose one of the other plans')
   const modules = JSON.stringify(picked)
-  // Email verification is off for now: the account is active at once. Set EMAIL_VERIFICATION=on to require the emailed link again.
-  const verify = process.env.EMAIL_VERIFICATION === 'on'
+  // Email verification is on: the account stays inactive until the emailed link is used. Set EMAIL_VERIFICATION=off to activate sign-ups at once.
+  const verify = process.env.EMAIL_VERIFICATION !== 'off'
   const id = run('INSERT INTO users(name,email,phone,role,active,available,pass,plan,trial_ends_at,modules,email_verified,created_at) VALUES(?,?,?,?,?,1,?,?,?,?,?,?)',
     name, email, phone, 'admin', verify ? 0 : 1, hash(pass), plan.id, trialEnds, modules, verify ? 0 : 1, now()).lastInsertRowid
   audit(null, 'register', 'user', id, { email, plan: plan.id, verified_by_email: verify }, req.ip)

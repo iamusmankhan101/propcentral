@@ -17,7 +17,8 @@ async function boot(t) {
   const dbPath = path.join(os.tmpdir(), `prop-central-therapy-${port}.db`)
   const child = spawn(process.execPath, ['server/server.js'], {
     cwd: root,
-    env: { ...process.env, DB_PATH: dbPath, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', PORT: String(port), VERCEL: '', AI_KEY_SECRET: 'test-secret', GROQ_API_KEY: process.env.FAKE_AI ? 'test-key' : '', GROQ_BASE_URL: process.env.FAKE_AI || '',
+    env: { ...process.env, DB_PATH: dbPath, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', PORT: String(port), VERCEL: '', AI_KEY_SECRET: 'test-secret', EMAIL_VERIFICATION: 'off', // these tests are about therapy, not the emailed link
+      GROQ_API_KEY: process.env.FAKE_AI ? 'test-key' : '', GROQ_BASE_URL: process.env.FAKE_AI || '',
       PLATFORM_ADMIN_EMAIL: PLATFORM.email, PLATFORM_ADMIN_PASSWORD: PLATFORM.password },
     stdio: 'ignore',
   })
@@ -142,8 +143,8 @@ test('modules picked at sign-up are saved; unknown ones ignored', async t => {
   assert.equal((await call(base, 'POST', '/register', null, { name: 'None Co', email: 'none@example.com', password: 'Passw0rd12345', plan: 'starter', modules: ['bogus'] })).status, 400, 'at least one real module')
   await call(base, 'POST', '/register', null, { name: 'Pick Co', email: 'pick@example.com', password: 'Passw0rd12345', plan: 'therapy', modules: ['therapy', 'bogus'] })
   const main = (await J(await call(base, 'GET', '/platform/accounts', boss))).find(a => a.email === 'pick@example.com')
-  const token = await login(base, 'pick@example.com') // no activation step: email verification is off by default
-  assert.ok(token, 'a new sign-up can sign in straight away')
+  const token = await login(base, 'pick@example.com') // no activation step: verification is switched off in this test server
+  assert.ok(token, 'with EMAIL_VERIFICATION=off a new sign-up can sign in straight away')
   assert.equal((await call(base, 'POST', '/therapy/children', token, { name: 'Sara' })).status, 200, 'therapy was on from sign-up')
 })
 
