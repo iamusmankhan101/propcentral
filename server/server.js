@@ -2838,7 +2838,7 @@ async function aiChat(cfg, body) {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
     body: JSON.stringify({ model: cfg.model, ...body }), signal: AbortSignal.timeout(+process.env.AI_TIMEOUT_MS || 90000),
   }).catch(e => { throw err(504, e?.name === 'TimeoutError' ? `${cfg.label} took too long to answer with "${cfg.model}". Try again, or pick a faster model.` : 'Could not reach the AI service. Check the connection and try again.') })
-  if (r.ok) return r.json()
+  if (r.ok) return r.json().catch(e => { throw err(504, e?.name === 'TimeoutError' ? `${cfg.label} took too long to answer with "${cfg.model}". Try again, or pick a faster model.` : 'The AI answer was cut off. Try again.') })
   const who = cfg.own ? `your ${cfg.label} account` : 'the AI service'
   if (r.status === 401 || r.status === 403) throw err(502, cfg.own ? `${cfg.label} rejected the API key. Check it in Organization settings.` : 'The AI key on the server was rejected. Ask the platform admin to check it.')
   if (r.status === 402) throw err(502, `${who[0].toUpperCase() + who.slice(1)} is out of credit. Add credit and try again.`)
@@ -2854,8 +2854,16 @@ async function therapyAI(req, task, shape, data, lang) {
     messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
       { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] })
   let out
-  try { out = JSON.parse(j2.choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
+  try { out = parseAiJson(j2.choices[0].message.content) } catch { throw err(502, 'The AI gave an unreadable answer. Try again.') }
   return fixLists(out)
+}
+// Some models wrap the JSON in ```json fences or add a sentence around it
+function parseAiJson(text) {
+  const t = String(text ?? '').trim()
+  try { return JSON.parse(t) } catch { /* fall through */ }
+  const a = t.indexOf('{'), b = t.lastIndexOf('}')
+  if (a < 0 || b <= a) throw new Error('no JSON')
+  return JSON.parse(t.slice(a, b + 1))
 }
 // Models sometimes answer a list field with one string (or null). Screens and reports expect arrays, so fix the shape once, here.
 const T_STR_LISTS = new Set(['reported_difficulties', 'demonstrated_abilities', 'strengths', 'areas_needing_further_assessment', 'suggested_questions', 'baseline_methods', 'missing_information',

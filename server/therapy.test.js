@@ -42,6 +42,7 @@ function fakeAI(t) {
   const srv = http.createServer((req, res) => {
     let b = ''; req.on('data', d => (b += d)); req.on('end', () => {
       const u = JSON.parse(b).messages.at(-1).content
+      if (u.includes('FENCED')) { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ choices: [{ message: { content: 'Here you go:\n```json\n{"reported_difficulties":["few words"],"learning_priorities":[]}\n```' } }] })) }
       if (u.includes('FORCE402')) { res.statusCode = 402; return res.end('{}') }
       if (u.includes('FORCE401')) { res.statusCode = 401; return res.end('{}') }
       const goal = { area: 'Speech and language', kind: 'three_month', current_skill: 'says single words', target_skill: 'two-word phrases', rationale: 'next step', prerequisites: 'single words', teaching: 'model and expand', activities: 'snack time', success_criteria: '8/10 trials', measure: 'trial count', timeframe: '3 months', priority: 'high' }
@@ -299,6 +300,8 @@ test('therapy: per-organization AI settings are validated, sealed and never retu
 
   // provider errors become plain messages
   const e402 = await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'FORCE402' })
+  const fenced = await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'FENCED' })
+  assert.equal(fenced.status, 200, 'JSON inside code fences is still read')
   assert.equal(e402.status, 502); assert.match((await J(e402)).error, /out of credit/)
   assert.match((await J(await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'FORCE401' }))).error, /key on the server was rejected/)
 
