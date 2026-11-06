@@ -2833,10 +2833,11 @@ function aiConfig(u) {
   return { own: false, label: 'the platform AI', base: GROQ_URL(), key: process.env.GROQ_API_KEY, model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b' }
 }
 async function aiChat(cfg, body) {
+  // a slow or hung model must not hold the request open for minutes (free reasoning models can)
   const r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}`, 'HTTP-Referer': process.env.SITE_URL || 'https://app.estatecentric.com', 'X-Title': 'Estate Centric' },
-    body: JSON.stringify({ model: cfg.model, ...body }),
-  })
+    body: JSON.stringify({ model: cfg.model, ...body }), signal: AbortSignal.timeout(+process.env.AI_TIMEOUT_MS || 90000),
+  }).catch(e => { throw err(504, e?.name === 'TimeoutError' ? `${cfg.label} took too long to answer with "${cfg.model}". Try again, or pick a faster model.` : 'Could not reach the AI service. Check the connection and try again.') })
   if (r.ok) return r.json()
   const who = cfg.own ? `your ${cfg.label} account` : 'the AI service'
   if (r.status === 401 || r.status === 403) throw err(502, cfg.own ? `${cfg.label} rejected the API key. Check it in Organization settings.` : 'The AI key on the server was rejected. Ask the platform admin to check it.')
@@ -2849,7 +2850,7 @@ async function therapyAI(req, task, shape, data, lang) {
   const cfg = aiConfig(req.user)
   if (!cfg.key) throw err(503, 'AI is not configured yet. Add a provider key in Organization settings, or ask the platform admin to set one')
   rateHit(rateKey('therapy-ai', req.user.id), 60, 3600e3, 'Too many AI requests this hour. Try again later.')
-  const j2 = await aiChat(cfg, { temperature: 0.3, max_tokens: 4000, response_format: { type: 'json_object' },
+  const j2 = await aiChat(cfg, { temperature: 0.3, max_tokens: +process.env.AI_MAX_TOKENS || 4000, // reasoning models spend part of this on thinking response_format: { type: 'json_object' },
     messages: [{ role: 'system', content: T_RULES + (orgOf(req.user).guidelines ? `\nThe centre's own guidelines (follow them unless they conflict with the rules above, which always win):\n${orgOf(req.user).guidelines}` : '') },
       { role: 'user', content: `${task}\nWrite in ${lang === 'ur' ? 'Roman Urdu (Urdu in English letters)' : 'English'}; JSON keys stay in English.\nJSON shape: ${shape}\n\nDATA:\n${JSON.stringify(data)}` }] })
   let out
