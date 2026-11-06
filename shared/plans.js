@@ -5,7 +5,12 @@ export const PLANS = [
   { id: 'starter', name: 'Starter', tagline: 'Small sales floor', monthly: 6499, users: 5, branches: 1, projects: 10, units: 1500, leads: 5000 },
   { id: 'growth', name: 'Growth', tagline: 'Growing team', monthly: 12499, users: 15, branches: 3, projects: 30, units: 5000, leads: 25000, popular: true },
   { id: 'agency', name: 'Agency', tagline: 'Multi-branch agency', monthly: 19999, users: null, branches: null, projects: null, units: null, leads: null },
+  // The Special Needs Therapy product has its own flat price. Property and student sign-ups cannot pick it, and therapy sign-ups cannot pick the others.
+  { id: 'therapy', name: 'Special Needs Therapy', tagline: 'For therapy and special education centres', monthly: 8500, module: 'therapy', users: null, branches: null, projects: null, units: null, leads: null,
+    features: ['Unlimited children and staff', 'AI assessments, goals, lessons and 3-month reviews', 'Parent portal and PDF reports', 'Knowledge base and skills library'] },
 ]
+// the plans a company can sign up for, given the product it picked
+export const plansFor = moduleId => PLANS.filter(p => (moduleId === 'therapy' ? p.module === 'therapy' : !p.module))
 
 export const planOf = id => PLANS.find(p => p.id === id) || null
 export const planName = id => planOf(id)?.name || 'Free trial'

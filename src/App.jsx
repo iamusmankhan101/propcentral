@@ -22,7 +22,7 @@ import Therapy, { TherapyChild, TherapyChildren, ParentPortal, TherapyLibrary, T
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
-import { PLANS, MODULES, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, MODULES, plansFor, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
 
@@ -44,6 +44,8 @@ function Login() {
   const [step, setStep] = useState(0)
   const [su, setSu] = useState({ name: '', email: '', phone: '', password: '', website: '', module: 'property', plan: 'solo' })
   const setF = k => e => setSu({ ...su, [k]: e.target.value })
+  // each product has its own plans: picking a module switches the plan to that product's default
+  const setModule = e => { const module = e.target.value; setSu({ ...su, module, plan: plansFor(module)[0].id }) }
   const switchTo = m => { setStep(0); setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify(''); setResendError('') }
   const submit = e => {
     if (signup && step < 2) { e.preventDefault(); setError(''); setStep(step + 1); return } // native validation already passed for this step's fields
@@ -114,7 +116,7 @@ function Login() {
                 <label key={x.id}>
                   <span className="mod-icon"><Icon name={{ property: 'building', edu: 'cap', therapy: 'heart' }[x.id] || 'layers'} size={22} /></span>
                   <span className="mod-text"><b>{x.name}</b><small>{x.blurb}</small></span>
-                  <input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setF('module')} />
+                  <input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setModule} />
                 </label>
               ))}
               <small className="muted">Pick one. You can change it later in Settings.</small>
@@ -122,12 +124,12 @@ function Login() {
             {step === 2 && <>
               <fieldset className="plan-picker">
                 <legend>Choose your plan</legend>
-                {PLANS.map(p => (
+                {plansFor(su.module).map(p => (
                   <label key={p.id}>
                     <input type="radio" name="plan" value={p.id} checked={su.plan === p.id} onChange={setF('plan')} />
                     <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
                     <span className="plan-price">PKR {p.monthly.toLocaleString('en-PK')}<small>/mo</small></span>
-                    <ul className="plan-limits">{PLAN_LIMITS.map(w => <li key={w}>{limitLabel(p, w)}</li>)}</ul>
+                    <ul className="plan-limits">{p.features ? p.features.map(f => <li key={f}>{f}</li>) : PLAN_LIMITS.map(w => <li key={w}>{limitLabel(p, w)}</li>)}</ul>
                   </label>
                 ))}
               </fieldset>

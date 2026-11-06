@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import * as XLSX from 'xlsx'
 import * as L from './lib.js'
 import { newSecret, checkTotp } from './totp.js'
-import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, plansFor, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
 // ---- email sending (Resend REST API) ----
 const sendEmail = async (to, subject, html) => {
@@ -845,6 +845,7 @@ app.post('/api/register', async (req, res) => {
   const picked = Array.isArray(req.body.modules) ? [...new Set(req.body.modules.filter(m => MODULE_IDS.includes(m)))] : ['property']
   if (!picked.length) throw err(400, 'Pick a module')
   if (picked.length > 1) throw err(400, 'Pick one module to start with. More can be added later in Settings')
+  if (!plansFor(picked[0]).some(p => p.id === plan.id)) throw err(400, picked[0] === 'therapy' ? 'Special Needs Therapy has its own plan (PKR 8,500 per month). Choose that plan' : 'That plan is for Special Needs Therapy only. Choose one of the other plans')
   const modules = JSON.stringify(picked)
   // Email verification is off for now: the account is active at once. Set EMAIL_VERIFICATION=on to require the emailed link again.
   const verify = process.env.EMAIL_VERIFICATION === 'on'
@@ -1697,6 +1698,9 @@ app.post('/api/company/modules', (req, res) => {
   if (unknown.length) throw err(400, `Unknown module ${unknown.join(', ')}`)
   const list = [...new Set(req.body.modules)]
   if (!list.length) throw err(400, 'At least one module must remain enabled')
+  // Therapy is a separately priced plan: a company on another plan cannot switch it on for itself (the platform owner can)
+  if (req.user.role !== 'platform' && list.includes('therapy') && !parseModules(one('SELECT modules FROM users WHERE id=?', req.user.owner_id ?? req.user.id)?.modules).includes('therapy'))
+    throw err(403, 'Special Needs Therapy is a separate plan (PKR 8,500 per month). Contact support to add it')
 
   const targetId = req.user.owner_id ?? req.user.id
   run('UPDATE users SET modules=? WHERE id=? OR owner_id=?', JSON.stringify(list), targetId, targetId)

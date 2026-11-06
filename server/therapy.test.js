@@ -61,7 +61,7 @@ function fakeAI(t) {
 
 async function company(base, name, email, modules) {
   const boss = await login(base, PLATFORM.email, PLATFORM.password)
-  await call(base, 'POST', '/register', null, { name, email, password: 'Passw0rd12345', plan: 'starter', modules })
+  await call(base, 'POST', '/register', null, { name, email, password: 'Passw0rd12345', plan: modules.includes('therapy') ? 'therapy' : 'starter', modules })
   const main = (await (await call(base, 'GET', '/platform/accounts', boss)).json()).find(a => a.email === email)
   await call(base, 'POST', `/users/${main.id}/activate`, boss)
   return login(base, email)
@@ -140,7 +140,7 @@ test('modules picked at sign-up are saved; unknown ones ignored', async t => {
   const base = await boot(t)
   const boss = await login(base, PLATFORM.email, PLATFORM.password)
   assert.equal((await call(base, 'POST', '/register', null, { name: 'None Co', email: 'none@example.com', password: 'Passw0rd12345', plan: 'starter', modules: ['bogus'] })).status, 400, 'at least one real module')
-  await call(base, 'POST', '/register', null, { name: 'Pick Co', email: 'pick@example.com', password: 'Passw0rd12345', plan: 'starter', modules: ['therapy', 'bogus'] })
+  await call(base, 'POST', '/register', null, { name: 'Pick Co', email: 'pick@example.com', password: 'Passw0rd12345', plan: 'therapy', modules: ['therapy', 'bogus'] })
   const main = (await J(await call(base, 'GET', '/platform/accounts', boss))).find(a => a.email === 'pick@example.com')
   const token = await login(base, 'pick@example.com') // no activation step: email verification is off by default
   assert.ok(token, 'a new sign-up can sign in straight away')
@@ -361,3 +361,21 @@ test('therapy: knowledge base is scoped, approved before use, retrieved into pro
   assert.equal(learned.length, 1, 'the too-short suggestion is skipped')
   assert.equal(learned[0].status, 'pending'); assert.equal(learned[0].body.includes('Ali'), false, 'the child name is removed'); assert.match(learned[0].body, /the child responded well to picture cards/i)
 })
+
+test('therapy pricing: its own PKR 8,500 plan, enforced both ways', async t => {
+  const base = await boot(t)
+  const reg = (email, plan, modules) => call(base, 'POST', '/register', null, { name: 'P Co', email, password: 'Passw0rd12345', plan, modules })
+  assert.equal((await reg('a@example.com', 'solo', ['therapy'])).status, 400, 'therapy cannot take a cheaper property plan')
+  assert.equal((await reg('b@example.com', 'therapy', ['property'])).status, 400, 'property cannot take the therapy plan')
+  assert.equal((await reg('c@example.com', 'therapy', ['therapy'])).status, 200)
+  const boss = await login(base, PLATFORM.email, PLATFORM.password)
+  const acc = (await J(await call(base, 'GET', '/platform/accounts', boss))).find(a => a.email === 'c@example.com')
+  assert.equal(acc.plan, 'therapy')
+  const dash = await J(await call(base, 'GET', '/platform/dashboard', boss))
+  assert.equal(dash.revenue.find(r => r.plan === 'therapy').monthly !== undefined, true)
+  // a property company cannot switch therapy on for itself
+  await reg('d@example.com', 'solo', ['property'])
+  const tok = await login(base, 'd@example.com')
+  assert.equal((await call(base, 'POST', '/company/modules', tok, { modules: ['property', 'therapy'] })).status, 403)
+})
+
