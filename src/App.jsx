@@ -12,7 +12,6 @@ import Commissions from './Commissions.jsx'
 import Listings from './Listings.jsx'
 import Reports from './Reports.jsx'
 import Campaigns from './Campaigns.jsx'
-import Assistant from './Assistant.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import Students, { Student, EduPayments } from './Edu.jsx'
 import Universities, { University } from './EduCatalogue.jsx'
@@ -634,7 +633,6 @@ export default function App() {
           </div>
           <div className="content">{page}</div>
         </main>
-        {!isPlatform && <Assistant />}
       </div>
     </Meta.Provider>
   )
