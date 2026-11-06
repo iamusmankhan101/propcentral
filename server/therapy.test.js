@@ -46,9 +46,9 @@ function fakeAI(t) {
       if (u.includes('FORCE402')) { res.statusCode = 402; return res.end('{}') }
       if (u.includes('FORCE401')) { res.statusCode = 401; return res.end('{}') }
       const goal = { area: 'Speech and language', kind: 'three_month', current_skill: 'says single words', target_skill: 'two-word phrases', rationale: 'next step', prerequisites: 'single words', teaching: 'model and expand', activities: 'snack time', success_criteria: '8/10 trials', measure: 'trial count', timeframe: '3 months', priority: 'high' }
-      const out = u.includes('"consult_specialist"') ? { answer: u.includes('one child') ? 'child-specific' : 'general', suggestions: ['try x'], based_on: [], missing_information: [], consult_specialist: null }
+      const out = u.includes('"consult_specialist"') ? { answer: u.includes('Zebrafish protocol') && u.includes('knowledge_base') ? 'used-kb' : u.includes('one child') ? 'child-specific' : 'general', suggestions: ['try x'], based_on: [], missing_information: [], consult_specialist: null }
         : u.includes('"insights"') ? { insights: [{ child_id: 1, type: 'attention', title: 'Check Ali', why: 'w', suggestion: 's' }, { child_id: 999, type: 'attention', title: 'not yours', why: '', suggestion: '' }], missing_information: [] }
-        : u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: [], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
+        : u.includes('"outcomes"') ? { outcomes: [{ goal_id: 1, outcome: 'Partially achieved', evidence: 'x' }], developmental_progress: { improved: ['a'], remaining_difficulties: ['b'] }, intervention_analysis: { effective: ['Ali responded well to picture cards at snack time', 'ok'], needs_modification: [] }, next_step_recommendations: ['c'], missing_information: [], next_goals: [{ ...goal, target_skill: 'three-word phrases' }] }
         : u.includes('"goals"') ? { goals: [goal], missing_information: ['hearing check'] }
         : u.includes('"reported_difficulties"') ? { reported_difficulties: 'few words', strengths: null, demonstrated_abilities: [], strengths: [], areas_needing_further_assessment: [], suggested_questions: [], baseline_methods: [], learning_priorities: [] }
         : u.includes('"learning_objective"') ? { title: 'Lesson', learning_objective: 'obj', steps: ['s'] }
@@ -319,4 +319,45 @@ test('therapy: per-organization AI settings are validated, sealed and never retu
   assert.equal((await call(base, 'PUT', '/therapy/org', a, { ai_provider: '', clear_ai_key: true })).status, 200)
   const after = await J(await call(base, 'GET', '/therapy/org', a))
   assert.equal(after.ai.has_key, false); assert.equal(after.ai.using, 'platform')
+})
+
+test('therapy: knowledge base is scoped, approved before use, retrieved into prompts, and learns from reviews', async t => {
+  process.env.FAKE_AI = await fakeAI(t)
+  const base = await boot(t)
+  delete process.env.FAKE_AI
+  const a = await company(base, 'Clinic A', 'a@example.com', ['therapy'])
+  const b = await company(base, 'Clinic B', 'b@example.com', ['therapy'])
+  const agent = await staffUser(base, a, 'Plain Agent', 'agent@example.com', 'agent')
+  const kid = (await J(await call(base, 'POST', '/therapy/children', a, { name: 'Ali' }))).id
+
+  assert.equal((await call(base, 'POST', '/therapy/kb', a, { title: '', body: 'x' })).status, 400)
+  const mine = await J(await call(base, 'POST', '/therapy/kb', a, { kind: 'guideline', title: 'Zebrafish protocol for transitions', body: 'Always give a two minute warning with a visual timer before an activity ends.' }))
+  assert.equal(mine.status, 'active', 'a professional entry is live at once')
+  const theirs = await J(await call(base, 'POST', '/therapy/kb', agent.token, { title: 'Agent idea', body: 'Something unreviewed that should not reach the AI yet.' }))
+  assert.equal(theirs.status, 'pending', 'anyone else waits for approval')
+  assert.equal((await call(base, 'PATCH', `/therapy/kb/${theirs.id}`, agent.token, { status: 'active' })).status, 403, 'and cannot approve it themselves')
+  assert.equal((await J(await call(base, 'GET', '/therapy/kb', b))).entries.length, 0, "another company never sees it")
+  assert.equal((await call(base, 'PATCH', `/therapy/kb/${mine.id}`, b, { status: 'off' })).status, 404)
+
+  // retrieval: the matching entry reaches the prompt and is reported back
+  const hit = await J(await call(base, 'POST', '/therapy/ask', a, { question: 'How should I handle transitions? Zebrafish protocol please', child_id: kid }))
+  assert.equal(hit.answer, 'used-kb'); assert.ok(hit.kb_used.includes('Zebrafish protocol for transitions'))
+  const miss = await J(await call(base, 'POST', '/therapy/ask', b, { question: 'How should I handle transitions? Zebrafish protocol please' }))
+  assert.equal(miss.answer, 'general', "another company's knowledge is not used")
+  await call(base, 'PATCH', `/therapy/kb/${mine.id}`, a, { status: 'off' })
+  assert.equal((await J(await call(base, 'POST', '/therapy/ask', a, { question: 'Zebrafish protocol for transitions', child_id: kid }))).answer, 'one child'.length ? 'child-specific' : '', 'a switched-off entry is not used')
+
+  // learning loop: an approved review proposes strategies as pending, child name removed
+  const aid = (await J(await call(base, 'POST', `/therapy/children/${kid}/assessment`, a, { text: 'x' }))).id
+  await call(base, 'PATCH', `/therapy/assessments/${aid}`, a, { approve: true })
+  await call(base, 'POST', `/therapy/children/${kid}/goals/generate`, a, {})
+  const goal = (await J(await call(base, 'GET', `/therapy/children/${kid}`, a))).goals[0]
+  await call(base, 'PATCH', `/therapy/goals/${goal.id}`, a, { status: 'approved' })
+  await call(base, 'POST', `/therapy/children/${kid}/sessions`, a, { goal_id: goal.id, activities: 'snack', response: 'ok' })
+  assert.equal((await call(base, 'POST', `/therapy/children/${kid}/review`, a, {})).status, 200)
+  const cyc = (await J(await call(base, 'GET', `/therapy/children/${kid}`, a))).cycles.find(c => c.status === 'active')
+  assert.equal((await call(base, 'POST', `/therapy/cycles/${cyc.id}/approve-review`, a, {})).status, 200)
+  const learned = (await J(await call(base, 'GET', '/therapy/kb?kind=learned', a))).entries
+  assert.equal(learned.length, 1, 'the too-short suggestion is skipped')
+  assert.equal(learned[0].status, 'pending'); assert.equal(learned[0].body.includes('Ali'), false, 'the child name is removed'); assert.match(learned[0].body, /the child responded well to picture cards/i)
 })

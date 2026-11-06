@@ -49,7 +49,7 @@ export default function Therapy() {
             <ul>{dash?.recent.map(s => <li key={s.id}><a href={'#/therapy/' + s.child_id}><b>{s.child}</b></a> · {s.date}{s.progress && <> · <Status s={s.progress} /></>}{s.response && <><br /><span className="muted">{s.response.slice(0, 110)}</span></>}</li>)}</ul></div>
           <div className="card"><h3>Quick links</h3>
             <p><a href="#/therapy/children?new=1">+ Add a child</a></p><p><a href="#/therapy/children">All children</a></p>
-            <p><a href="#/therapy/library">Skills library</a></p><p><a href="#/therapy/org">Organization settings</a></p></div>
+            <p><a href="#/therapy/library">Skills library</a></p><p><a href="#/therapy/knowledge">Knowledge base</a></p><p><a href="#/therapy/org">Organization settings</a></p></div>
         </div>
       </div>
     </section>
@@ -279,8 +279,9 @@ function Goals({ data, reload, lang, id, setTab }) {
   const { goals, lists, assessments } = data
   const ai = useAction(), manual = useAction()
   const [note, setNote] = useState([])
+  const [kbUsed, setKbUsed] = useState([])
   const [adding, setAdding] = useState(false)
-  const gen = e => { const { area } = formData(e); ai.run(async () => { const r = await api(`/therapy/children/${id}/goals/generate`, { body: { area, lang } }); setNote(r.missing_information); reload() }) }
+  const gen = e => { const { area } = formData(e); ai.run(async () => { const r = await api(`/therapy/children/${id}/goals/generate`, { body: { area, lang } }); setNote(r.missing_information); setKbUsed(r.kb_used || []); reload() }) }
   const add = e => { const body = formData(e); manual.run(async () => { await api(`/therapy/children/${id}/goals`, { body }); setAdding(false); reload() }) }
   const approved = assessments.some(a => a.approved)
   return (
@@ -294,6 +295,7 @@ function Goals({ data, reload, lang, id, setTab }) {
         <button type="button" className="ghost" onClick={() => setAdding(!adding)}>+ Own goal</button>
       </form>
       <Err e={ai.error} />
+      {kbUsed.length > 0 && <p className="muted kb-used">Knowledge used for these goals: {kbUsed.map(t => <span key={t} className="t-chip">{t}</span>)}</p>}
       {note.length > 0 && <div className="card"><L title="Information the AI says is missing" items={note} /></div>}
       {adding && <form className="card grid" onSubmit={add}>
         <label>Area<Select name="area" options={lists.areas} /></label>
@@ -885,7 +887,9 @@ function Ask() {
           <div className="ask-a">
             <p>{x.r.answer}</p>
             {arr(x.r.suggestions).length > 0 && <><h4>What to try</h4><ol>{arr(x.r.suggestions).map((t, k) => <li key={k}>{t}</li>)}</ol></>}
+            {arr(x.r.suggestions).length > 0 && <SaveToKb question={x.q} r={x.r} />}
             {x.r.consult_specialist && <p className="ask-warn"><b>Consider a specialist:</b> {x.r.consult_specialist}</p>}
+            {arr(x.r.kb_used).length > 0 && <p className="muted kb-used">Knowledge used: {arr(x.r.kb_used).map(t => <span key={t} className="t-chip">{t}</span>)}</p>}
             {(arr(x.r.based_on).length > 0 || arr(x.r.missing_information).length > 0) && <details><summary className="muted">Sources and gaps</summary>
               <L title="Based on" items={x.r.based_on} /><L title="Missing information" items={x.r.missing_information} /></details>}
           </div>
@@ -925,5 +929,72 @@ function AiSettings({ d, reload }) {
         {ai.has_key && <button type="button" className="ghost danger" disabled={busy} onClick={() => run(async () => { await api('/therapy/org', { method: 'PUT', body: { ai_provider: '', clear_ai_key: true } }); setProvider(''); reload() })}>Remove my key</button>}
       </div>}
     </form>
+  )
+}
+
+// "Save to knowledge base" under an answer the educator found useful (a professional's entry is live at once, others' wait for approval)
+function SaveToKb({ question, r }) {
+  const { run, error, busy } = useAction()
+  const [done, setDone] = useState(null)
+  if (done) return <p className="ok">{done === 'active' ? 'Saved to the knowledge base ✓' : 'Saved: waiting for a professional to approve it ✓'}</p>
+  return (
+    <p>
+      <button type="button" className="ghost" disabled={busy} onClick={() => run(async () => {
+        const res = await api('/therapy/kb', { body: { kind: 'strategy', title: question.slice(0, 100), body: [r.answer, ...arr(r.suggestions).map((t, i) => `${i + 1}. ${t}`)].join('\n'), source: 'Saved from an Ask answer' } })
+        setDone(res.status)
+      })}>{busy ? 'Saving…' : 'Save to knowledge base'}</button><Err e={error} />
+    </p>
+  )
+}
+
+// ---------- knowledge base ----------
+const KB_LABEL = { guideline: 'Guideline', strategy: 'Strategy', reference: 'Reference', learned: 'Learned' }
+export function TherapyKnowledge() {
+  const [f, setF] = useState({ q: '', status: '', kind: '' })
+  const [d, reload, loadError] = useApi('/therapy/kb?' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)))
+  const [adding, setAdding] = useState(false)
+  const { run, error, busy } = useAction()
+  const patch = (id, body) => run(async () => { await api('/therapy/kb/' + id, { method: 'PATCH', body }); reload() })
+  const add = e => { const body = formData(e); body.always = !!body.always; run(async () => { await api('/therapy/kb', { body }); setAdding(false); reload() }) }
+  const readFile = async e => { const file = e.target.files[0]; if (file) e.target.form.elements.body.value = (await file.text()).slice(0, 3000) }
+  return (
+    <section>
+      <div className="back-nav"><a className="button soft back-btn" href="#/therapy">← Back to therapy</a></div>
+      <div className="row between"><h2>Knowledge base {d && d.pending > 0 && <span className="count">{d.pending} to approve</span>}</h2>
+        <button className={adding ? 'ghost' : ''} onClick={() => setAdding(!adding)}>{adding ? 'Close form' : '+ Add knowledge'}</button></div>
+      <div className="card next-step"><p style={{ margin: 0 }}>The AI reads the entries that match each task, together with the {d?.starter_skills ?? 14} starter skills, and says which ones it used.
+        Add your centre's guidelines, proven strategies and references here. Strategies found effective in approved 3-month reviews are collected below as <b>Learned</b>, and the AI uses them only after a professional approves them.</p></div>
+      {adding && (
+        <form className="card grid" onSubmit={add}>
+          <label>Type<Select name="kind" options={(d?.kinds || []).map(k => [k, KB_LABEL[k]])} blank={null} defaultValue="strategy" /></label>
+          <label>Area (optional)<Select name="area" options={d?.areas || []} blank="Any area" /></label>
+          <label className="wide">Title *<input name="title" required maxLength={120} placeholder="e.g. Using visual schedules to reduce transition meltdowns" /></label>
+          <label className="wide">Content *<textarea name="body" rows={6} required maxLength={3000} placeholder="What to do, when it works, and how to tell it is working. Plain words are fine." /></label>
+          <label className="wide">Source or reference (optional)<input name="source" maxLength={200} placeholder="Book, training, protocol name…" /></label>
+          <label className="wide">Or load a .txt / .md file<input type="file" accept=".txt,.md,text/plain" onChange={readFile} /></label>
+          <label className="wide"><span><input name="always" type="checkbox" style={{ width: 'auto' }} /> Always give this to the AI (for example your core approach). Use sparingly.</span></label>
+          <Err e={error} /><div className="wide row"><button disabled={busy}>Save entry</button>{d && !d.can_approve && <small className="muted">Your entry will wait for a professional to approve it.</small>}</div>
+        </form>
+      )}
+      <div className="filters">
+        <input placeholder="Search the knowledge base…" value={f.q} onChange={e => setF({ ...f, q: e.target.value })} />
+        <Select value={f.status} onChange={e => setF({ ...f, status: e.target.value })} options={[['active', 'Active'], ['pending', 'Waiting for approval'], ['off', 'Switched off']]} blank="All statuses" />
+        <Select value={f.kind} onChange={e => setF({ ...f, kind: e.target.value })} options={(d?.kinds || []).map(k => [k, KB_LABEL[k]])} blank="All types" />
+      </div>
+      <Err e={loadError} /><Err e={error} />
+      {d?.entries.length === 0 && <div className="card muted">Nothing here yet. Add your first guideline or strategy, or approve what the AI learned from your reviews.</div>}
+      {d?.entries.map(k => (
+        <div key={k.id} className="card">
+          <div className="row between"><b>{k.title}</b>
+            <span><span className="t-chip">{KB_LABEL[k.kind]}</span> {k.area && <span className="t-chip">{k.area}</span>} {k.always && <span className="t-chip ok">Always used</span>} <Status s={k.status === 'active' ? 'Approved' : k.status === 'pending' ? 'Draft' : 'Rejected'} /></span></div>
+          <p style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{k.body}</p>
+          {k.source && <p className="muted" style={{ margin: 0 }}>Source: {k.source}</p>}
+          {d.can_approve && <div className="row" style={{ marginTop: 10 }}>
+            {k.status !== 'active' && <button disabled={busy} onClick={() => patch(k.id, { status: 'active' })}>Approve</button>}
+            {k.status === 'active' && <button className="ghost" disabled={busy} onClick={() => patch(k.id, { status: 'off' })}>Switch off</button>}
+            <button className="ghost danger" disabled={busy} onClick={() => confirm('Delete this entry?') && run(async () => { await api('/therapy/kb/' + k.id, { method: 'DELETE' }); reload() })}>Delete</button></div>}
+        </div>
+      ))}
+    </section>
   )
 }

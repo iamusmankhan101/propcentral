@@ -905,3 +905,5 @@ details > summary { cursor: pointer; }
 .ask-a ol { margin: 0 0 10px; padding-left: 20px; display: grid; gap: 6px; line-height: 1.5; }
 .ask-warn { background: #fffbeb; border-radius: 10px; padding: 9px 12px; }
 @media (max-width: 700px) { .ask-row { grid-template-columns: minmax(0, 1fr); } .ask-foot { flex-direction: column; align-items: stretch; } .ask-q { max-width: 100%; } }
+
+.kb-used { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; font-size: 12px; }
