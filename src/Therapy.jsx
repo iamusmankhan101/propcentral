@@ -133,9 +133,17 @@ export function TherapyChild({ id }) {
   return (
     <section>
       <div className="back-nav"><a className="button soft back-btn" href="#/therapy/children">← Back to children</a></div>
-      <div className="row between">
-        <div className="row"><Photo child={child} reload={reload} id={id} /><div><h2>{child.name}</h2><p className="muted">{child.age != null ? child.age + ' years' : 'Age unknown'}{child.guardian && ' · ' + child.guardian}{!child.consent && ' · ⚠ consent not recorded'}</p></div></div>
-        <label>AI language<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
+      <div className="child-head">
+        <Photo child={child} reload={reload} id={id} />
+        <div className="child-id">
+          <h2>{child.name}</h2>
+          <div className="t-chips">
+            <span className="t-chip">{child.age != null ? child.age + (child.age === 1 ? ' year' : ' years') : 'Age unknown'}</span>
+            {child.guardian && <span className="t-chip">Guardian: {child.guardian}</span>}
+            <span className={'t-chip ' + (child.consent ? 'ok' : 'warn')}>{child.consent ? '✓ Consent recorded' : '⚠ Consent not recorded'}</span>
+          </div>
+        </div>
+        <label className="child-lang">AI language<Select value={lang} onChange={e => setLang(e.target.value)} options={[['en', 'English'], ['ur', 'Roman Urdu']]} blank={null} /></label>
       </div>
       <NextStep d={data} setTab={setTab} />
       <div className="seg">{TABS.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
@@ -150,28 +158,45 @@ export function TherapyChild({ id }) {
   )
 }
 
-const FIELDS = [['difficulties', 'Reported difficulties'], ['abilities', 'Current abilities'], ['strengths', 'Strengths and interests'], ['communication', 'Communication abilities'],
-  ['learning_prefs', 'Learning preferences'], ['sensory', 'Sensory support needs'], ['history', 'Developmental history & previous assessments']]
+const FIELDS = [['difficulties', 'Reported difficulties', 'What worries the family or teachers'], ['abilities', 'Current abilities', 'What the child can do now'],
+  ['strengths', 'Strengths and interests', 'What the child enjoys and does well'], ['communication', 'Communication abilities', 'How the child makes needs known'],
+  ['learning_prefs', 'Learning preferences', 'What helps the child learn'], ['sensory', 'Sensory support needs', 'Sounds, textures, movement, lighting'],
+  ['history', 'Developmental history & previous assessments', 'Milestones, reports, earlier therapy']]
 
 function Profile({ data, reload, lang, id }) {
   const { child, assessments } = data
   const save = useAction(), ai = useAction(), del = useAction()
-  const submit = e => { const body = formData(e); body.consent = !!body.consent; save.run(async () => { await api('/therapy/children/' + id, { method: 'PATCH', body }); reload() }) }
+  const [saved, setSaved] = useState(false)
+  const submit = e => { const body = formData(e); body.consent = !!body.consent; save.run(async () => { await api('/therapy/children/' + id, { method: 'PATCH', body }); reload(); setSaved(true); setTimeout(() => setSaved(false), 2500) }) }
   const assess = e => { const { text } = formData(e); ai.run(async () => { await api(`/therapy/children/${id}/assessment`, { body: { text, lang } }); e.target.reset(); reload() }) }
   return (
     <>
-      <form className="card grid" onSubmit={submit}>
-        <h3 className="wide">Profile</h3>
-        <label>Name<input name="name" defaultValue={child.name} required /></label>
-        <label>Date of birth<input name="dob" type="date" defaultValue={child.dob || ''} /></label>
-        <label>Guardian<input name="guardian" defaultValue={child.guardian || ''} /></label>
-        <label>Guardian phone<input name="guardian_phone" defaultValue={child.guardian_phone || ''} /></label>
-        {FIELDS.map(([k, l]) => <label key={k} className="wide">{l}<textarea name={k} rows={2} defaultValue={child[k] || ''} /></label>)}
-        <label className="wide"><span><input name="consent" type="checkbox" style={{ width: 'auto' }} defaultChecked={!!child.consent} /> Guardian has consented to these records</span></label>
-        <Err e={save.error} />
-        <div className="wide row"><button disabled={save.busy}>Save profile</button>
-          {data.can_approve && <button type="button" className="ghost" disabled={del.busy} onClick={() => confirm(`Delete ${child.name} and every record about them? This cannot be undone.`) && del.run(async () => { await api('/therapy/children/' + id, { method: 'DELETE' }); go('/therapy') })}>Delete child</button>}</div>
-        <Err e={del.error} />
+      <form className="card profile-form" onSubmit={submit}>
+        <h3>Basic details</h3>
+        <div className="form-sec four">
+          <label>Name<input name="name" defaultValue={child.name} required /></label>
+          <label>Date of birth<input name="dob" type="date" defaultValue={child.dob || ''} /></label>
+          <label>Parent / guardian<input name="guardian" defaultValue={child.guardian || ''} /></label>
+          <label>Guardian phone<input name="guardian_phone" defaultValue={child.guardian_phone || ''} placeholder="03xx xxxxxxx" /></label>
+        </div>
+        <h3>Understanding the child</h3>
+        <div className="form-sec">
+          {FIELDS.slice(0, 4).map(([k, l, hint]) => <label key={k}>{l}<small className="muted">{hint}</small><textarea name={k} rows={4} defaultValue={child[k] || ''} /></label>)}
+        </div>
+        <h3>Learning and support</h3>
+        <div className="form-sec">
+          {FIELDS.slice(4).map(([k, l, hint]) => <label key={k}>{l}<small className="muted">{hint}</small><textarea name={k} rows={4} defaultValue={child[k] || ''} /></label>)}
+        </div>
+        <label className={'consent-box' + (child.consent ? ' on' : '')}>
+          <input name="consent" type="checkbox" defaultChecked={!!child.consent} />
+          <span><b>Guardian consent</b><small className="muted">The guardian has agreed to this child's records, and any photos, being kept here.</small></span>
+        </label>
+        <Err e={save.error} /><Err e={del.error} />
+        <div className="form-bar">
+          <button disabled={save.busy}>{save.busy ? 'Saving…' : 'Save profile'}</button>
+          {saved && <span className="ok">Saved ✓</span>}
+          {data.can_approve && <button type="button" className="ghost danger" disabled={del.busy} onClick={() => confirm(`Delete ${child.name} and every record about them? This cannot be undone.`) && del.run(async () => { await api('/therapy/children/' + id, { method: 'DELETE' }); go('/therapy') })}>Delete child</button>}
+        </div>
       </form>
       <form className="card" onSubmit={assess}>
         <h3>Initial assessment</h3>
@@ -416,8 +441,9 @@ function Photo({ child, reload, id }) {
   const pick = e => { const f = e.target.files[0]; if (f) run(async () => { await api('/therapy/children/' + id, { method: 'PATCH', body: { photo: await shrinkImage(f, 320) } }); reload() }) }
   return (
     <label title="Change photo" style={{ cursor: 'pointer' }}>
-      {child.photo ? <img src={child.photo} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover' }} />
-        : <span className="avatar" style={{ display: 'inline-flex', width: 64, height: 64, alignItems: 'center', justifyContent: 'center' }}>{child.name[0]}</span>}
+      {child.photo ? <img src={child.photo} alt="" style={{ width: 72, height: 72, borderRadius: '50%', objectFit: 'cover' }} />
+        : <span className="avatar" style={{ display: 'inline-flex', width: 72, height: 72, borderRadius: '50%', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>{child.name[0]}</span>}
+      <small className="muted" style={{ display: 'block', textAlign: 'center', fontSize: 11 }}>Change photo</small>
       <input type="file" accept="image/*" hidden onChange={pick} />{error && <small className="error">{error}</small>}
     </label>
   )
