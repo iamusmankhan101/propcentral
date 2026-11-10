@@ -44,7 +44,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '17' // 17: account ownership for projects
+const SCHEMA_VERSION = '18' // 18: repair the seeded workspace owner role
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -275,6 +275,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('projects', 'created_by', 'INTEGER')
     db.exec("UPDATE properties SET created_by=(SELECT id FROM users WHERE role='admin' AND owner_id IS NULL ORDER BY id LIMIT 1) WHERE created_by IS NULL")
     db.exec("UPDATE projects SET created_by=(SELECT id FROM users WHERE role='admin' AND owner_id IS NULL ORDER BY id LIMIT 1) WHERE created_by IS NULL")
+    db.exec("UPDATE users SET role='admin' WHERE lower(email)='admin@propcentral.local' AND owner_id IS NULL AND role!='platform'")
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     // Visa tracking fields on edu_students
     addColumn('edu_students', 'visa_type', 'TEXT')
@@ -1641,6 +1642,7 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
   if (!target) throw err(404, 'User not found')
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f, req.user)
+  if ('role' in f && target.owner_id == null && !['admin', 'owner'].includes(f.role)) throw err(400, 'The main workspace account must keep an admin or owner role')
   if (req.body.password) {
     const pass = typeof req.body.password === 'string' ? req.body.password : ''
     const problem = L.passwordProblem(pass)
