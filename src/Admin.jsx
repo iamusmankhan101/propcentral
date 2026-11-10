@@ -8,9 +8,11 @@ import Icon from './Icon.jsx'
 export function Users() {
   const m = useMeta()
   const [users, reload] = useApi('/users')
+  const [roleData] = useApi('/roles')
   const { run, error, busy, setError } = useAction()
   const [msg, setMsg] = useState('')
   const [resetLink, setResetLink] = useState('')
+  const [expanded, setExpanded] = useState(null)
   const teams = m.teams.map(t => [t.id, t.name]), branches = m.branches.map(b => [b.id, b.name])
   const isPlatform = m.me.role === 'platform'
   const done = text => { setMsg(text); reload(); m.reloadMeta() }
@@ -28,9 +30,9 @@ export function Users() {
         // If admin left password blank, generate a random one — they'll use the reset link to set their own
         if (!body.password) body.password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + 'Aa1!'
         const { id } = await api('/users', { body })
-        const r = await api(`/users/${id}/reset-password`, { body: {} })
-        setResetLink(location.origin + '/#/reset?token=' + r.token)
-        setMsg(`${body.name} added. Share the set-password link below — it expires in 30 minutes.`)
+        const r = await api(`/users/${id}/invite`, { body: {} })
+        setResetLink(r.invite_url)
+        setMsg(`${body.name} added. ${r.email_sent ? 'An invitation was emailed.' : 'Email is not configured, so share the link below.'}`)
       }
       form.reset(); setShowCreate(false); reload(); m.reloadMeta()
     })
@@ -56,21 +58,21 @@ export function Users() {
     }
   })
   // Hand out a one-time link instead of choosing the password for them
-  const resetPw = u => run(async () => {
-    const r = await api(`/users/${u.id}/reset-password`, { body: {} })
-    setResetLink(location.origin + '/#/reset?token=' + r.token)
-    setMsg(`Reset link for ${u.name}. Send it to them directly; it expires in 30 minutes and works once.`)
+  const invite = u => run(async () => {
+    const r = await api(`/users/${u.id}/invite`, { body: {} })
+    setResetLink(r.invite_url)
+    setMsg(`${r.email_sent ? 'Invitation emailed' : 'Email is not configured; invite link generated'} for ${u.name}. It expires in 30 minutes and works once.`)
   })
   const addOrg = (path, body) => run(async () => { await api(path, { body }); done('Added') })
 
   return (
     <section>
       <h2>{m.me.role === 'platform' ? 'Accounts' : 'Users'}</h2>
-      <p className="muted">New sign-ups choose a plan and get a 7-day free trial; when it runs out they cannot sign in until someone with <b>Manage users</b> marks the plan paid. Limits count the whole company, and the plan on the account doing the adding sets them: {PLANS.map(p => `${p.name}: ${limitLine(p)}`).join(' | ')}.</p>
+      <p className="muted">Invite people with a role, team and branch. Their role controls the permissions shown below; fine-tune role permissions in Settings › Roles & permissions. Only users in this workspace are shown.</p>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error" onClick={() => setError('')}>{error}</p>}
       {resetLink && <div className="card row between reset-link">
-        <input readOnly value={resetLink} onFocus={e => e.target.select()} aria-label="Password reset link" />
+        <input readOnly value={resetLink} onFocus={e => e.target.select()} aria-label="Invitation link" />
         <button onClick={() => { navigator.clipboard?.writeText(resetLink); setMsg('Reset link copied') }}>Copy</button>
         <button className="ghost" onClick={() => setResetLink('')}>Dismiss</button>
       </div>}
@@ -80,7 +82,11 @@ export function Users() {
           <tbody>{users?.map(u => (
             <tr key={u.id} className={u.active ? '' : 'muted'}>
               <td>{u.name}<small><br />{u.phone}</small></td><td>{u.email}</td>
-              <td><Select value={u.role} onChange={e => patch(u, { role: e.target.value })} options={m.roles.map(r => [r.key, r.label])} blank={null} /></td>
+              <td>
+                <Select value={u.role} onChange={e => patch(u, { role: e.target.value })} options={m.roles.map(r => [r.key, r.label])} blank={null} />
+                <button className="ghost" type="button" onClick={() => setExpanded(expanded === u.id ? null : u.id)}>{expanded === u.id ? 'Hide permissions' : 'View permissions'}</button>
+                {expanded === u.id && <small className="muted permission-list">{(roleData?.permissions && Object.entries(roleData.permissions).filter(([, roles]) => roles.includes(u.role)).map(([key]) => key.replaceAll('_', ' ')).join(', ')) || 'No permissions assigned'}</small>}
+              </td>
               <td><Select value={u.team_id ?? ''} onChange={e => patch(u, { team_id: e.target.value || null })} options={teams} blank="—" /></td>
               <td><Select value={u.branch_id ?? ''} onChange={e => patch(u, { branch_id: e.target.value || null })} options={branches} blank="—" /></td>
               <td>
@@ -99,7 +105,7 @@ export function Users() {
                 onBlur={e => e.target.value !== String(u.commission_rate ?? '') && patch(u, { commission_rate: e.target.value })} aria-label={`Commission % for ${u.name}`} /></td>
               <td><input type="checkbox" checked={!!u.available} onChange={e => patch(u, { available: e.target.checked ? 1 : 0 })} /></td>
               <td className="row">
-                <button className="ghost" onClick={() => resetPw(u)}>Reset link</button>
+                <button className="ghost" onClick={() => invite(u)}>Invite link</button>
                 {u.plan && !u.paid_at && <button className="ghost" onClick={() => run(async () => { await api(`/users/${u.id}/mark-paid`, { body: {} }); done(`${u.name} marked paid — the trial lock is off`) })}>Mark paid</button>}
                 {u.totp_on ? <button className="ghost" onClick={() => confirm(`Turn off two-factor login for ${u.name}? (e.g. lost phone)`) && run(async () => { await api(`/users/${u.id}/reset-2fa`, { body: {} }); done('2FA reset') })}>Reset 2FA</button> : null}
                 {u.active
@@ -133,14 +139,14 @@ export function Users() {
               <label>Team<Select name="team_id" options={teams} blank="—" /></label>
               <label>Branch<Select name="branch_id" options={branches} blank="—" /></label>
               <label title="Leave blank — a set-password link is generated automatically and shown after saving">
-                Password <small className="muted">(optional — leave blank to send a set-password link)</small>
+              Password <small className="muted">(optional — leave blank to invite them to set it)</small>
                 <input name="password" type="password" minLength="10" maxLength="200" placeholder="Leave blank to auto-generate" />
               </label>
             </>
           )}
           <div className="wide">
             <button disabled={busy}>
-              {isPlatform ? 'Create Workspace & Generate Setup Link' : 'Create account & get set-password link'}
+              {isPlatform ? 'Create Workspace & Generate Setup Link' : 'Invite user & generate link'}
             </button>
           </div>
         </form>

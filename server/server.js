@@ -44,7 +44,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '16' // 15: therapy_children profile columns; 16: per-organization AI settings
+const SCHEMA_VERSION = '17' // 17: account ownership for projects
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -272,6 +272,9 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     addColumn('therapy_children', 'sensory', 'TEXT')
     addColumn('therapy_children', 'consent', 'INTEGER DEFAULT 0')
     addColumn('users', 'modules', 'TEXT') // JSON array of product modules this company can use; NULL = property only
+    addColumn('projects', 'created_by', 'INTEGER')
+    db.exec("UPDATE properties SET created_by=(SELECT id FROM users WHERE role='admin' AND owner_id IS NULL ORDER BY id LIMIT 1) WHERE created_by IS NULL")
+    db.exec("UPDATE projects SET created_by=(SELECT id FROM users WHERE role='admin' AND owner_id IS NULL ORDER BY id LIMIT 1) WHERE created_by IS NULL")
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS units_map_ref ON units(project_id, map_ref) WHERE map_ref IS NOT NULL')
     // Visa tracking fields on edu_students
     addColumn('edu_students', 'visa_type', 'TEXT')
@@ -1144,6 +1147,8 @@ app.post('/api/me/2fa/disable', (req, res) => {
   res.json({ ok: true })
 })
 app.post('/api/users/:id/reset-2fa', guard('manage_users'), (req, res) => { // reset
+  const target = userInAccount(req.params.id, req.user)
+  if (!target) throw err(404, 'User not found')
   run('UPDATE users SET totp_on=0, totp_secret=NULL, two_factor_method=NULL WHERE id=?', req.params.id)
   run('DELETE FROM sessions WHERE user_id=?', req.params.id)
   log(req, '2fa_reset', 'user', +req.params.id)
@@ -1151,12 +1156,26 @@ app.post('/api/users/:id/reset-2fa', guard('manage_users'), (req, res) => { // r
 })
 // Admin hands out a one-time link instead of choosing a password (so the admin never knows it)
 app.post('/api/users/:id/reset-password', guard('manage_users'), (req, res) => {
-  const u = one('SELECT * FROM users WHERE id=? AND active=1', req.params.id)
+  const u = userInAccount(req.params.id, req.user)
+  if (u && !u.active) throw err(400, 'Activate this user before sending an invite')
   if (!u) throw err(404, 'User not found')
   const token = issueReset(u.id)
   notify(u.id, 'An admin created a password reset link for you', null)
   log(req, 'password_reset_link', 'user', u.id)
   res.json({ token, expires_at: new Date(Date.now() + RESET_TTL_MS).toISOString() })
+})
+
+app.post('/api/users/:id/invite', guard('manage_users'), async (req, res) => {
+  const u = userInAccount(req.params.id, req.user)
+  if (u && !u.active) throw err(400, 'Activate this user before sending an invite')
+  if (!u) throw err(404, 'User not found')
+  const token = issueReset(u.id)
+  const siteUrl = process.env.SITE_URL || process.env.APP_URL || `${req.protocol}://${req.get('host')}`
+  const inviteUrl = `${siteUrl.replace(/\/$/, '')}/#/reset?token=${token}`
+  const sent = await sendEmail(u.email, 'You are invited to Estate Centric', `<p>You have been invited to join Estate Centric.</p><p><a href="${inviteUrl}">Set your password and join</a></p><p>This invitation expires in 30 minutes and can only be used once.</p>`)
+  notify(u.id, 'Your Estate Centric invitation is ready. Check your email or ask an admin for the setup link.', null)
+  log(req, 'invite', 'user', u.id, { email_sent: !!sent?.ok })
+  res.json({ invite_url: inviteUrl, email_sent: !!sent?.ok, expires_at: new Date(Date.now() + RESET_TTL_MS).toISOString() })
 })
 
 app.get('/api/meta', (req, res) => {
@@ -1172,7 +1191,7 @@ app.get('/api/meta', (req, res) => {
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), ...edu, projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
-    users: u.role === 'parent' ? [{ id: u.id, name: u.name, role: u.role, active: 1 }] : all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' ORDER BY name"),
+    users: u.role === 'parent' ? [{ id: u.id, name: u.name, role: u.role, active: 1 }] : all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' AND (id=? OR owner_id=?) ORDER BY name", u.owner_id ?? u.id, u.owner_id ?? u.id),
     branches: all('SELECT * FROM branches'), teams: all('SELECT * FROM teams'),
     dealers: all('SELECT id, name, company, active FROM dealers ORDER BY name'),
     roles: roles().map(r => ({ key: r.key, label: r.label })),
@@ -1586,27 +1605,40 @@ const checkRole = (f, actor) => {
   if (f.role === 'platform' && actor?.role !== 'platform') throw err(403, 'Only a platform owner can assign the platform role')
 }
 const checkRate = f => { if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%') }
-app.get('/api/users', guard('manage_users'), (_req, res) => res.json(all(`SELECT u.id, ${USER_FIELDS.map(f => 'u.' + f)}, u.active, u.totp_on,
+const userInAccount = (id, actor) => {
+  const root = actor.role === 'platform' ? null : actor.owner_id ?? actor.id
+  return root == null
+    ? one("SELECT * FROM users WHERE id=? AND role!='platform'", +id)
+    : one("SELECT * FROM users WHERE id=? AND role!='platform' AND (id=? OR owner_id=?)", +id, root, root)
+}
+const accountUsersWhere = actor => actor.role === 'platform' ? ["u.role!='platform'", []] : ["u.role!='platform' AND (u.id=? OR u.owner_id=?)", [actor.owner_id ?? actor.id, actor.owner_id ?? actor.id]]
+app.get('/api/users', guard('manage_users'), (req, res) => {
+  const [where, params] = accountUsersWhere(req.user)
+  res.json(all(`SELECT u.id, ${USER_FIELDS.map(f => 'u.' + f)}, u.active, u.totp_on,
   u.plan, u.trial_ends_at, u.paid_at, u.owner_id, u.modules,
-  (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u ORDER BY u.active DESC, u.name`, closedJson())))
+  (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u WHERE ${where} ORDER BY u.active DESC, u.name`, closedJson(), ...params))
+})
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f, req.user)
   const pass = typeof req.body.password === 'string' ? req.body.password : ''
-  if (!f.name || !f.email || !f.role || !pass) throw err(400, 'Name, email, role and password are required')
-  const problem = L.passwordProblem(pass)
+  if (!f.name || !f.email || !f.role) throw err(400, 'Name, email and role are required')
+  const setupPass = pass || crypto.randomBytes(24).toString('base64url') + 'Aa1!'
+  const problem = L.passwordProblem(setupPass)
   if (problem) throw err(400, problem)
   f.email = f.email.toLowerCase()
   planCap(req.user, 'users')
   const plan = req.body.plan ? pickPlan(req.body.plan) : null
   const owner = req.user.role === 'platform' ? null : req.user.owner_id ?? req.user.id
   const cols = [...Object.keys(f), 'pass', 'owner_id', 'created_at', ...(plan ? ['plan', 'trial_ends_at'] : [])]
-  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(pass), owner, now(),
+  const id = run(`INSERT INTO users(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), hash(setupPass), owner, now(),
     ...(plan ? [plan.id, trialEndsAt()] : [])).lastInsertRowid
   log(req, 'create', 'user', id, { ...f, plan: plan?.id })
   res.json({ id })
 })
 app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
+  const target = userInAccount(req.params.id, req.user)
+  if (!target) throw err(404, 'User not found')
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f, req.user)
   if (req.body.password) {
@@ -1618,8 +1650,6 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
   }
   // Choosing a plan (at activation, or moving someone up or down) restarts their 7 days — unless an admin has marked it paid.
   if ('plan' in req.body) {
-    const target = one('SELECT * FROM users WHERE id=?', req.params.id)
-    if (!target) throw err(404, 'User not found')
     f.plan = req.body.plan ? pickPlan(req.body.plan).id : null
     if (f.plan && !target.paid_at) f.trial_ends_at = trialEndsAt()
   }
@@ -1631,7 +1661,7 @@ app.patch('/api/users/:id', guard('manage_users'), (req, res) => {
 // and the trial lock stops applying. The plan stays as the record of what they are on.
 const markPaid = (id, plan) => run('UPDATE users SET paid_at=?, trial_ends_at=NULL, plan=COALESCE(?,plan) WHERE id=?', now(), plan ?? null, id)
 app.post('/api/users/:id/mark-paid', guard('manage_users'), (req, res) => {
-  const target = one('SELECT * FROM users WHERE id=?', req.params.id)
+  const target = userInAccount(req.params.id, req.user)
   if (!target) throw err(404, 'User not found')
   markPaid(target.id)
   log(req, 'mark_paid', 'user', target.id, { plan: target.plan })
@@ -1723,7 +1753,7 @@ app.get('/api/platform/dashboard', platformOnly, (_req, res) => {
     locked_out: mains.filter(u => !u.paid_at && u.trial_ends_at && u.trial_ends_at < t).length,
     new_this_week: mains.filter(u => u.created_at >= week).length,
     with_edu: mains.filter(u => parseModules(u.modules).includes('edu')).length,
-    sub_users: one("SELECT count(*) n FROM users WHERE role!='platform' AND owner_id IS NOT NULL").n,
+    sub_users: one("SELECT count(*) n FROM users WHERE role!='platform' AND owner_id IS NOT NULL AND created_at IS NOT NULL").n,
     revenue: PLANS.map(p => { const n = paid.filter(u => u.plan === p.id).length; return { plan: p.id, name: p.name, count: n, monthly: n * p.monthly } }),
     monthly_revenue: paid.reduce((s, u) => s + (planOf(u.plan)?.monthly || 0), 0),
     requests: {
@@ -2022,6 +2052,7 @@ app.delete('/api/users/:id', guard('manage_users'), (req, res) => {
 app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {
   const id = +req.params.id
   if (id === req.user.id) throw err(400, 'You cannot deactivate yourself')
+  if (!userInAccount(id, req.user)) throw err(404, 'User not found')
   run('UPDATE users SET active=0, available=0 WHERE id=?', id)
   run('DELETE FROM sessions WHERE user_id=?', id)
   const open = all(`SELECT l.id FROM leads l WHERE l.agent_id=? AND ${OPEN}`, id, closedJson())
@@ -2030,7 +2061,7 @@ app.post('/api/users/:id/deactivate', guard('manage_users'), (req, res) => {
   res.json({ open: open.length, reassigned: moved })
 })
 app.post('/api/users/:id/activate', guard('manage_users'), (req, res) => {
-  const target = one('SELECT * FROM users WHERE id=?', req.params.id)
+  const target = userInAccount(req.params.id, req.user)
   if (!target) throw err(404, 'User not found')
   // bringing someone back uses up a seat on the admin's plan too (activating an active account adds nothing)
   if (!target.active) planCap(req.user, 'users')
@@ -2073,8 +2104,9 @@ app.get('/api/audit', guard('audit'), (req, res) => res.json(all(`SELECT a.*, u.
 const UNIT_FIELDS = ['phase', 'block', 'street', 'unit_no', 'unit_type', 'category', 'size', 'uom', 'dimensions', 'facing', 'features', 'premiums', 'map_ref']
 const UOMS = ['marla', 'kanal', 'sqft', 'sqyd']
 const parseUnit = u => ({ ...u, premiums: JSON.parse(u.premiums || '[]') })
-function projectRow(id) {
-  const row = one('SELECT * FROM projects WHERE id=?', id)
+function projectRow(id, user) {
+  const [where, params] = user ? accountWhere('p', user) : ['1=1', []]
+  const row = one(`SELECT p.* FROM projects p WHERE p.id=? AND ${where}`, id, ...params)
   if (!row) throw err(404, 'Project not found')
   const { map_svg, ...p } = row // the map is megabytes: served on its own route
   return { ...p, has_map: !!map_svg, premiums: JSON.parse(p.premiums) }
@@ -2091,9 +2123,12 @@ function unitHistory(unitId, userId, from, to, leadId, note) {
 }
 const unitLabel = un => [un.phase, un.block, un.street].filter(Boolean).join(' / ') + ' #' + un.unit_no
 
-app.get('/api/projects', (_req, res) => res.json(all(`SELECT p.id, p.name, p.city, p.kind, p.marla_sqft,
+app.get('/api/projects', (req, res) => {
+  const [where, params] = accountWhere('p', req.user)
+  res.json(all(`SELECT p.id, p.name, p.city, p.kind, p.marla_sqft,
     (SELECT json_group_object(status, n) FROM (SELECT status, count(*) n FROM units WHERE project_id=p.id GROUP BY status)) counts
-  FROM projects p ORDER BY p.name`).map(p => ({ ...p, counts: JSON.parse(p.counts || '{}') }))))
+  FROM projects p WHERE ${where} ORDER BY p.name`, ...params).map(p => ({ ...p, counts: JSON.parse(p.counts || '{}') })))
+})
 
 function projectInput(b) {
   const f = pick(b, ['name', 'city', 'kind', 'marla_sqft', 'premiums', 'hold_hours', 'notes'])
@@ -2106,20 +2141,22 @@ function projectInput(b) {
 app.post('/api/projects', guard('manage_inventory'), (req, res) => {
   const f = projectInput(req.body)
   if (!f.name?.trim()) throw err(400, 'Name is required')
-  if (one('SELECT 1 FROM projects WHERE name=?', f.name.trim())) throw err(400, 'A project with this name exists')
+  const [where, params] = accountWhere('p', req.user)
+  if (one(`SELECT 1 FROM projects p WHERE p.name=? AND ${where}`, f.name.trim(), ...params)) throw err(400, 'A project with this name exists')
   f.name = f.name.trim()
   planCap(req.user, 'projects')
-  const cols = [...Object.keys(f), 'created_at']
-  const id = run(`INSERT INTO projects(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), now()).lastInsertRowid
+  const cols = [...Object.keys(f), 'created_by', 'created_at']
+  const id = run(`INSERT INTO projects(${cols}) VALUES(${cols.map(() => '?')})`, ...Object.values(f), req.user.id, now()).lastInsertRowid
   log(req, 'create', 'project', id, f)
   res.json({ id })
 })
 app.patch('/api/projects/:id', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id), f = projectInput(req.body)
+  const p = projectRow(req.params.id, req.user), f = projectInput(req.body)
   if ('name' in f) {
     f.name = String(f.name ?? '').trim()
     if (!f.name) throw err(400, 'Name is required')
-    if (one('SELECT 1 FROM projects WHERE name=? AND id<>?', f.name, p.id)) throw err(400, 'A project with this name exists')
+    const [where, params] = accountWhere('p', req.user)
+    if (one(`SELECT 1 FROM projects p WHERE p.name=? AND p.id<>? AND ${where}`, f.name, p.id, ...params)) throw err(400, 'A project with this name exists')
   }
   if (Object.keys(f).length) run(`UPDATE projects SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), p.id)
   log(req, 'update', 'project', p.id, f)
@@ -2127,7 +2164,7 @@ app.patch('/api/projects/:id', guard('manage_inventory'), (req, res) => {
 })
 // Deletes the project with its units, prices, holds and allotments; the audit row keeps a copy of all of it
 app.delete('/api/projects/:id', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   if (req.body?.confirm !== p.name) throw err(400, 'Type the project name to confirm')
   const units = all('SELECT * FROM units WHERE project_id=?', p.id)
   const snapshot = { project: p, units, prices: all('SELECT * FROM price_lists WHERE project_id=?', p.id), allotments: all('SELECT * FROM allotments WHERE project_id=?', p.id) }
@@ -2140,18 +2177,19 @@ app.delete('/api/projects/:id', guard('manage_inventory'), (req, res) => {
   res.json({ ok: true })
 })
 app.get('/api/projects/:id', (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   res.json({ project: p, units: pricedUnits(p), prices: all('SELECT pl.*, u.name created_by_name FROM price_lists pl LEFT JOIN users u ON u.id=pl.created_by WHERE project_id=? ORDER BY effective_from DESC, id DESC', p.id) })
 })
 
 // Plot map: an SVG whose <g id="plots"> paths are linked to units through units.map_ref
 app.get('/api/projects/:id/map', (req, res) => {
-  const m = one('SELECT map_svg FROM projects WHERE id=?', req.params.id)?.map_svg
+  const p = projectRow(req.params.id, req.user)
+  const m = one('SELECT map_svg FROM projects WHERE id=?', p.id)?.map_svg
   if (!m) throw err(404, 'No map for this project')
   sendSvg(res, m)
 })
 app.put('/api/projects/:id/map', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id), svg = req.body.svg
+  const p = projectRow(req.params.id, req.user), svg = req.body.svg
   if (typeof svg !== 'string' || !/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/.test(svg) || !svg.includes('id="plots"')) throw err(400, 'Upload an SVG with a <g id="plots"> group')
   if (svg.length > 8e6) throw err(400, 'Map SVG is too large (max 8 MB)')
   tx(() => {
@@ -2171,7 +2209,7 @@ const projectSvg = id => {
   return String(m)
 }
 app.post('/api/projects/:id/map/plots', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id), b = req.body, svg = projectSvg(p.id)
+  const p = projectRow(req.params.id, req.user), b = req.body, svg = projectSvg(p.id)
   if (!/^M[\d.\s,L-]+Z$/.test(b.d || '')) throw err(400, 'Draw at least 3 corners')
   if (!String(b.no || '').trim()) throw err(400, 'Plot number is required')
   if (b.uom && !UOMS.includes(b.uom)) throw err(400, 'Unknown unit of measure')
@@ -2185,7 +2223,7 @@ app.post('/api/projects/:id/map/plots', guard('manage_inventory'), (req, res) =>
   res.json({ id })
 })
 app.delete('/api/projects/:id/map/plots/:ref', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id), ref = req.params.ref, svg = projectSvg(p.id)
+  const p = projectRow(req.params.id, req.user), ref = req.params.ref, svg = projectSvg(p.id)
   if (!/^drawn-[a-f0-9]+$/.test(ref)) throw err(400, 'Only plots drawn in the app can be removed (the others come from the uploaded map)')
   if (one('SELECT 1 FROM units WHERE project_id=? AND map_ref=?', p.id, ref)) throw err(400, 'This plot is linked to inventory. Unlink it first.')
   run('UPDATE projects SET map_svg=? WHERE id=?', svg.replace(new RegExp(`<path id="${ref}"[^>]*/>`), ''), p.id)
@@ -2195,7 +2233,7 @@ app.delete('/api/projects/:id/map/plots/:ref', guard('manage_inventory'), (req, 
 
 // New random client link; the old one stops working
 app.post('/api/projects/:id/share', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id), token = crypto.randomBytes(16).toString('base64url')
+  const p = projectRow(req.params.id, req.user), token = crypto.randomBytes(16).toString('base64url')
   run('UPDATE projects SET share_token=? WHERE id=?', token, p.id)
   log(req, 'share_map', 'project', p.id, {})
   res.json({ token })
@@ -2203,7 +2241,7 @@ app.post('/api/projects/:id/share', guard('manage_inventory'), (req, res) => {
 
 // Bulk add (the client expands "Block A, 1-50" into rows); duplicates are reported, not overwritten
 app.post('/api/projects/:id/units', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   const rows = req.body.units || []
   if (!rows.length || rows.length > 2000) throw err(400, 'Send 1 to 2000 units')
   planCap(req.user, 'units', rows.length) // all-or-nothing: a half-imported block is worse than a refused batch
@@ -2240,7 +2278,7 @@ const uniqueUnit = fn => {
 
 // One plot at a time, for irregular blocks and numbering
 app.post('/api/projects/:id/plot', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   const f = { ...pick(req.body, UNIT_FIELDS), ...moneyFields(req.user, req.body) }
   for (const k of ['phase', 'block', 'street']) f[k] = (f[k] ?? '').toString().trim()
   f.unit_no = String(f.unit_no ?? '').trim()
@@ -2255,13 +2293,14 @@ app.post('/api/projects/:id/plot', guard('manage_inventory'), (req, res) => {
   res.json({ id })
 })
 
-const unitFor = id => {
-  const un = one('SELECT * FROM units WHERE id=?', id)
+const unitFor = (id, user) => {
+  const [where, params] = user ? accountWhere('p', user) : ['1=1', []]
+  const un = one(`SELECT un.* FROM units un JOIN projects p ON p.id=un.project_id WHERE un.id=? AND ${where}`, id, ...params)
   if (!un) throw err(404, 'Unit not found')
   return parseUnit(un)
 }
 app.get('/api/units/:id', (req, res) => {
-  const un = unitFor(req.params.id), p = projectRow(un.project_id)
+  const un = unitFor(req.params.id, req.user), p = projectRow(un.project_id, req.user)
   res.json({
     unit: pricedUnits(p, 'un.id=?', un.id)[0], project: p,
     allotment: one(`SELECT id, allotment_no, price, sale_date FROM allotments WHERE unit_id=? AND status='active'`, un.id),
@@ -2271,7 +2310,7 @@ app.get('/api/units/:id', (req, res) => {
   })
 })
 app.patch('/api/units/:id', guard('manage_inventory'), (req, res) => {
-  const un = unitFor(req.params.id)
+  const un = unitFor(req.params.id, req.user)
   const f = { ...pick(req.body, UNIT_FIELDS), ...moneyFields(req.user, req.body) }
   if (f.uom && !UOMS.includes(f.uom)) throw err(400, 'Unknown unit of measure')
   for (const k of ['phase', 'block', 'street']) if (k in f) f[k] = (f[k] ?? '').toString().trim()
@@ -2284,7 +2323,7 @@ app.patch('/api/units/:id', guard('manage_inventory'), (req, res) => {
 
 // M10.7-M10.8: holds and status changes are conditional UPDATEs; SQLite serializes writers, so two agents can never hold the same unit
 const holdUnit = tx((user, un, lead) => {
-  const p = projectRow(un.project_id)
+  const p = projectRow(un.project_id, req.user)
   if (one(`SELECT count(*) n FROM units WHERE hold_by=? AND status='On Hold'`, user.id).n >= S('max_holds_per_agent'))
     throw err(400, `You already have ${S('max_holds_per_agent')} units on hold. Release one first.`)
   const until = new Date(Date.now() + p.hold_hours * 3600e3).toISOString()
@@ -2295,13 +2334,13 @@ const holdUnit = tx((user, un, lead) => {
   return until
 })
 app.post('/api/units/:id/hold', (req, res) => {
-  const un = unitFor(req.params.id), lead = scopedLead(req.user, req.body.lead_id)
+  const un = unitFor(req.params.id, req.user), lead = scopedLead(req.user, req.body.lead_id)
   const until = holdUnit(req.user, un, lead)
   log(req, 'hold', 'unit', un.id, { lead_id: lead.id, until })
   res.json({ ok: true, hold_until: until })
 })
 app.post('/api/units/:id/release', (req, res) => {
-  const un = unitFor(req.params.id)
+  const un = unitFor(req.params.id, req.user)
   if (un.status !== 'On Hold') throw err(400, 'Unit is not on hold')
   if (un.hold_by !== req.user.id && !can(req.user, 'manage_inventory')) throw err(403, 'Only the agent who placed the hold can release it')
   run(`UPDATE units SET status='Available', hold_by=NULL, hold_until=NULL, lead_id=NULL, updated_at=? WHERE id=? AND status='On Hold'`, now(), un.id)
@@ -2311,7 +2350,7 @@ app.post('/api/units/:id/release', (req, res) => {
 })
 const NEEDS_LEAD = ['Token Received', 'Booked', 'Sold']
 app.post('/api/units/:id/status', guard('unit_status'), (req, res) => {
-  const un = unitFor(req.params.id), { status, expected, note } = req.body
+  const un = unitFor(req.params.id, req.user), { status, expected, note } = req.body
   if (!S('unit_statuses').includes(status) || status === 'On Hold') throw err(400, 'Pick a status (use Hold to put a unit on hold)')
   if (expected !== un.status) throw err(409, `Unit changed to "${un.status}" meanwhile. Reload and check.`)
   // the customer stays linked through token/booking/sale and on cancellation (for the record); Available/Blocked clear it
@@ -2324,7 +2363,7 @@ app.post('/api/units/:id/status', guard('unit_status'), (req, res) => {
     status, leadId, now(), un.id, un.status).changes) throw err(409, 'Unit changed meanwhile. Reload and check.')
   unitHistory(un.id, req.user.id, un.status, status, leadId, note)
   if (lead) {
-    const p = projectRow(un.project_id)
+    const p = projectRow(un.project_id, req.user)
     addActivity(lead.id, req.user.id, 'system', `Unit ${p.name} ${unitLabel(un)}: ${un.status} → ${status}${note ? ` (${note})` : ''}`)
     if (['Booked', 'Sold'].includes(status) && lead.status !== 'Booked') applyStatus(lead, 'Booked', req.user.id)
   }
@@ -2340,7 +2379,7 @@ function addPrice(p, b, userId) {
     p.id, unit_type, Math.round(+rate), per, per === 'plot' ? +b.size : null, per === 'plot' ? b.uom : null, effective_from, note || null, userId, now()).lastInsertRowid
 }
 app.post('/api/projects/:id/prices', guard('edit_pricing'), (req, res) => {
-  const p = projectRow(req.params.id), id = addPrice(p, req.body, req.user.id)
+  const p = projectRow(req.params.id, req.user), id = addPrice(p, req.body, req.user.id)
   log(req, 'price_list', 'project', p.id, pick(req.body, ['unit_type', 'rate', 'per', 'size', 'uom', 'effective_from']))
   res.json({ id })
 })
@@ -2349,7 +2388,7 @@ app.post('/api/projects/:id/prices', guard('edit_pricing'), (req, res) => {
 const numbersOf = text => { try { return L.parseNumbers(text) } catch (e) { throw err(400, e.message) } }
 const takenIn = (projectId, block) => new Set(all(`SELECT unit_no FROM units WHERE project_id=? AND phase='' AND block=? AND street=''`, projectId, block).map(r => r.unit_no))
 app.post('/api/projects/:id/categories', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   const { unit_type = 'Plot', category = 'residential', size, uom = 'marla', price } = req.body
   const block = (req.body.block || '').trim(), listed = numbersOf(req.body.numbers)
   const count = listed.length || +req.body.count || 0
@@ -2378,7 +2417,7 @@ app.post('/api/projects/:id/categories', guard('manage_inventory'), (req, res) =
 
 // Give auto-numbered plots of one size ("5M-1"…) their real block and plot numbers, in order
 app.post('/api/projects/:id/number', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   const { unit_type, size, uom } = req.body, block = (req.body.block || '').trim(), nos = numbersOf(req.body.numbers)
   if (!block) throw err(400, 'Block is required')
   if (!nos.length) throw err(400, 'Enter the plot numbers, e.g. 1-50')
@@ -2402,7 +2441,7 @@ const DELETABLE = `units.status='Available' AND units.lead_id IS NULL AND NOT EX
 const removeUnits = tx(ids => ids.forEach(id => { run('DELETE FROM unit_history WHERE unit_id=?', id); run('DELETE FROM units WHERE id=?', id) }))
 
 app.delete('/api/units/:id', guard('manage_inventory'), (req, res) => {
-  const un = unitFor(req.params.id)
+  const un = unitFor(req.params.id, req.user)
   if (!one(`SELECT 1 FROM units WHERE id=? AND ${DELETABLE}`, un.id))
     throw err(400, 'Only available plots that were never sold or allotted can be deleted. Mark it Blocked instead.')
   removeUnits([un.id])
@@ -2411,7 +2450,7 @@ app.delete('/api/units/:id', guard('manage_inventory'), (req, res) => {
 })
 
 app.post('/api/projects/:id/sizes/delete', guard('manage_inventory'), (req, res) => {
-  const p = projectRow(req.params.id)
+  const p = projectRow(req.params.id, req.user)
   const { unit_type, size, uom, scope } = req.body
   if (!['unnumbered', 'all'].includes(scope)) throw err(400, 'Choose what to delete')
   const same = `project_id=? AND unit_type=? AND size=? AND uom=?`, args = [p.id, unit_type, +size, uom]
@@ -2430,7 +2469,7 @@ app.post('/api/projects/:id/sizes/delete', guard('manage_inventory'), (req, res)
 // ---- allotments: assigning a sold/booked plot to its client (M13/M15, light) ----
 const ALLOTTABLE = ['Available', 'On Hold', 'Token Received', 'Booked']
 app.post('/api/units/:id/allot', guard('unit_status'), (req, res) => {
-  const un = unitFor(req.params.id), p = projectRow(un.project_id)
+  const un = unitFor(req.params.id, req.user), p = projectRow(un.project_id, req.user)
   const { status = 'Sold', expected, note } = req.body
   if (!['Booked', 'Sold'].includes(status)) throw err(400, 'Assign as Booked or Sold')
   if (expected !== un.status) throw err(409, `Unit changed to "${un.status}" meanwhile. Reload and check.`)
@@ -2492,7 +2531,7 @@ app.post('/api/allotments/:id/cancel', guard('unit_status'), (req, res) => {
   tx(() => {
     run(`UPDATE allotments SET status='cancelled', cancelled_at=?, cancel_note=? WHERE id=?`, now(), req.body.note.trim(), a.id)
     run(`UPDATE commissions SET status='cancelled' WHERE allotment_id=? AND status='pending'`, a.id) // paid ones stay, flagged for recovery
-    const un = unitFor(a.unit_id)
+    const un = unitFor(a.unit_id, req.user)
     run(`UPDATE units SET status='Available', lead_id=NULL, updated_at=? WHERE id=? AND lead_id=?`, now(), a.unit_id, a.lead_id)
     unitHistory(a.unit_id, req.user.id, un.status, 'Available', a.lead_id, `Allotment ${a.allotment_no} cancelled: ${req.body.note.trim()}`)
     addActivity(a.lead_id, req.user.id, 'system', `Allotment ${a.allotment_no} cancelled: ${req.body.note.trim()}`)
@@ -2605,7 +2644,7 @@ app.post('/api/allotments/:id/transfer', guard('payments'), (req, res) => {
   if (fee > 0 && !PAYMENT_METHODS.includes(b.method)) throw err(400, 'Pick how the fee was paid')
   if (!isDate(b.paid_on) || b.paid_on > today()) throw err(400, 'Transfer date is required and cannot be in the future')
   const out = tx(() => {
-    const p = projectRow(a.project_id), un = unitFor(a.unit_id)
+    const p = projectRow(a.project_id, req.user), un = unitFor(a.unit_id, req.user)
     const leadId = +b.lead_id || createLead({ ...b.client, source: 'Walk-in', project: p.name, remarks: `Transfer of ${a.allotment_no}` }, req.user.id).lead_id
     if (leadId === a.lead_id) throw err(400, 'Pick a different client')
     const lead = one('SELECT * FROM leads WHERE id=? AND deleted=0', leadId)
@@ -2743,7 +2782,7 @@ app.patch('/api/listings/:id', (req, res) => {
 const MEDIA_KINDS = ['brochure', 'floor_plan', 'photo', 'video', 'other']
 const MEDIA_MIME = /^data:(image\/(jpeg|png|webp)|application\/pdf);base64,/
 function mediaGuard(u, entity, id) {
-  if (entity === 'project') { projectRow(id); if (!can(u, 'manage_inventory')) throw err(403, 'You do not have permission for this') }
+  if (entity === 'project') { projectRow(id, u); if (!can(u, 'manage_inventory')) throw err(403, 'You do not have permission for this') }
   else if (entity === 'listing') { if (!canEditListing(u, listingFor(id))) throw err(403, 'Only the listing agent or a manager can change this listing') }
   else throw err(400, 'Unknown item')
 }
@@ -4787,8 +4826,9 @@ function propertyStatus(l, st) {
   return 'Let'
 }
 const canEditProperty = (u, p) => can(u, 'properties') || p.agent_id === u.id
-const propertyFor = id => {
-  const p = one('SELECT * FROM properties WHERE id=?', id)
+const propertyFor = (id, user) => {
+  const [where, params] = user ? accountWhere('p', user) : ['1=1', []]
+  const p = one(`SELECT p.* FROM properties p WHERE p.id=? AND ${where}`, id, ...params)
   if (!p) throw err(404, 'Property not found')
   return p
 }
@@ -4825,9 +4865,11 @@ function propertyFields(b, old = {}, user = null) {
 }
 
 app.get('/api/properties', (req, res) => {
+  const [where, params] = accountWhere('p', req.user)
   const rows = all(`SELECT p.*, o.name owner_name, o.phone owner_phone, ag.name agent_name FROM properties p LEFT JOIN contacts o ON o.id=p.owner_contact_id
-    LEFT JOIN users ag ON ag.id=p.agent_id ORDER BY p.society, p.phase, p.block, p.number`)
-  const leases = Object.fromEntries(all(`SELECT l.*, c.name tenant_name, c.phone tenant_phone FROM leases l JOIN contacts c ON c.id=l.tenant_contact_id WHERE l.status='active'`).map(l => [l.property_id, l]))
+    LEFT JOIN users ag ON ag.id=p.agent_id WHERE ${where} ORDER BY p.society, p.phase, p.block, p.number`, ...params)
+  const ids = rows.map(p => p.id)
+  const leases = Object.fromEntries(ids.length ? all(`SELECT l.*, c.name tenant_name, c.phone tenant_phone FROM leases l JOIN contacts c ON c.id=l.tenant_contact_id WHERE l.status='active' AND l.property_id IN (${ids.map(() => '?')})`, ...ids).map(l => [l.property_id, l]) : [])
   const mask = !can(req.user, 'view_phone')
   res.json(rows.map(p => {
     const l = leases[p.id], st = l && leaseState(l)
@@ -4838,7 +4880,7 @@ app.get('/api/properties', (req, res) => {
   }))
 })
 app.get('/api/properties/:id', (req, res) => {
-  const p = propertyFor(req.params.id), u = req.user
+  const p = propertyFor(req.params.id, req.user), u = req.user
   const leases = all('SELECT * FROM leases WHERE property_id=? ORDER BY start_date DESC, id DESC', p.id)
   const active = leases.find(l => l.status === 'active'), st = active && leaseState(active)
   const collected = one(`SELECT COALESCE(sum(r.amount),0) n FROM rent_payments r JOIN leases l ON l.id=r.lease_id WHERE l.property_id=? AND r.kind='rent' AND r.voided_at IS NULL`, p.id).n
@@ -4871,7 +4913,7 @@ app.post('/api/properties', (req, res) => {
   res.json({ id })
 })
 app.patch('/api/properties/:id', (req, res) => {
-  const p = propertyFor(req.params.id)
+  const p = propertyFor(req.params.id, req.user)
   if (!canEditProperty(req.user, p)) throw err(403, 'Only the property agent or a property manager can change this')
   const f = propertyFields(req.body, p, req.user)
   tx(() => {
@@ -4882,10 +4924,10 @@ app.patch('/api/properties/:id', (req, res) => {
   res.json({ ok: true })
 })
 
-const leaseFor = id => {
+const leaseFor = (id, user) => {
   const l = one('SELECT * FROM leases WHERE id=?', id)
   if (!l) throw err(404, 'Lease not found')
-  return { l, p: propertyFor(l.property_id) }
+  return { l, p: propertyFor(l.property_id, user) }
 }
 function leaseFields(b) {
   const f = pick(b, LEASE_FIELDS)
@@ -4895,7 +4937,7 @@ function leaseFields(b) {
   return f
 }
 app.post('/api/properties/:id/leases', (req, res) => {
-  const p = propertyFor(req.params.id)
+  const p = propertyFor(req.params.id, req.user)
   if (!canEditProperty(req.user, p)) throw err(403, 'Only the property agent or a property manager can add a tenant')
   const f = leaseFields(req.body)
   if (!f.start_date || !f.end_date || !f.rent) throw err(400, 'Tenant, start, end and monthly rent are required')
@@ -4910,7 +4952,7 @@ app.post('/api/properties/:id/leases', (req, res) => {
   res.json({ id })
 })
 app.patch('/api/leases/:id', (req, res) => {
-  const { l, p } = leaseFor(req.params.id)
+  const { l, p } = leaseFor(req.params.id, req.user)
   if (!canEditProperty(req.user, p)) throw err(403, 'You do not have permission for this')
   const f = pick(req.body, ['police_reg_no', 'agreement_no', 'notes', 'deposit'])
   if (Object.keys(f).length) run(`UPDATE leases SET ${Object.keys(f).map(k => k + '=?')} WHERE id=?`, ...Object.values(f), l.id)
@@ -4919,7 +4961,7 @@ app.patch('/api/leases/:id', (req, res) => {
 })
 // Renewal = a new lease for the same tenant starting where the old one ends; the old one keeps its own rent history
 app.post('/api/leases/:id/renew', (req, res) => {
-  const { l, p } = leaseFor(req.params.id)
+  const { l, p } = leaseFor(req.params.id, req.user)
   if (!canEditProperty(req.user, p)) throw err(403, 'You do not have permission for this')
   if (l.status !== 'active') throw err(400, 'Only an active lease can be renewed')
   const f = leaseFields({ ...l, start_date: l.end_date, notes: null, ...pick(req.body, ['end_date', 'rent', 'increase_pct', 'deposit', 'agreement_no', 'police_reg_no']) })
@@ -4933,7 +4975,7 @@ app.post('/api/leases/:id/renew', (req, res) => {
   res.json({ id })
 })
 app.post('/api/leases/:id/end', (req, res) => {
-  const { l, p } = leaseFor(req.params.id)
+  const { l, p } = leaseFor(req.params.id, req.user)
   if (!canEditProperty(req.user, p)) throw err(403, 'You do not have permission for this')
   if (l.status !== 'active') throw err(400, 'Lease is not active')
   if (!isDate(req.body.ended_on)) throw err(400, 'Move-out date is required')
@@ -4942,7 +4984,7 @@ app.post('/api/leases/:id/end', (req, res) => {
   res.json({ ok: true })
 })
 app.post('/api/leases/:id/payments', (req, res) => {
-  const { l, p } = leaseFor(req.params.id), b = req.body, amount = Math.round(+b.amount)
+  const { l, p } = leaseFor(req.params.id, req.user), b = req.body, amount = Math.round(+b.amount)
   if (!canEditProperty(req.user, p) && !can(req.user, 'payments')) throw err(403, 'You do not have permission for this')
   if (!['rent', 'deposit', 'deposit_refund'].includes(b.kind)) throw err(400, 'Pick rent, deposit or deposit refund')
   if (!(amount > 0)) throw err(400, 'Amount is required')
@@ -4957,7 +4999,7 @@ app.post('/api/leases/:id/payments', (req, res) => {
 app.post('/api/rent-payments/:id/void', (req, res) => {
   const r = one('SELECT * FROM rent_payments WHERE id=? AND voided_at IS NULL', req.params.id)
   if (!r) throw err(404, 'Payment not found or already voided')
-  const { p } = leaseFor(r.lease_id)
+  const { p } = leaseFor(r.lease_id, req.user)
   if (!canEditProperty(req.user, p) && !can(req.user, 'payments')) throw err(403, 'You do not have permission for this')
   if (!req.body.note?.trim()) throw err(400, 'A reason is required')
   run('UPDATE rent_payments SET voided_at=?, void_note=? WHERE id=?', now(), req.body.note.trim(), r.id)
@@ -4968,11 +5010,11 @@ app.get('/api/rent-payments/:id', (req, res) => { // receipt
   const r = one(`SELECT r.*, l.property_id, c.name tenant_name, c.cnic tenant_cnic, us.name created_by_name FROM rent_payments r JOIN leases l ON l.id=r.lease_id
     JOIN contacts c ON c.id=l.tenant_contact_id LEFT JOIN users us ON us.id=r.created_by WHERE r.id=?`, req.params.id)
   if (!r) throw err(404, 'Receipt not found')
-  res.json({ ...r, tenant_cnic: can(req.user, 'view_phone') ? r.tenant_cnic : r.tenant_cnic && '*****', property: propertyFor(r.property_id) })
+  res.json({ ...r, tenant_cnic: can(req.user, 'view_phone') ? r.tenant_cnic : r.tenant_cnic && '*****', property: propertyFor(r.property_id, req.user) })
 })
 
 app.post('/api/properties/:id/maintenance', (req, res) => {
-  const p = propertyFor(req.params.id), b = req.body
+  const p = propertyFor(req.params.id, req.user), b = req.body
   if (!canEditProperty(req.user, p)) throw err(403, 'You do not have permission for this')
   if (!b.title?.trim()) throw err(400, 'What needs fixing?')
   const id = run('INSERT INTO maintenance(property_id,title,details,vendor,cost,charge_to,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -4983,7 +5025,7 @@ app.post('/api/properties/:id/maintenance', (req, res) => {
 app.patch('/api/maintenance/:id', (req, res) => {
   const m = one('SELECT * FROM maintenance WHERE id=?', req.params.id)
   if (!m) throw err(404, 'Job not found')
-  if (!canEditProperty(req.user, propertyFor(m.property_id))) throw err(403, 'You do not have permission for this')
+  if (!canEditProperty(req.user, propertyFor(m.property_id, req.user))) throw err(403, 'You do not have permission for this')
   const f = pick(req.body, ['status', 'cost', 'vendor', 'charge_to', 'details'])
   if (f.status && !['Open', 'In progress', 'Done'].includes(f.status)) throw err(400, 'Unknown status')
   if (f.status === 'Done' && m.status !== 'Done') f.done_at = now()
@@ -4992,7 +5034,7 @@ app.patch('/api/maintenance/:id', (req, res) => {
   res.json({ ok: true })
 })
 app.post('/api/properties/:id/payouts', (req, res) => {
-  const p = propertyFor(req.params.id), b = req.body, amount = Math.round(+b.amount)
+  const p = propertyFor(req.params.id, req.user), b = req.body, amount = Math.round(+b.amount)
   if (!can(req.user, 'properties') && !can(req.user, 'payments')) throw err(403, 'Only accounts or property managers record owner payouts')
   if (!(amount > 0) || !isDate(b.paid_on)) throw err(400, 'Amount and date are required')
   const id = run('INSERT INTO owner_payouts(property_id,amount,paid_on,method,ref,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -5122,7 +5164,7 @@ function leaseTick() {
 // ---- unit photos ----
 // ponytail: photos stored as data URLs in SQLite (client downsizes to ~1600px); move to object storage if the DB grows past a few GB
 app.post('/api/units/:id/photos', guard('manage_inventory'), (req, res) => {
-  const un = unitFor(req.params.id), data = String(req.body.data || '')
+  const un = unitFor(req.params.id, req.user), data = String(req.body.data || '')
   if (!/^data:image\/(jpeg|png|webp);base64,/.test(data)) throw err(400, 'Upload a JPEG, PNG or WebP image')
   if (data.length > 3e6) throw err(400, 'Image is too large')
   if (one('SELECT count(*) n FROM unit_photos WHERE unit_id=?', un.id).n >= 12) throw err(400, 'A unit can have up to 12 photos')
@@ -5305,9 +5347,9 @@ if (legacyProjects) {
 if (db && !one('SELECT 1 FROM users')) {
   const b = run(`INSERT INTO branches(name,city) VALUES('Lahore HQ','Lahore')`).lastInsertRowid
   const tm = run(`INSERT INTO teams(name,branch_id) VALUES('Sales Team A',?)`, b).lastInsertRowid
+  const owner = run('INSERT INTO users(name,email,role,phone,team_id,branch_id,pass,owner_id) VALUES(?,?,?,?,?,?,?,NULL)', 'Admin', 'admin@propcentral.local', 'admin', null, null, b, hash('password123')).lastInsertRowid
   const add = (name, email, role, phone, team = null) =>
-    run('INSERT INTO users(name,email,role,phone,team_id,branch_id,pass) VALUES(?,?,?,?,?,?,?)', name, email, role, phone, team, b, hash('password123'))
-  add('Admin', 'admin@propcentral.local', 'admin', null)
+    run('INSERT INTO users(name,email,role,phone,team_id,branch_id,pass,owner_id) VALUES(?,?,?,?,?,?,?,?)', name, email, role, phone, team, b, hash('password123'), owner)
   add('Sales Head', 'head@propcentral.local', 'sales_head', null)
   add('Team Lead', 'lead@propcentral.local', 'team_lead', '03001110000', tm)
   add('Agent One', 'agent1@propcentral.local', 'agent', '03001110001', tm)
@@ -5323,6 +5365,7 @@ if (db && !one('SELECT 1 FROM users')) {
     run(`INSERT INTO units(project_id,block,unit_no,unit_type,size,uom,premiums,updated_at) VALUES(?,?,?,?,?,?,?,?)`, pid, block, String(n), 'Plot',
       n % 4 === 0 ? 10 : 5, 'marla', JSON.stringify(n === 1 || n === 20 ? ['Corner'] : []), now())
   run(`INSERT INTO price_lists(project_id,unit_type,rate,per,effective_from,created_at) VALUES(?,'Plot',1200000,'marla','2026-01-01',?)`, pid, now())
+  run("UPDATE projects SET created_by=(SELECT id FROM users WHERE role='admin' AND owner_id IS NULL ORDER BY id LIMIT 1) WHERE created_by IS NULL")
   console.log('Seeded demo users (password: password123): admin@propcentral.local, head@propcentral.local, lead@propcentral.local, agent1@propcentral.local, agent2@propcentral.local')
 }
 
