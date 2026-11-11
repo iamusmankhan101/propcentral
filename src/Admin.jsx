@@ -13,6 +13,7 @@ export function Users() {
   const [msg, setMsg] = useState('')
   const [resetLink, setResetLink] = useState('')
   const [expanded, setExpanded] = useState(null)
+  const [tab, setTab] = useState('directory')
   const teams = m.teams.map(t => [t.id, t.name]), branches = m.branches.map(b => [b.id, b.name])
   const isPlatform = m.me.role === 'platform'
   const done = text => { setMsg(text); reload(); m.reloadMeta() }
@@ -69,6 +70,11 @@ export function Users() {
     <section>
       <h2>{m.me.role === 'platform' ? 'Accounts' : 'Users'}</h2>
       <p className="muted">Invite people with a role, team and branch. Their role controls the permissions shown below; fine-tune role permissions in Settings › Roles & permissions. Only users in this workspace are shown.</p>
+      {!isPlatform && <div className="seg no-print" style={{ marginBottom: 16 }}>
+        <button className={tab === 'directory' ? 'on' : ''} onClick={() => setTab('directory')}>User directory</button>
+        <button className={tab === 'performance' ? 'on' : ''} onClick={() => setTab('performance')}>Performance</button>
+      </div>}
+      {tab === 'performance' && !isPlatform ? <UserPerformance /> : <>
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error" onClick={() => setError('')}>{error}</p>}
       {resetLink && <div className="card row between reset-link">
@@ -170,8 +176,37 @@ export function Users() {
           <div className="row"><input name="name" placeholder="Team name" required /><Select name="branch_id" options={branches} blank="Branch" /><button>Add</button></div>
         </form>
       </div>
+      </>}
     </section>
   )
+}
+
+function UserPerformance() {
+  const [date, setDate] = useState(new Date().toLocaleDateString('en-CA'))
+  const [query, setQuery] = useState('')
+  const [activeOnly, setActiveOnly] = useState(false)
+  const [data, , error] = useApi('/users/performance?date=' + encodeURIComponent(date))
+  const rows = (data?.rows || []).filter(u => (!activeOnly || u.active) && (!query || `${u.name} ${u.email} ${u.role}`.toLowerCase().includes(query.toLowerCase())))
+  const fmtMoney = n => `PKR ${Number(n || 0).toLocaleString('en-PK')}`
+  return <>
+    <div className="row between no-print" style={{ marginBottom: 16 }}>
+      <div className="row"><label className="muted">Performance date <input type="date" value={date} onChange={e => setDate(e.target.value)} /></label><input placeholder="Search users…" value={query} onChange={e => setQuery(e.target.value)} /></div>
+      <label className="row muted"><input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} /> Active only</label>
+    </div>
+    {error && <p className="error">{error}</p>}
+    <div className="card scroll">
+      <h3>User performance · {date}</h3>
+      <p className="muted">Daily figures use the selected date. Total leads and conversion cover the user’s assigned leads in this workspace.</p>
+      <table className="report">
+        <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Daily leads</th><th>Total leads</th><th>Open leads</th><th>Contacted</th><th>Calls today</th><th>Visits today</th><th>Bookings today</th><th>Sales today</th></tr></thead>
+        <tbody>{rows.map(u => <tr key={u.id}>
+          <td><b>{u.name}</b><small className="muted"><br />{u.email}</small></td><td>{u.role}</td><td>{u.active ? <span className="ok">Active</span> : <span className="muted">Inactive</span>}</td>
+          <td><b>{u.daily_leads}</b></td><td>{u.total_leads}</td><td>{u.open_leads}</td><td>{u.contacted} ({u.conversion}%)</td><td>{u.daily_calls}</td><td>{u.daily_visits}</td><td>{u.daily_bookings}</td><td>{fmtMoney(u.daily_sales)}</td>
+        </tr>)}
+        {data && !rows.length && <tr><td colSpan="11" className="muted">No users match.</td></tr>}
+      </tbody></table>
+    </div>
+  </>
 }
 
 const HELP = {

@@ -1619,6 +1619,22 @@ app.get('/api/users', guard('manage_users'), (req, res) => {
   u.plan, u.trial_ends_at, u.paid_at, u.owner_id, u.modules,
   (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open_leads FROM users u WHERE ${where} ORDER BY u.active DESC, u.name`, closedJson(), ...params))
 })
+app.get('/api/users/performance', guard('manage_users'), (req, res) => {
+  const date = isDate(req.query.date) ? req.query.date : today()
+  const [where, params] = accountUsersWhere(req.user)
+  const rows = all(`SELECT u.id, u.name, u.email, u.role, u.active, u.team_id, u.branch_id,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND l.deleted=0 AND date(l.assigned_at, '+5 hours')=?) daily_leads,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND l.deleted=0) total_leads,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND l.deleted=0 AND l.status NOT IN ('Booked','Lost','Junk')) open_leads,
+    (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND l.deleted=0 AND l.first_contact_at IS NOT NULL) contacted,
+    (SELECT count(*) FROM activities a WHERE a.user_id=u.id AND a.type='call' AND date(a.created_at, '+5 hours')=?) daily_calls,
+    (SELECT count(*) FROM visits v WHERE v.agent_id=u.id AND v.status='verified' AND date(v.verified_at, '+5 hours')=?) daily_visits,
+    (SELECT count(*) FROM allotments a WHERE a.agent_id=u.id AND a.status='active' AND a.sale_date=?) daily_bookings,
+    (SELECT COALESCE(sum(a.price),0) FROM allotments a WHERE a.agent_id=u.id AND a.status='active' AND a.sale_date=?) daily_sales,
+    (SELECT max(a.created_at) FROM activities a WHERE a.user_id=u.id AND a.type<>'system') last_activity_at
+    FROM users u WHERE ${where} ORDER BY u.active DESC, total_leads DESC, u.name`, date, date, date, date, date, ...params)
+  res.json({ date, rows: rows.map(r => ({ ...r, conversion: r.total_leads ? Math.round((r.contacted / r.total_leads) * 100) : 0 })) })
+})
 app.post('/api/users', guard('manage_users'), (req, res) => {
   const f = pick(req.body, USER_FIELDS)
   checkRate(f); checkRole(f, req.user)

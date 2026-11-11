@@ -50,8 +50,20 @@ test('lead CSV and XLSX exports are valid import files', async t => {
   const token = await login(base, 'admin@propcentral.local')
   assert.ok(token)
 
-  const created = await post(base, '/leads', { name: 'Round Trip Lead', phone: '03001234567', source: 'Website' }, token)
+  const users = await fetch(base + '/users', { headers: { authorization: 'Bearer ' + token } }).then(r => r.json())
+  const agent = users.find(u => u.role === 'agent' && u.active)
+  assert.ok(agent)
+  const created = await post(base, '/leads', { name: 'Round Trip Lead', phone: '03001234567', source: 'Website', agent_id: agent.id }, token)
   assert.equal(created.status, 200)
+
+  const date = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10)
+  const performance = await fetch(base + '/users/performance?date=' + date, { headers: { authorization: 'Bearer ' + token } })
+  assert.equal(performance.status, 200)
+  const performanceRows = (await performance.json()).rows
+  const agentPerformance = performanceRows.find(u => u.id === agent.id)
+  assert.ok(agentPerformance, 'the performance tab includes every created user')
+  assert.ok(agentPerformance.daily_leads >= 1)
+  assert.ok(agentPerformance.total_leads >= 1)
 
   const csv = await fetch(base + '/leads/export', { headers: { authorization: 'Bearer ' + token } })
   assert.equal(csv.status, 200)
