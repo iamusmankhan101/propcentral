@@ -17,6 +17,7 @@ LOGO = ROOT / 'public/estate centric logo.png'
 SCREENSHOTS = sorted((ROOT / 'public').glob('Screenshot*.png'))
 LIVE = ROOT / 'tmp/pdfs'
 USERS_SCREEN = LIVE / 'users-module.png'
+RE = LIVE / 're'
 
 ORANGE = colors.HexColor('#f56a0a')
 NAVY = colors.HexColor('#111827')
@@ -79,6 +80,10 @@ def screenshot(path, width=166*mm):
 def screenshot_card(path, caption, width=77*mm):
     return [screenshot(path, width), P(caption, 'SmallEC')]
 
+def shots(*items):
+    for name, cap in items:
+        story.append(KeepTogether([Spacer(1, 4), screenshot(RE / (name + '.png'), 150*mm), P('<b>Screen:</b> ' + cap, 'SmallEC')]))
+
 def header_footer(canvas, doc):
     canvas.saveState()
     w, h = A4
@@ -107,7 +112,7 @@ if LOGO.exists():
     story.append(Image(str(LOGO), width=38*mm, height=38*mm, hAlign='CENTER'))
 story += [Spacer(1, 8*mm), P('Estate Centric', 'CoverTitle'), P('Step-by-Step CRM User Guide', 'CoverSub')]
 story.append(HRFlowable(width=42*mm, thickness=3, color=ORANGE, hAlign='CENTER', spaceBefore=3, spaceAfter=14))
-story.append(P('A complete guide to leads, teams, projects, inventory, collections, commissions, properties, maps, education CRM, therapy, reports, settings, and platform administration.', 'CoverSub'))
+story.append(P('A complete real-estate guide: leads, visits, projects and inventory, allotments, collections, commissions, listings, property management, reports, settings, and security.', 'CoverSub'))
 story.append(Spacer(1, 15*mm))
 story.append(table(['Guide at a glance', 'What you will learn'], [
     ['Audience', 'Sales teams, property teams, managers, and workspace administrators'],
@@ -145,6 +150,7 @@ story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['6', 'Move the lead through Contacted, Qualified, Visit Scheduled, Negotiation, and Booked or Lost.', 'Status matches the real conversation.'],
     ['7', 'At day end, open Reports or Users > Performance and review leads, calls, visits, bookings, and overdue work.', 'No open lead is left without a next step.'],
 ], [13*mm, 90*mm, 59*mm]))
+shots(('dashboard', 'Dashboard: start the day with KPIs, overdue and unassigned leads.'),('leads', 'Leads: board view with filters, import and export.'),('lead-new', 'New lead form: name, phone, source, project, budget and assignment.'),('lead-detail', 'Lead detail: log activity, change status, record offers and see the timeline.'))
 story.append(P('2. Property and project workflow', 'H2EC'))
 story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['1', 'Open Projects or Properties and select the correct project, society, or property.', 'You are working in the right workspace scope.'],
@@ -153,6 +159,7 @@ story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['4', 'Use Redraw boundary or Match points only when the visible boundary needs correction.', 'The boundary follows the approved plan.'],
     ['5', 'Link the project or property to relevant leads and continue follow-up from the lead timeline.', 'The sales context is connected.'],
 ], [13*mm, 90*mm, 59*mm]))
+shots(('projects', 'Projects: pick the project you are working in.'),('project-inventory', 'Inventory grid: colour-coded unit status by block.'),('property-detail', 'Property page: owner, tenant, lease, owner statement and maintenance.'))
 story += [PageBreak()]
 
 story += section('Step-by-step: administration and reporting', 'Administrators use these workflows to keep access, ownership, imports, and performance reporting accurate.')
@@ -164,6 +171,7 @@ story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['4', 'Send the invite link and ask the user to create a password from the one-time link.', 'The user can sign in.'],
     ['5', 'Return to Users and confirm the user is active, correctly scoped, and not an administrator by mistake.', 'Role and account ownership are correct.'],
 ], [13*mm, 90*mm, 59*mm]))
+shots(('users', 'Users: roles, teams, branches and plans for each account.'))
 story.append(P('4. Import and export leads', 'H2EC'))
 story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['1', 'Open Leads and choose Export to download the current filtered or full lead list.', 'The CSV or XLSX file opens with column headers.'],
@@ -172,6 +180,7 @@ story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['4', 'Run the validation or dry run first, then confirm the import.', 'Required-field and duplicate warnings are understood.'],
     ['5', 'After import, search a sample of records and check ownership, status, project, and timeline data.', 'Imported records are visible and usable.'],
 ], [13*mm, 90*mm, 59*mm]))
+shots(('import', 'Import leads: upload a CSV and review the dry-run report.'))
 story.append(P('5. Review team performance', 'H2EC'))
 story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['1', 'Open Users and select the Performance tab.', 'The user directory and metrics are visible.'],
@@ -180,20 +189,15 @@ story.append(table(['Step', 'Action', 'Check before moving on'], [
     ['4', 'Open the underlying lead records for overdue or unusually low activity.', 'Coaching or reassignment has a clear reason.'],
     ['5', 'Record the next action for each team member and review again at the next check-in.', 'Performance follow-up is documented.'],
 ], [13*mm, 90*mm, 59*mm]))
-story.append(P('6. Education CRM workflow', 'H2EC'))
-story.append(table(['Step', 'Action', 'Check before moving on'], [
-    ['1', 'Open Applications, Students, Courses, or Universities when the education module is enabled.', 'The correct module is selected.'],
-    ['2', 'Create the applicant and capture contact, academic, course, university, and counsellor details.', 'The application has an owner.'],
-    ['3', 'Update application status and record calls, documents, offers, fees, and next deadlines.', 'The timeline is current.'],
-    ['4', 'Use Reports to review applications, payments, conversion, and counsellor activity.', 'The report period and filters are correct.'],
-], [13*mm, 90*mm, 59*mm]))
+shots(('users-performance', 'Users > Performance: daily metrics for each team member.'))
 story.append(P('Weekly admin checklist: verify invitations and permissions, review imports and duplicates, check account-specific data access, inspect user performance, and confirm that backups and integrations are healthy.', 'Callout'))
 story += [PageBreak()]
 
 # Complete step-by-step coverage of every remaining module
-def steps(title, rows):
+def steps(title, rows, imgs=()):
     story.append(P(title, 'H2EC'))
     story.append(table(['Step', 'Action', 'Check before moving on'], [[str(i + 1), a, c] for i, (a, c) in enumerate(rows)], [13*mm, 90*mm, 59*mm]))
+    shots(*imgs)
 
 story += section('Step-by-step: sales, inventory and collections', 'The full path from a unit hold to a receipted payment. Collections and Sales appear only for roles with the matching permission.')
 steps('7. Visits: schedule, verify and close', [
@@ -201,14 +205,14 @@ steps('7. Visits: schedule, verify and close', [
     ('On arrival the agent checks in. GPS must be within the site radius set in Settings > Site visits.', 'Check-in is verified, not flagged unverified.'),
     ('Ask the customer for the SMS OTP to confirm they attended.', 'OTP accepted.'),
     ('Enter the mandatory feedback within the feedback window and close the visit.', 'No overdue-feedback flag remains.'),
-])
+], imgs=[('visits', 'Visits: scheduled site visits with customer, site, agent and status.')])
 steps('8. Hold, book and allot a unit', [
     ('Open Projects, choose the project, then Inventory (Grid or Map). Filter by block, size or status.', 'You see live unit status colours.'),
     ('Place a Hold on the unit. Holds expire automatically and each agent has a hold limit (Settings > Inventory).', 'Unit shows Held and no one else can book it.'),
     ('Create the booking against the lead. The unit becomes Booked and the lead moves to Booked together.', 'Unit and lead status agree.'),
     ('Open Allotments, review the allotment and print the Booking form (applicant, nominee, plan, CNIC copies).', 'Form is complete and signed.'),
     ('Use Sizes & prices for versioned price lists, premiums and marla/kanal/sq ft conversion; Media for brochures, floor plans, photos and video links.', 'Pricing matches the approved list.'),
-])
+], imgs=[('project-inventory', 'Inventory: click a unit to hold or allot it.'), ('project-allotments', 'Allotments: every sold unit with client, price, letter, ledger and cancel actions.'), ('project-sizes', 'Sizes & prices: price lists, premiums and unit counts.'), ('project-media', 'Media: brochures, floor plans, photos and video links.'), ('allotment', 'Allotment letter ready to print.'), ('booking-form', 'Booking form: applicant, nominee and CNIC copies.')])
 steps('9. Collections: payment plan, receipts and ledger', [
     ('Open Collections and find the allotment (overdue and plan-less allotments are listed first).', 'The right customer is selected.'),
     ('Create the payment plan: down payment plus monthly, quarterly, half-yearly or yearly installments.', 'Installment schedule is shown.'),
@@ -216,19 +220,19 @@ steps('9. Collections: payment plan, receipts and ledger', [
     ('If a payment was entered wrongly, Void it with a reason; use Refund for returned money.', 'Reason is recorded and ledger updates.'),
     ('Open the customer ledger; payments are applied to the oldest installment first. Share the portal link on WhatsApp so the customer can view plots, schedule, overdue and receipts without logging in.', 'Overdue status is correct.'),
     ('For a resale, use Transfer to a new owner with a receipted transfer fee.', 'New owner is on the allotment.'),
-])
+], imgs=[('collections', 'Collections: overdue and plan-less allotments with sold value, collected and outstanding.'), ('ledger', 'Customer ledger: payment schedule with Paid, Partial and Due status.'), ('receipt', 'Printable payment receipt (RC series).')])
 steps('10. Sales, commissions, dealers and targets', [
     ('Open Sales. Add external dealers with their own rate or use the default (agent 1% / dealer 2%, editable in Settings > Commission).', 'Dealer list is current.'),
     ('Tag the dealer on the lead before the booking. Commission is created automatically at allotment for the agent and dealer.', 'Pending commission exists.'),
     ('Review pending commissions; adjust or cancel with a reason. Mark paid when released.', 'Status is Paid and dealer balance updates.'),
     ('If a sale is cancelled, pending commission is cancelled and a paid one is flagged for recovery.', 'Recovery items are followed up.'),
     ('Use the Performance view to compare monthly targets against sales and conversion per agent. Agents see only their own figures.', 'Targets are set for the month.'),
-])
+], imgs=[('sales', 'Sales: agent targets, pending commissions and dealers.'), ('settings-sales', 'Settings > Commission: default agent and dealer rates.')])
 steps('11. Third-party listings', [
     ('Open Listings and add a resale or rental listing from an outside owner with details and up to 12 photos.', 'The owner is saved as a seller or landlord lead.'),
     ('Update listing status as it progresses (statuses are configurable in Settings > Inventory).', 'Status is current.'),
     ('Share the listing to WhatsApp for buyers or tenants.', 'Message contains the listing link.'),
-])
+], imgs=[('listings', 'Listings: sale and rent listings from outside owners.')])
 steps('12. Property management: leases, rent and owners', [
     ('Open Properties > Societies and draw the society, phase or block boundary; upload the plan image and align it by matching 2+ points.', 'The overlay lines up with the satellite map.'),
     ('Switch to Properties and click the map to add a property. It takes the society, phase and block it falls in.', 'Pin is inside the right area.'),
@@ -236,86 +240,38 @@ steps('12. Property management: leases, rent and owners', [
     ('Track the monthly rent schedule. Record rent, deposit and refund receipts (RR-00001 series). Overdue arrears carry over on renewal.', 'Schedule shows what is paid.'),
     ('Use Renew, Edit or Tenant moved out as the lease changes; amber and red colours warn of lease ending and overdue rent.', 'Map colour matches reality.'),
     ('Log maintenance jobs charged to owner, tenant or company, then review the owner statement (rent minus fee, owner costs and payouts) and record payouts.', 'Statement balances.'),
-])
+], imgs=[('property-detail', 'Property page: lease, rent schedule, owner statement and maintenance.'), ('rent-receipt', 'Rent or deposit receipt (RR series).')])
 steps('13. Import, campaigns and lead capture', [
     ('Open Import (permission required), upload CSV and run the dry run to review duplicates and invalid rows.', 'Dry-run report is clean.'),
     ('Commit the import, then spot-check ownership, status and timelines.', 'Records are usable.'),
     ('Open Campaigns to see Meta campaign, ad set and ad performance by lead, plus other lead sources.', 'Source quality is understood.'),
     ('Connect Facebook/Instagram in Settings (paste app secret and Graph API Explorer token; the CRM registers the webhook), and use Website forms & API with the x-api-key header for forms, Zapier and portals.', 'Test lead arrives with its source.'),
-])
+], imgs=[('import', 'Import leads.'), ('campaigns', 'Campaigns: leads, wins and conversion per campaign.'), ('settings-facebook', 'Settings > Facebook & Instagram: connect lead ads.'), ('settings-website', 'Settings > Website forms & API: endpoint, key and sample request.')])
 steps('14. Approvals, exports and the audit log', [
     ('A lead marked Lost or Junk needs a reason and note; a team lead approves where required (Leads > Pending approval).', 'Approval queue is empty.'),
     ('Branch managers request a lead export; the sales head or admin approves. Each approval downloads once and the file is watermarked.', 'Export is logged.'),
     ('Admins open Audit to review logins, views, exports and changes. The log is append-only and cannot be edited.', 'Unusual access is investigated.'),
-])
+], imgs=[('leads', 'Leads filters include Pending approval.'), ('audit', 'Audit: append-only log of logins, views, exports and changes.')])
 story += [PageBreak()]
 
-story += section('Step-by-step: Student Consultancy (Education CRM)', 'Enabled per company by the platform owner and shown only to roles holding the edu permission. A student is a lead promoted, so capture and SLA history are kept.')
-steps('15. From inquiry to enrolled student', [
-    ('Capture the inquiry as a lead, or open Students > New student, or bulk-load with Students import.', 'Contact is saved once, no duplicate.'),
-    ('On the lead page use Promote to student. The student keeps the lead link and both timelines update.', 'Student appears on the Journey board.'),
-    ('Move the student through the journey stages (New Inquiry, Initial Counseling ... Enrolled) from the Journey board or Change stage. Each move notifies the counsellor.', 'Stage reflects reality.'),
-    ('Log calls and follow-ups on the student timeline and always set the next follow-up date. Bulk reassign counsellors from the Table view.', 'Every student has a next action.'),
-    ('Open Documents and upload passport, transcripts, IELTS, offer letter and other required types; mark each as verified. Files open only for signed-in users.', 'Checklist is complete.'),
-    ('Open Payments on the student to record fees by type, method and receipt, and track the outstanding balance.', 'Balance is correct.'),
-])
-steps('16. Universities, courses and applications', [
-    ('Open Universities and add each institution with country, city, website, ranking and campuses.', 'Catalogue is shared company-wide.'),
-    ('Open Courses and add programmes with level, field, tuition and currency, duration, intakes, eligibility and minimum IELTS.', 'Fees quoted are the same for every counsellor.'),
-    ('Open Applications (Board or Table) or the student page and start an application from the course picker; one student can apply to many programmes.', 'One record exists per student and programme.'),
-    ('Drag the application across Ready, Submitted, Under review, Interview, Conditional or Unconditional offer, Accepted, Rejected or Withdrawn.', 'Submitted and decision dates are stamped.'),
-    ('Universities and courses already used in an application are deactivated, not deleted.', 'Offer history is preserved.'),
-    ('Review Students on the Dashboard and Edu commissions in Sales.', 'Pipeline and earnings reviewed.'),
-])
-story += [PageBreak()]
-
-story += section('Step-by-step: Special Needs Therapy', 'For therapy and special-education centres. AI suggestions are drafts: a qualified professional reviews and approves them before they are used.')
-steps('17. Onboard a child and plan their goals', [
-    ('Open Children > New child and enter profile, diagnosis information, guardians and a photo. Choose the AI language (English or Roman Urdu).', 'Child record is saved.'),
-    ('Open About & assessment, record reported difficulties, demonstrated abilities, strengths and needs, then run the AI assessment summary.', 'Assessment is reviewed by staff.'),
-    ('Open Goals. Generate suggested 3-month goals and review current skill, target skill, rationale, prerequisites, how to teach, activities, success criteria and measure. Approve, edit or reject each.', 'Only approved goals are active.'),
-    ('Open Lessons to generate and refine lesson plans tied to a goal.', 'Each lesson links to a goal.'),
-])
-steps('18. Sessions, reviews, reports and parents', [
-    ('Open Sessions, log each session against a goal with notes, progress and any difficulty.', 'Session is recorded the same day.'),
-    ('When a child is stuck, use the AI suggestion for a different approach; it compares with earlier sessions and recommends reassessing if there is no improvement.', 'New strategy is documented.'),
-    ('At 3 months open 3-month review, read the AI findings per goal and approve. Effective strategies from approved reviews are saved as Learned knowledge.', 'Professional approval is recorded.'),
-    ('Open Reports to produce the Initial assessment, IEP, daily session, weekly, monthly, quarterly, goal achievement, domain-wise and parent progress reports as PDF.', 'Report period is correct.'),
-    ('Open Parents & team to share a parent portal link and manage the care team.', 'Parent can view progress.'),
-])
-steps('19. Skills library, Knowledge base and organization settings', [
-    ('Open Skills to review the starter skill library and add the centre\'s own skills with teaching instructions, materials, measurement criteria, alternatives and references.', 'AI uses your library when suggesting goals.'),
-    ('Open Knowledge to add guidelines, strategies and references; approve or switch off learned entries (Active, Waiting for approval, Switched off).', 'Only approved entries guide the AI.'),
-    ('Open Organization to set centre details, default AI language and the centre guidelines the AI must follow.', 'Guidelines are saved.'),
-    ('Use Ask on the Therapy home to ask the AI a question and Save to knowledge base when the answer is worth keeping.', 'Answer is stored.'),
-])
-story += [PageBreak()]
-
-story += section('Step-by-step: workspace setup, platform owner and account', 'Settings are grouped into Account, Integrations and Company. Admins see all groups; other roles see what their permissions allow.')
-steps('20. Set up a new workspace (first week)', [
-    ('Sign up from the login page and choose a plan and product. The free trial lasts 7 days; an admin is never locked out.', 'You can sign in.'),
+story += section('Step-by-step: workspace setup and everyday tools', 'Settings are grouped into Account, Integrations and Company. Admins see all groups; other roles see what their permissions allow.')
+steps('15. Set up a new workspace (first week)', [
+    ('Sign up from the login page and choose a plan. The free trial lasts 7 days; an admin is never locked out.', 'You can sign in.'),
     ('Settings > Profile and Privacy & security: confirm details, change the default password (10+ characters with letters and numbers) and enable authenticator-app 2FA.', '2FA is active.'),
     ('Settings > Leads & pipeline: set statuses, closed and approval statuses, lost reasons, sources, activity types, lead and property types, custom fields, stale days and scoring.', 'Pipeline matches how you sell.'),
     ('Settings > Assignment & SLA: add prioritised assignment rules (source, city, project, budget, hours, round-robin, load or performance), SLA minutes and working hours.', 'New lead routes to the right agent.'),
-    ('Settings > Site visits, Inventory & listings, Properties & leases, Commission and Student consultancy: configure the lists and limits each module uses.', 'Defaults reviewed.'),
+    ('Settings > Site visits, Inventory & listings, Properties & leases, and Commission: configure the lists and limits each module uses.', 'Defaults reviewed.'),
     ('Settings > Maps: paste the MapTiler key. Settings > Email reports: choose weekly report recipients and send a preview.', 'Map loads; preview received.'),
     ('Settings > Roles & permissions: tick what each role can do. Users: invite the team and set role, team and branch.', 'Everyone has the least access needed.'),
     ('Check plan limits (users, branches, projects, units, leads) shown on Users before adding more.', 'You stay under the cap.'),
-])
-steps('21. Platform owner: accounts, modules, payments, backups', [
-    ('Sign in as the platform owner. The app shows Accounts only; no customer CRM data is visible.', 'Dashboard and Workspaces appear.'),
-    ('Use Workspaces to review sign-ups, switch modules (Property CRM, Student Consultancy, Therapy) on or off per company and change plans.', 'Company sees the right modules.'),
-    ('Review Payment requests, then Mark paid when money is received by bank transfer or WhatsApp; this clears the trial lock.', 'Account is active.'),
-    ('Maintain Payment methods and Invoice details shown to customers. Review All users and the Therapy overview.', 'Details are current.'),
-    ('Use Backup and Restore on a Workspaces row for one company (type the account email to confirm), and Backups for the full database. Restore signs every member out.', 'Backup file is stored safely.'),
-])
-steps('22. Everyday tools: dashboard, assistant, notifications, mobile', [
-    ('Dashboard tabs: Main, Team, Marketing and Students. Filter by date to see KPIs, funnel, leaderboard, source and campaign table, and lost reasons.', 'You know today\'s priorities.'),
+], imgs=[('settings', 'Settings > Profile.'), ('settings-security', 'Settings > Privacy & security: two-factor and password.'), ('settings-leads', 'Settings > Leads & pipeline: statuses, reasons, sources and custom fields.'), ('settings-assignment', 'Settings > Assignment & SLA: rules, SLA minutes and working hours.'), ('settings-inventory', 'Settings > Inventory & listings.'), ('settings-maps', 'Settings > Maps: add the map key.'), ('settings-permissions', 'Settings > Roles & permissions: what each role can do.')])
+steps('16. Everyday tools: dashboard, reports, assistant, mobile', [
+    ('Dashboard tabs: Main, Team and Marketing. Filter by date to see KPIs, funnel, leaderboard, source and campaign table, and lost reasons.', 'You know today\'s priorities.'),
     ('Reports: switch daily, weekly (Mon-Sun) or monthly, drill into one agent for a day-by-day view, then use CSV or Print.', 'Numbers match the period.'),
     ('Assistant (enabled when an AI key is configured): ask about sales, agents and commissions; it only sees data your role already sees.', 'Answer matches the dashboard.'),
     ('Use the mobile bottom bar for Dashboard, Leads, Projects and Visits; open More for Sales, Listings, Import, Campaigns, Users, Settings and Audit. Install the app to your home screen from the browser prompt.', 'App opens full screen.'),
     ('Forgot password: request a reset; an admin sends a one-time link that expires in 30 minutes and signs the account out everywhere.', 'New password works.'),
-])
+], imgs=[('dashboard', 'Dashboard.'), ('reports', 'Reports: daily, weekly or monthly figures per agent, with CSV and print.')])
 story += [PageBreak()]
 
 # Screen tour
@@ -345,8 +301,6 @@ story.append(table(['Module', 'What the user does', 'Main result'], [
     ['Collections / Payments', 'Record receipts, installments, rent, refunds, and owner payouts', 'Financial history is auditable'],
     ['Reports', 'Filter daily, weekly, or monthly performance and export approved reports', 'Managers can act on reliable numbers'],
     ['Users / Settings', 'Invite users, set roles, permissions, integrations, and security', 'Access follows the company structure'],
-    ['Education modules', 'Manage students, applications, universities, courses, and payments', 'Admissions work follows one student journey'],
-    ['Therapy modules', 'Manage children, skills, knowledge, organization, and clinical workflow', 'Care work stays structured and permissioned'],
 ], [42*mm, 70*mm, 56*mm]))
 story.append(P('Screenshot note', 'H2EC'))
 story.append(P('Screens are captured from the current Estate Centric interface. Menu visibility depends on the account modules and role; a user may see fewer modules than the full manual.', 'Callout'))
@@ -354,7 +308,7 @@ story += [PageBreak()]
 
 story += section('Module screens: property CRM', 'These screens cover the core real-estate workflow from daily overview through map and administration.')
 property_cards = [
-    [screenshot_card(LIVE / 'live-dashboard.png', '<b>Dashboard:</b> review the daily pulse, overdue items, funnel, and agent activity.', 77*mm), screenshot_card(SCREENSHOTS[1], '<b>Leads:</b> filter the pipeline, update status, and open a lead record.', 77*mm)],
+    [screenshot_card(RE / 'dashboard.png', '<b>Dashboard:</b> review the daily pulse, overdue items, funnel, and agent activity.', 77*mm), screenshot_card(SCREENSHOTS[1], '<b>Leads:</b> filter the pipeline, update status, and open a lead record.', 77*mm)],
     [screenshot_card(SCREENSHOTS[4], '<b>Lead detail:</b> record calls, notes, status, offer information, and the next action.', 77*mm), screenshot_card(USERS_SCREEN, '<b>Users:</b> assign roles, teams, branches, plans, and account access.', 77*mm)],
 ]
 property_table = Table(property_cards, colWidths=[82*mm, 82*mm], hAlign='CENTER')
@@ -362,26 +316,15 @@ property_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTP
 story.append(property_table)
 story.append(PageBreak())
 
-story += section('Module screens: education CRM', 'Education workspaces use a separate admissions journey. Keep student records, applications, payments, universities, and courses connected.')
-edu_cards = [
-    [screenshot_card(LIVE / 'live-applications.png', '<b>Applications:</b> track application status, intake, documents, offers, and visa stages.', 77*mm), screenshot_card(LIVE / 'live-payments.png', '<b>Payments:</b> record payment type, amount, method, receipts, and outstanding balance.', 77*mm)],
-    [screenshot_card(LIVE / 'live-universities.png', '<b>Universities:</b> maintain destination institutions and the countries they serve.', 77*mm), screenshot_card(LIVE / 'live-courses.png', '<b>Courses:</b> maintain course options used while preparing applications.', 77*mm)],
-]
-edu_table = Table(edu_cards, colWidths=[82*mm, 82*mm], hAlign='CENTER')
-edu_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 7)]))
-story.append(edu_table)
-story.append(P('<b>Education sequence:</b> create the student -> complete profile and document checklist -> create one or more applications -> track offer and visa outcomes -> record payments -> mark enrolled.', 'Callout'))
-story += [PageBreak()]
-
 story += section('Module screens: operations and management', 'Managers use these screens to monitor performance, configure access, and keep the workspace safe.')
 ops_cards = [
-    [screenshot_card(LIVE / 'live-reports.png', '<b>Reports:</b> switch daily/weekly/monthly views, review team rows, and use approved export/print actions.', 77*mm), screenshot_card(SCREENSHOTS[3], '<b>Settings:</b> configure profile, integrations, maps, permissions, and system rules.', 77*mm)],
-    [screenshot_card(LIVE / 'live-payments.png', '<b>Collections reference:</b> confirm receipt workflow and balance collection before closing a financial item.', 77*mm), screenshot_card(SCREENSHOTS[0], '<b>Management dashboard:</b> use KPIs to choose the next coaching or follow-up action.', 77*mm)],
+    [screenshot_card(RE / 'reports.png', '<b>Reports:</b> switch daily/weekly/monthly views, review team rows, and use approved export/print actions.', 77*mm), screenshot_card(SCREENSHOTS[3], '<b>Settings:</b> configure profile, integrations, maps, permissions, and system rules.', 77*mm)],
+    [screenshot_card(RE / 'collections.png', '<b>Collections reference:</b> confirm receipt workflow and balance collection before closing a financial item.', 77*mm), screenshot_card(SCREENSHOTS[0], '<b>Management dashboard:</b> use KPIs to choose the next coaching or follow-up action.', 77*mm)],
 ]
 ops_table = Table(ops_cards, colWidths=[82*mm, 82*mm], hAlign='CENTER')
 ops_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 7)]))
 story.append(ops_table)
-story.append(P('For Properties, Projects, Visits, Collections, and Therapy, use the step-by-step instructions in the next chapters. These modules are permission-gated, so the exact menu appears only when enabled for the account.', 'Callout'))
+story.append(P('For Properties, Projects, Visits, and Collections, use the step-by-step instructions in the next chapters. These modules are permission-gated, so the exact menu appears only when enabled for the account.', 'Callout'))
 story += [PageBreak()]
 
 # Navigation
@@ -518,7 +461,7 @@ story += bullets([
     'Enable two-factor login from your security settings. Administrators can reset 2FA for a user who loses access.',
     'Deactivate offboarded users promptly. Their sessions end and open leads can be reassigned.',
     'Do not share exports, invite links, API keys, customer CNICs, or portal links outside approved channels.',
-    'Use workspace backups for one company and full database backups only for platform administrators.',
+    'Keep regular backups of your workspace data and restrict backup downloads to administrators.',
 ])
 story.append(P('Common problems', 'H2EC'))
 story.append(table(['Problem', 'What to check'], [
