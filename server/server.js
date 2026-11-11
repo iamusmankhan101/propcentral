@@ -6,6 +6,8 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import * as XLSX from 'xlsx'
 import * as L from './lib.js'
+import registerHr, { HR_SCHEMA } from './hr.js'
+import registerAccounting, { ACC_SCHEMA } from './accounting.js'
 import { newSecret, checkTotp } from './totp.js'
 import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, plansFor, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
@@ -223,6 +225,8 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
     submitted_at TEXT, decision_at TEXT, offer_type TEXT, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT)`)
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS edu_applications_pair ON edu_applications(student_id, program_id)')
   db.exec('CREATE INDEX IF NOT EXISTS edu_applications_status ON edu_applications(status)')
+  db.exec(HR_SCHEMA) // HR & Payroll module tables (server/hr.js)
+  db.exec(ACC_SCHEMA) // Accounting module tables (server/accounting.js)
 
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
@@ -368,6 +372,9 @@ const DEFAULTS = {
     properties: ['inventory', 'accounts', 'sales_head', 'admin'],
     // the student consultancy module. Only meaningful for companies the platform has switched Edu on for
     edu: ['agent', ...MGMT, 'owner'],
+    hr: ['accounts', 'sales_head', 'admin', 'owner'], // HR & Payroll module: employees, attendance and leave
+    payroll: ['accounts', 'admin', 'owner'], // salaries, payroll runs and payslips
+    accounting: ['accounts', 'admin', 'owner'], // Accounting module: accounts, ledger, bills and reports
     therapy: ['agent', ...MGMT, 'owner', ...T_PRO], // Special Needs Therapy module
     therapy_approve: ['admin', 'owner', ...T_PRO], // approve assessments, goals and reviews; assign staff; invite parents
   },
@@ -858,7 +865,7 @@ app.post('/api/register', async (req, res) => {
   const plan = pickPlan(req.body.plan)
   const trialEnds = trialEndsAt()
   // products the company picked at sign-up; a request that names none keeps the original default (Property CRM)
-  const picked = Array.isArray(req.body.modules) ? [...new Set(req.body.modules.filter(m => MODULE_IDS.includes(m)))] : ['property']
+  const picked = Array.isArray(req.body.modules) ? [...new Set(req.body.modules.filter(m => MODULE_IDS.includes(m) && !MODULES.find(x => x.id === m).addon))] : ['property']
   if (!picked.length) throw err(400, 'Pick a module')
   if (picked.length > 1) throw err(400, 'Pick one module to start with. More can be added later in Settings')
   if (!plansFor(picked[0]).some(p => p.id === plan.id)) throw err(400, picked[0] === 'therapy' ? 'Special Needs Therapy has its own plan (PKR 8,500 per month). Choose that plan' : 'That plan is for Special Needs Therapy only. Choose one of the other plans')
@@ -5337,6 +5344,10 @@ app.put('/api/targets', guard('payments'), (req, res) => {
 const dist = path.join(root, 'dist')
 // always revalidate the service worker so PWA updates roll out on the next load
 app.get('/sw.js', (_req, res) => res.sendFile(path.join(dist, 'sw.js'), { headers: { 'Cache-Control': 'no-cache' } }))
+// ---- HR & Payroll module: must be registered before the static/404 handlers below ----
+registerHr({ app, one, all, run, tx, err, log, can, modulesOf, today, now, brandOfId })
+registerAccounting({ app, one, all, run, tx, err, log, can, modulesOf, today, now })
+
 app.use(express.static(dist))
 app.use((req, res, next) => (req.path.startsWith('/api') ? next(err(404, 'Not found')) : res.sendFile(path.join(dist, 'index.html'))))
 app.use((e, _req, res, _next) => {

@@ -275,6 +275,41 @@ steps('16. Everyday tools: dashboard, reports, assistant, mobile', [
 ], imgs=[('dashboard', 'Dashboard.'), ('reports', 'Reports: daily, weekly or monthly figures per agent, with CSV and print.')])
 story += [PageBreak()]
 
+story += section('Step-by-step: HR & Payroll (optional module)', 'For clients who want a full back office. The platform owner switches the HR & Payroll module on for the company; it then appears as HR in the menu for roles with the hr permission (accounts, sales head, admin, owner). Salary screens need the stricter payroll permission (accounts, admin, owner).')
+steps('17. Employees and attendance', [
+    ('Open HR for the overview: active staff, who is present today, leave waiting for approval and the monthly salary bill.', 'Overview loads.'),
+    ('Open Employees > New employee. Enter name, designation, department, phone, CNIC and join date. Choose the pay type: fixed salary, commission only, or salary plus commission, then the monthly salary and allowance.', 'Pay type matches the contract.'),
+    ('Link the employee to their CRM login. Their sales commission from allotments is then pulled into payroll automatically.', 'Sales staff are linked.'),
+    ('Open Attendance, pick the date and mark each person Present, Late, Half day, Absent, Paid leave, Unpaid leave or Holiday (or use Mark all present), then Save.', 'Every working day is marked.'),
+    ('Open Leave, record a request and Approve or Reject it. Approved leave fills the attendance sheet for working days; unpaid leave is deducted in payroll.', 'No request is left pending.'),
+    ('When someone leaves, use Mark left. They stay on past payrolls.', 'Former staff are not paid next month.'),
+], imgs=[('hr','HR overview.'),('hr-employees','Employees: pay type and monthly salary per person.'),('hr-employee-form','New employee form.'),('hr-attendance','Daily attendance sheet.'),('hr-leave','Leave requests and approvals.')])
+steps('18. Run payroll, pay staff and print payslips', [
+    ('Open Payroll. Add this month\'s one-off items: allowances, bonuses, deductions and advance recoveries.', 'Items are listed for the month.'),
+    ('Pick the month and choose Generate payslips. Pay = salary + allowance + CRM commission + bonus - deductions - advances - absence cut. The absence cut is salary divided by working days (Sundays are off) for each absent or unpaid-leave day, half for a half day. Days with no attendance mark count as present.', 'Each payslip total makes sense.'),
+    ('Review the draft. Edit any figure in the table, or Regenerate after fixing attendance. A draft can be deleted.', 'Numbers are final.'),
+    ('Choose Finalize. The payroll locks and no figure can change.', 'Status shows Finalized.'),
+    ('Mark each employee paid with the method and date, and open Payslip to print it on your company letterhead (see Settings > Letterhead & receipts).', 'Everyone shows Paid.'),
+], imgs=[('hr-payroll','Payroll: one-off items and past runs.'),('hr-payroll-run','A finalized payroll with commission, advances, absence cut and net pay.'),('hr-payslip','Printable payslip with the company letterhead.')])
+story += [PageBreak()]
+
+story += section('Step-by-step: Accounting (optional module)', 'A simple, accurate set of books for cash, bank, expenses and vendors. The platform owner switches the Accounting module on; roles with the accounting permission (accounts, admin, owner) then see Accounting in the menu.')
+steps('19. Set up accounts and keep the ledger', [
+    ('Open Accounting > Bank & cash and add every cash box and bank account with its opening balance.', 'Balances match your real cash and bank.'),
+    ('Open Ledger > Add entry. Choose Expense, Income or Transfer, then the date, amount, account, category and who was paid or received from.', 'Entry appears in the ledger.'),
+    ('Use Transfer to move money between accounts, for example bank to office cash. It changes balances but is not income or expense.', 'Both balances move.'),
+    ('Wrong entry? Use Void and give a reason. Entries are never deleted, so the history stays auditable.', 'Voided rows are struck through.'),
+    ('On Accounting, choose Import CRM receipts, rent, commissions and payroll. Sale and rent receipts, refunds, paid commissions and paid payroll are copied into the ledger once; running it again adds nothing twice.', 'CRM money shows with its source.'),
+    ('Filter the ledger by date, type, account or search text, and Export CSV for your accountant.', 'The export opens in Excel.'),
+], imgs=[('acc-accounts','Bank & cash: accounts with opening and current balance.'),('acc-ledger','Ledger: income, expense and transfers with their source.')])
+steps('20. Vendor bills and reports', [
+    ('Open Bills, add the vendor, then New bill with bill number, bill and due dates, category and amount.', 'Bill is listed as Open.'),
+    ('Choose Pay on a bill, enter the amount, date and the account you paid from. Part payments are fine. You cannot pay more than the balance.', 'Status becomes Partial or Paid.'),
+    ('Bills past their due date and not fully paid show as Overdue; the total payable is shown at the top of Bills and on the overview.', 'Overdue bills are chased.'),
+    ('Open Accounting for the period you need: income, expenses, profit or loss, the last six months, cash and bank balances and what you owe vendors.', 'Report dates are correct.'),
+], imgs=[('acc-bills','Bills: vendor, due date, paid, status and Pay.'),('acc-overview','Overview: profit and loss by category, balances and payables.')])
+story += [PageBreak()]
+
 # Screen tour
 story += section('Screen tour', 'These screens show where the main workflows live. Your workspace may show additional modules depending on your role, plan, and enabled products.')
 screen_rows = [

@@ -35,6 +35,8 @@ export const limitLine = plan => PLAN_LIMITS.map(w => limitLabel(plan, w)).join(
 export const MODULES = [
   { id: 'property', name: 'Property CRM', blurb: 'Leads, projects, inventory, allotments and collections.' },
   { id: 'edu', name: 'Student Consultancy', blurb: 'Student leads, universities and courses, applications, documents, visas and appointments.', perm: 'edu' },
+  { id: 'hr', name: 'HR & Payroll', blurb: 'Employees, attendance, leave, payroll and payslips.', perm: 'hr', addon: true }, // add-on: switched on by the platform owner, not offered at sign-up
+  { id: 'accounting', name: 'Accounting', blurb: 'Cash and bank accounts, ledger, vendor bills, payables and profit & loss.', perm: 'accounting', addon: true },
   { id: 'therapy', name: 'Special Needs Therapy', blurb: 'Children, 3-month goals, AI next-step plans and what to try when a child is stuck.', perm: 'therapy' },
 ]
 

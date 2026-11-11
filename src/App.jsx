@@ -18,6 +18,8 @@ import Universities, { University } from './EduCatalogue.jsx'
 import Courses from './EduCourses.jsx'
 import Applications from './EduApplications.jsx'
 import Therapy, { TherapyChild, TherapyChildren, ParentPortal, TherapyLibrary, TherapyOrg, TherapyKnowledge } from './Therapy.jsx'
+import { HrOverview, Employees, Attendance, Leave, Payroll, PayrollRun, Payslip } from './Hr.jsx'
+import { AccOverview, AccLedger, AccBills, AccAccounts } from './Accounting.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -111,7 +113,7 @@ function Login() {
             </>}
             {step === 1 && <fieldset className="plan-picker module-picker">
               <legend>What will you use Estate Centric for?</legend>
-              {MODULES.map(x => (
+              {MODULES.filter(x => !x.addon).map(x => (
                 <label key={x.id}>
                   <span className="mod-icon"><Icon name={{ property: 'building', edu: 'cap', therapy: 'heart' }[x.id] || 'layers'} size={22} /></span>
                   <span className="mod-text"><b>{x.name}</b><small>{x.blurb}</small></span>
@@ -410,6 +412,15 @@ const EDU_NAV = [
   ['/universities', 'Universities', 'book', 'edu', 'wide'], ['/courses', 'Courses', 'layers', 'edu', 'wide'],
 ]
 
+// HR & Payroll: shown when the platform switched the module on for the company and the role holds `hr`.
+// Payroll pages need the stricter `payroll` permission, so salaries stay with accounts/admin/owner.
+const HR_NAV = [['/hr', 'HR', 'users', 'hr', 'wide'], ['/hr/employees', 'Employees', 'cap', 'hr', 'more'], ['/hr/attendance', 'Attendance', 'calendar', 'hr', 'more'],
+  ['/hr/leave', 'Leave', 'visits', 'hr', 'more'], ['/hr/payroll', 'Payroll', 'wallet', 'payroll', 'more']]
+
+// Accounting add-on: module switched on for the company and the role holds `accounting`.
+const ACC_NAV = [['/accounting', 'Accounting', 'wallet', 'accounting', 'wide'], ['/accounting/ledger', 'Ledger', 'receipt', 'accounting', 'more'],
+  ['/accounting/bills', 'Bills', 'inbox', 'accounting', 'more'], ['/accounting/accounts', 'Bank & cash', 'key', 'accounting', 'more']]
+
 const THERAPY_NAV = [['/therapy', 'Therapy', 'heart', 'therapy', 'all'], ['/therapy/children', 'Children', 'users', 'therapy', 'wide'],
   ['/therapy/library', 'Skills', 'book', 'therapy', 'wide'], ['/therapy/knowledge', 'Knowledge', 'layers', 'therapy', 'wide'], ['/therapy/org', 'Organization', 'settings', 'therapy', 'more']]
 
@@ -507,6 +518,10 @@ export default function App() {
   const isParent = meta.me.role === 'parent'
   const propertyOn = !isParent && (meta.me.modules || []).includes('property')
   const therapyOn = (meta.me.modules || []).includes('therapy') && meta.perms.includes('therapy')
+  const accOn = (meta.me.modules || []).includes('accounting') && meta.perms.includes('accounting')
+  const hrOn = (meta.me.modules || []).includes('hr') && meta.perms.includes('hr')
+  const payrollRunId = hrOn ? path.match(/^\/hr\/payroll\/(\d+)/)?.[1] : null
+  const payslipId = hrOn ? path.match(/^\/hr\/payslip\/(\d+)/)?.[1] : null
   const therapyId = therapyOn ? path.match(/^\/therapy\/(\d+)/)?.[1] : null
   const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
   const universityId = eduOn ? path.match(/^\/universities\/(\d+)/)?.[1] : null
@@ -531,12 +546,14 @@ export default function App() {
         ]
       : !propertyOn && therapyOn
         ? [['/', 'Dashboard', 'dashboard', null, 'all'], ['/therapy/children', 'Children', 'users', null, 'all'], ['/therapy/library', 'Skills', 'book', null, 'all'], ['/therapy/knowledge', 'Knowledge', 'layers', null, 'all'], ['/therapy/org', 'Organization', 'settings', null, 'wide'], ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more']]
-        : [...NAV, ...(eduOn ? EDU_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
+        : [...NAV, ...(eduOn ? EDU_NAV : []), ...(hrOn ? HR_NAV : []), ...(accOn ? ACC_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
     : isParent ? <ParentPortal />
     : leadId && propertyOn ? <Lead id={leadId} key={leadId} />
+    : payrollRunId ? <PayrollRun id={payrollRunId} key={payrollRunId} />
+    : payslipId ? <Payslip id={payslipId} key={payslipId} />
     : therapyId ? <TherapyChild id={therapyId} key={therapyId} />
     : studentId ? <Student id={studentId} key={studentId} />
     : universityId ? <University id={universityId} key={universityId} />
@@ -564,6 +581,8 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
+        ...(hrOn ? { '/hr': <HrOverview />, '/hr/employees': <Employees />, '/hr/attendance': <Attendance />, '/hr/leave': <Leave />, '/hr/payroll': <Payroll /> } : {}),
+        ...(accOn ? { '/accounting': <AccOverview />, '/accounting/ledger': <AccLedger />, '/accounting/bills': <AccBills />, '/accounting/accounts': <AccAccounts /> } : {}),
         ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/children': <TherapyChildren query={query} key={query} />, '/therapy/library': <TherapyLibrary />, '/therapy/org': <TherapyOrg />, '/therapy/knowledge': <TherapyKnowledge /> } : {}),
         ...(eduOn ? {
           '/students': <Students query={query} key={query} />,
@@ -574,7 +593,7 @@ export default function App() {
         } : {})
       }[path]
     ?? <p>Not found</p>
-  const title = isPlatform ? 'Accounts' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : therapyId ? 'Child' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
+  const title = isPlatform ? 'Accounts' : payrollRunId || payslipId ? 'Payroll' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : therapyId ? 'Child' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
   const home = path === homePath
 
