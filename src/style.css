@@ -544,6 +544,10 @@ tr.row-form input { background: #fff; }
 
 .letter { max-width: 820px; margin: 0 auto; padding: 48px 56px; position: relative; overflow: hidden; }
 .letter header img { width: 200px; }
+.brand-head { display: flex; flex-direction: column; gap: 3px; }
+.letter header .brand-head img, .brand-head img { width: auto; max-width: 200px; max-height: 64px; object-fit: contain; }
+.brand-head .brand-name { font-size: 18px; }
+.brand-head small { color: #667085; }
 .letter header .right { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
 .letter header .right b { font-size: 20px; }
 .letter h1 { font-size: 26px; text-align: center; margin: 36px 0 20px; text-transform: uppercase; letter-spacing: .08em; }

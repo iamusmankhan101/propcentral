@@ -3,6 +3,7 @@ import JsBarcode from 'jsbarcode'
 import { createPortal } from 'react-dom'
 import { api, useApi, useMeta, useAction, formData, fmt, pkr, go, phone, shrinkImage, readFile } from './api.js'
 import logoImg from './assets/logo.png'
+import { Letterhead, brandName } from './Brand.jsx'
 import { Select, Status } from './Leads.jsx'
 import { convertArea, currentRate, unitPrice, sizeKey, autoPrefix } from '../server/lib.js'
 
@@ -1113,10 +1114,9 @@ export function AllotmentLetter({ id }) {
       </div>
       <article className="card letter">
         {a.status === 'cancelled' && <div className="stamp">Cancelled</div>}
-        <header className="row between">
-          <img src={logoImg} alt="Estate Centric" />
+        <Letterhead brand={a.brand}>
           <div className="right"><small>Allotment No.</small><b>{a.allotment_no}</b><small>Date: {a.sale_date}</small></div>
-        </header>
+        </Letterhead>
         <h1>{a.sale_status === 'Booked' ? 'Booking Confirmation' : 'Allotment Letter'}</h1>
         <p>
           This is to certify that the following {a.unit_type.toLowerCase()} in <b>{a.project}</b>{a.city && `, ${a.city}`} has been
@@ -1136,9 +1136,9 @@ export function AllotmentLetter({ id }) {
         {a.note && <p><small>Note: {a.note}</small></p>}
         <div className="signs">
           <div><span />Allottee</div>
-          <div><span />Authorised Signatory<br /><small>Estate Centric</small></div>
+          <div><span />Authorised Signatory<br /><small>{a.brand?.signatory || brandName(a.brand)}</small></div>
         </div>
-        <footer><small>Issued by {a.created_by_name || 'Estate Centric'} · This letter is valid only with the company stamp and an authorised signature.</small></footer>
+        <footer><small>Issued by {a.created_by_name || brandName(a.brand)} · {a.brand?.footer || 'This letter is valid only with the company stamp and an authorised signature.'}</small></footer>
       </article>
     </section>
   )

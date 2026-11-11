@@ -1,6 +1,6 @@
 import { useApi, pkr } from './api.js'
 import { Receipt } from './Payments.jsx'
-import logoImg from './assets/logo.png'
+import { Letterhead } from './Brand.jsx'
 
 const STATUS_CLS = { Paid: 'u-available', Partial: 'u-on-hold', Overdue: 'u-sold', Due: '' }
 const rs = n => 'PKR ' + Number(n).toLocaleString('en-PK')
@@ -9,11 +9,11 @@ const rs = n => 'PKR ' + Number(n).toLocaleString('en-PK')
 export default function Portal({ token, receipt }) {
   const [d, , error] = useApi('/portal/' + token)
   if (receipt) return <div className="portal"><Receipt id={receipt} path={`/portal/${token}/receipts/${receipt}`} back={'#/portal/' + token} /></div>
-  if (error) return <div className="portal"><img className="public-logo" src={logoImg} alt="Company logo" /><p className="error">{error}</p></div>
+  if (error) return <div className="portal"><p className="error">{error}</p></div>
   if (!d) return <p className="muted pad">Loading…</p>
   return (
     <div className="portal">
-      <img className="public-logo" src={logoImg} alt="Company logo" />
+      <Letterhead brand={d.brand} />
       <h2>Assalam-o-Alaikum, {d.name}</h2>
       <p className="muted">Your plots, payment schedule and receipts. Keep this link private.</p>
       {d.allotments.map(a => {

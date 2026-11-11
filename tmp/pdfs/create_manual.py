@@ -261,6 +261,7 @@ steps('15. Set up a new workspace (first week)', [
     ('Settings > Leads & pipeline: set statuses, closed and approval statuses, lost reasons, sources, activity types, lead and property types, custom fields, stale days and scoring.', 'Pipeline matches how you sell.'),
     ('Settings > Assignment & SLA: add prioritised assignment rules (source, city, project, budget, hours, round-robin, load or performance), SLA minutes and working hours.', 'New lead routes to the right agent.'),
     ('Settings > Site visits, Inventory & listings, Properties & leases, and Commission: configure the lists and limits each module uses.', 'Defaults reviewed.'),
+    ('Settings > Letterhead & receipts: enter your company name, address, phone, email, signatory title and footer note, upload your logo and check the preview. This letterhead prints on allotment letters, booking forms, payment and rent receipts and the customer portal for your company only.', 'A test letter shows your name and logo.'),
     ('Settings > Maps: paste the MapTiler key. Settings > Email reports: choose weekly report recipients and send a preview.', 'Map loads; preview received.'),
     ('Settings > Roles & permissions: tick what each role can do. Users: invite the team and set role, team and branch.', 'Everyone has the least access needed.'),
     ('Check plan limits (users, branches, projects, units, leads) shown on Users before adding more.', 'You stay under the cap.'),

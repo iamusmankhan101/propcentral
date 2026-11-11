@@ -3,7 +3,7 @@ import { api, useApi, useMeta, useAction, formData, fmt, pkr, phone } from './ap
 import { Select } from './Leads.jsx'
 import { inPolygon, areasAt, fitTransform, fitCorners } from '../server/lib.js'
 const PropertyMap = lazy(() => import('./PropertyMap.jsx')) // map library loads only on this page
-import logoImg from './assets/logo.png'
+import { Letterhead, brandName } from './Brand.jsx'
 
 export const STATUS_COLOR = { Let: '#1f9e5a', Ending: '#e8a10e', 'Ending soon': '#d92d20', 'Rent overdue': '#d92d20', Vacant: '#2f6fdb' }
 const KINDS = ['House', 'Upper portion', 'Lower portion', 'Apartment', 'Plot', 'Shop', 'Office', 'Building', 'Farmhouse', 'Other']
@@ -639,10 +639,9 @@ export function RentReceipt({ id }) {
       <div className="row between no-print"><a href={'#/properties/' + r.property_id} className="muted">← {propLabel(r.property)}</a><button onClick={() => print()}>Print receipt</button></div>
       <article className="card letter">
         {r.voided_at && <div className="stamp">Void</div>}
-        <header className="row between">
-          <img src={logoImg} alt="Estate Centric" />
+        <Letterhead brand={r.brand}>
           <div className="right"><small>Receipt No.</small><b>{r.receipt_no}</b><small>Date: {r.paid_on}</small></div>
-        </header>
+        </Letterhead>
         <h1>{r.kind === 'deposit_refund' ? 'Deposit Refund Voucher' : r.kind === 'deposit' ? 'Security Deposit Receipt' : 'Rent Receipt'}</h1>
         <table className="letter-table"><tbody>
           <tr><th>{r.kind === 'deposit_refund' ? 'Paid to' : 'Received from'}</th><td>{r.tenant_name}{r.tenant_cnic && ` (CNIC ${r.tenant_cnic})`}</td></tr>
@@ -651,8 +650,8 @@ export function RentReceipt({ id }) {
           <tr><th>Property</th><td>{propLabel(r.property)}{r.property.address && `, ${r.property.address}`}</td></tr>
           {r.note && <tr><th>Note</th><td>{r.note}</td></tr>}
         </tbody></table>
-        <div className="signs"><div><span />Tenant</div><div><span />Received by<br /><small>Estate Centric</small></div></div>
-        <footer><small>Recorded by {r.created_by_name || 'Estate Centric'} on {fmt(r.created_at)}</small></footer>
+        <div className="signs"><div><span />Tenant</div><div><span />Received by<br /><small>{r.brand?.signatory || brandName(r.brand)}</small></div></div>
+        <footer><small>Recorded by {r.created_by_name || brandName(r.brand)} on {fmt(r.created_at)}{r.brand?.footer && ` · ${r.brand.footer}`}</small></footer>
       </article>
     </section>
   )

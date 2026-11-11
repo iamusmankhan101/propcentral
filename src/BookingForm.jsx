@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, pkr, phone, shrinkImage } from './api.js'
-import logoImg from './assets/logo.png'
+import { Letterhead } from './Brand.jsx'
 
 const DOCS = [['buyer_cnic_front', 'Applicant CNIC (front)'], ['buyer_cnic_back', 'Applicant CNIC (back)'], ['nominee_cnic_front', 'Nominee CNIC (front)'], ['nominee_cnic_back', 'Nominee CNIC (back)']]
 const rs = n => 'PKR ' + Number(n).toLocaleString('en-PK')
@@ -28,10 +28,9 @@ export default function BookingForm({ id }) {
       {edit && <FormEditor a={a} f={f} docs={docs} reload={reload} onSaved={() => setEditing(false)} />}
       <article className="card letter">
         {a.status === 'cancelled' && <div className="stamp">Cancelled</div>}
-        <header className="row between">
-          <img src={logoImg} alt="Company logo" />
+        <Letterhead brand={d.brand}>
           <div className="right"><small>Form / File No.</small><b>{a.allotment_no}</b><small>Date: {a.sale_date}</small></div>
-        </header>
+        </Letterhead>
         <h1>Booking Application Form</h1>
         <h4>Applicant</h4>
         <table className="letter-table"><tbody>

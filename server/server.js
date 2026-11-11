@@ -44,7 +44,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '18' // 18: repair the seeded workspace owner role
+const SCHEMA_VERSION = '19' // 19: company letterhead column (users.brand); 18: repair the seeded workspace owner role
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       used_at TEXT,
       created_at TEXT NOT NULL)`)
     db.exec('CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id)')
+    addColumn('users', 'brand', 'TEXT') // JSON letterhead for this company (set on the main account): name, logo data URL, address, phone…
     addColumn('users', 'email_verified', 'INTEGER DEFAULT 0')
     addColumn('users', 'created_at', 'TEXT') // when the account was created; NULL for accounts that predate the column
     addColumn('users', 'two_factor_method', "TEXT DEFAULT 'email'") // 'email' | 'totp' | null
@@ -461,6 +462,17 @@ const modulesOf = u => {
   // If modules were explicitly set (e.g. only ['edu']), return that list. If null/empty (legacy accounts), default to property.
   return list.length ? list : ['property']
 }
+
+// ---------- company letterhead ----------
+// Each company prints its own name, logo and contact lines on letters and receipts. Stored as JSON on the main account
+// (like modules), so every user under it shares it. {} means "not set": the screens fall back to the Estate Centric header.
+const BRAND_TEXT = { name: 120, tagline: 160, address: 240, phone: 60, email: 120, website: 120, signatory: 80, footer: 300 }
+const brandOfUser = u => {
+  if (!u) return {}
+  const main = u.owner_id ? one('SELECT brand FROM users WHERE id=?', u.owner_id) : u
+  try { return JSON.parse(main?.brand || '{}') || {} } catch { return {} }
+}
+const brandOfId = id => brandOfUser(id ? one('SELECT id, owner_id, brand FROM users WHERE id=?', id) : null)
 
 // ---------- auth throttling ----------
 // Counters live in the DB so limits hold across serverless instances; Turso serialises the upsert.
@@ -1065,7 +1077,7 @@ app.get('/api/portal/:token', (req, res) => {
       payments: all(`SELECT id, receipt_no, kind, amount, method, paid_on FROM payments WHERE allotment_id=? AND lead_id IN (SELECT id FROM leads WHERE contact_id=?) AND voided_at IS NULL ORDER BY paid_on, id`, a.id, c.id),
     }
   })
-  res.json({ name: c.name, allotments: allots })
+  res.json({ name: c.name, brand: brandOfId(one('SELECT created_by FROM allotments WHERE id=?', allots[0]?.id)?.created_by), allotments: allots })
 })
 app.get('/api/portal/:token/receipts/:id', (req, res) => {
   const c = portalContact(req.params.token), r = receiptData(req.params.id)
@@ -2098,6 +2110,25 @@ app.post('/api/teams', guard('manage_users'), (req, res) => {
 })
 
 // ---- settings & audit ----
+// Letterhead for allotment letters, receipts and the booking form. Per company, unlike the settings below.
+app.get('/api/brand', guard('settings'), (req, res) => res.json(brandOfId(req.user.id)))
+app.put('/api/brand', guard('settings'), (req, res) => {
+  const b = req.body || {}, out = {}
+  for (const [k, max] of Object.entries(BRAND_TEXT)) {
+    const v = String(b[k] ?? '').trim()
+    if (v.length > max) throw err(400, `${k} is too long (max ${max} characters)`)
+    if (v) out[k] = v
+  }
+  if (b.logo) {
+    if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(b.logo)) throw err(400, 'Logo must be a PNG, JPG or WebP image')
+    if (b.logo.length > 600_000) throw err(400, 'Logo is too large (max about 400 KB)')
+    out.logo = b.logo
+  }
+  const mainId = req.user.owner_id ?? req.user.id
+  log(req, 'setting', 'brand', mainId, { name: out.name, logo: !!out.logo })
+  run('UPDATE users SET brand=? WHERE id=?', JSON.stringify(out), mainId)
+  res.json({ ok: true })
+})
 app.get('/api/settings', guard('settings'), (_req, res) => res.json(Object.fromEntries(Object.keys(DEFAULTS).map(k => [k, S(k)]))))
 app.put('/api/settings/:key', guard('settings'), (req, res) => {
   const k = req.params.key
@@ -2540,7 +2571,7 @@ function visibleAllotment(u, id) {
 app.get('/api/allotments/:id', (req, res) => {
   const a = visibleAllotment(req.user, req.params.id)
   log(req, 'view', 'allotment', a.id)
-  res.json(maskAllot(req.user, a))
+  res.json({ ...maskAllot(req.user, a), brand: brandOfId(req.user.id) })
 })
 app.post('/api/allotments/:id/cancel', guard('unit_status'), (req, res) => {
   const a = one(`SELECT * FROM allotments WHERE id=? AND status='active'`, req.params.id)
@@ -2645,7 +2676,7 @@ function receiptData(id) {
     JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=p.created_by WHERE p.id=?`, id)
   if (!p) throw err(404, 'Receipt not found')
   const a = one(`${ALLOT_SELECT} WHERE a.id=?`, p.allotment_id)
-  return { ...p, allotment: { ...a, phone: undefined, cnic: undefined, email: undefined }, paid_to_date: paidFor(a.id) }
+  return { ...p, brand: brandOfId(p.created_by), allotment: { ...a, phone: undefined, cnic: undefined, email: undefined }, paid_to_date: paidFor(a.id) }
 }
 app.get('/api/payments/:id', (req, res) => {
   const p = receiptData(req.params.id)
@@ -2711,7 +2742,7 @@ app.get('/api/allotments/:id/form', (req, res) => {
   const a = visibleAllotment(req.user, req.params.id), full = can(req.user, 'view_phone')
   log(req, 'view', 'booking_form', a.id)
   res.json({
-    allotment: maskAllot(req.user, a), form: JSON.parse(a.form || '{}'),
+    allotment: maskAllot(req.user, a), brand: brandOfId(req.user.id), form: JSON.parse(a.form || '{}'),
     schedule: all('SELECT label, due_date, amount FROM installments WHERE allotment_id=? ORDER BY due_date, id', a.id),
     docs: full ? Object.fromEntries(all('SELECT kind, data FROM allotment_docs WHERE allotment_id=?', a.id).map(d => [d.kind, d.data])) : {},
   })
@@ -5028,7 +5059,7 @@ app.get('/api/rent-payments/:id', (req, res) => { // receipt
   const r = one(`SELECT r.*, l.property_id, c.name tenant_name, c.cnic tenant_cnic, us.name created_by_name FROM rent_payments r JOIN leases l ON l.id=r.lease_id
     JOIN contacts c ON c.id=l.tenant_contact_id LEFT JOIN users us ON us.id=r.created_by WHERE r.id=?`, req.params.id)
   if (!r) throw err(404, 'Receipt not found')
-  res.json({ ...r, tenant_cnic: can(req.user, 'view_phone') ? r.tenant_cnic : r.tenant_cnic && '*****', property: propertyFor(r.property_id, req.user) })
+  res.json({ ...r, tenant_cnic: can(req.user, 'view_phone') ? r.tenant_cnic : r.tenant_cnic && '*****', property: propertyFor(r.property_id, req.user), brand: brandOfId(req.user.id) })
 })
 
 app.post('/api/properties/:id/maintenance', (req, res) => {

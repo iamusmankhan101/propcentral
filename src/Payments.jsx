@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt, pkr, phone } from './api.js'
 import { Select } from './Leads.jsx'
 import { LeadPicker, leadIdOf } from './Projects.jsx'
-import logoImg from './assets/logo.png'
+import { Letterhead, brandName } from './Brand.jsx'
 
 const STATUS_CLS = { Paid: 'u-available', Partial: 'u-on-hold', Overdue: 'u-sold', Due: '' }
 const KIND = { payment: 'Payment', refund: 'Refund', transfer: 'Transfer' }
@@ -218,10 +218,9 @@ export function Receipt({ id, path, back }) {
       </div>
       <article className="card letter">
         {p.voided_at && <div className="stamp">Void</div>}
-        <header className="row between">
-          <img src={logoImg} alt="Estate Centric" />
+        <Letterhead brand={p.brand}>
           <div className="right"><small>Receipt No.</small><b>{p.receipt_no}</b><small>Date: {p.paid_on}</small></div>
-        </header>
+        </Letterhead>
         <h1>{title}</h1>
         <table className="letter-table"><tbody>
           <tr><th>{p.kind === 'refund' ? 'Paid to' : 'Received from'}</th><td>{p.payer}{p.payer_cnic && <> (CNIC {p.payer_cnic})</>}</td></tr>
@@ -234,9 +233,9 @@ export function Receipt({ id, path, back }) {
         {p.voided_at && <p className="error"><small>Voided {fmt(p.voided_at)}: {p.void_note}</small></p>}
         <div className="signs">
           <div><span />{p.kind === 'refund' ? 'Received by' : 'Customer'}</div>
-          <div><span />Accounts<br /><small>Estate Centric</small></div>
+          <div><span />Accounts<br /><small>{p.brand?.signatory || brandName(p.brand)}</small></div>
         </div>
-        <footer><small>Recorded by {p.created_by_name || 'Estate Centric'} on {fmt(p.created_at)} · Valid only with the company stamp.</small></footer>
+        <footer><small>Recorded by {p.created_by_name || brandName(p.brand)} on {fmt(p.created_at)} · {p.brand?.footer || 'Valid only with the company stamp.'}</small></footer>
       </article>
     </section>
   )
