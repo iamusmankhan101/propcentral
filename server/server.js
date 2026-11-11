@@ -1278,7 +1278,7 @@ function sendExport(req, res, extra) {
   const rows = leadExportRows(req)
   audit(req.user.id, 'export', 'lead', null, { count: rows.length, query: req.query, ...extra }, req.ip)
   res.type('text/csv').attachment(`leads-${Date.now()}.csv`)
-    .send(L.toCsv([[`Exported by ${req.user.name} (${req.user.email}) at ${now()}. Confidential.`], Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
+    .send(L.toCsv([Object.keys(rows[0] || { id: 0 }), ...rows.map(Object.values)]))
 }
 function sendXlsxExport(req, res) {
   const rows = leadExportRows(req)

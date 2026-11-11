@@ -269,23 +269,31 @@ export function Import() {
   const [map, setMap] = useState({})
   const [defaultSource, setDefaultSource] = useState('Other')
   const [report, setReport] = useState()
-  const { run, error, busy } = useAction()
+  const { run, error, busy, setError } = useAction()
 
   const load = async e => {
     const file = e.target.files[0]
     if (!file) return
-    let rows
-    if (/\.xlsx?$/i.test(file.name)) {
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
-      rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' })
-    } else rows = parseCsv(await file.text())
-    if (!rows.length) return
-    setCsv(rows); setReport()
-    const h = rows[0].map(x => x.trim().toLowerCase())
-    setMap(Object.fromEntries(IMPORT_FIELDS.map(f => [f, h.findIndex(x => x === f || x.replace(/[\s_]/g, '') === f.replace('_', ''))]).filter(([, i]) => i >= 0)))
+    setError('')
+    try {
+      let rows
+      if (/\.xlsx?$/i.test(file.name)) {
+        const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+        const first = workbook.SheetNames[0]
+        if (!first) throw new Error('The Excel file has no worksheets')
+        rows = XLSX.utils.sheet_to_json(workbook.Sheets[first], { header: 1, defval: '' })
+      } else rows = parseCsv(await file.text())
+      if (rows.length && rows[0].length === 1 && /^Exported by /i.test(String(rows[0][0]).trim())) rows = rows.slice(1)
+      if (!rows.length) throw new Error('The file is empty')
+      setCsv(rows); setReport()
+      const h = rows[0].map(x => String(x ?? '').trim().toLowerCase())
+      setMap(Object.fromEntries(IMPORT_FIELDS.map(f => [f, h.findIndex(x => x === f || x.replace(/[\s_]/g, '') === f.replace('_', ''))]).filter(([, i]) => i >= 0)))
+    } catch (err) {
+      setCsv(undefined); setReport(); setError(`Could not read ${file.name}: ${err.message}`)
+    }
   }
   const rows = () => csv.slice(1).map(r => {
-    const o = Object.fromEntries(Object.entries(map).filter(([, i]) => i >= 0).map(([f, i]) => [f, r[i]?.trim()]))
+    const o = Object.fromEntries(Object.entries(map).filter(([, i]) => i >= 0).map(([f, i]) => [f, String(r[i] ?? '').trim()]))
     return { ...o, source: o.source || defaultSource }
   })
   const send = commit => run(async () => setReport({ ...(await api('/leads/import', { body: { rows: rows(), commit } })), commit }))
