@@ -105,21 +105,21 @@ test('the platform switches product modules on for one company at a time', async
   const modules = async tok => (await (await call(base, 'GET', '/meta', tok)).json()).me.modules
   assert.deepEqual(await modules(coTok), ['property'], 'a new company gets the base CRM only')
 
-  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, otherAdmin, { modules: ['edu'] })).status, 403, 'a company admin cannot switch on its own module')
-  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: 'edu' })).status, 400, 'not a list')
-  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['eduction'] })).status, 400, 'unknown module')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, otherAdmin, { modules: ['hr'] })).status, 403, 'a company admin cannot switch on its own module')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: 'hr' })).status, 400, 'not a list')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['hrx'] })).status, 400, 'unknown module')
 
-  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['edu'] })).status, 200)
-  assert.deepEqual(await modules(coTok), ['edu'], 'modules are separate: edu alone does not bring the property CRM')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['hr'] })).status, 200)
+  assert.deepEqual(await modules(coTok), ['property', 'hr'], 'the base CRM is always on, add-ons sit beside it')
 
   const sub = await call(base, 'POST', '/users', coTok, { name: 'Counselor', email: 'counselor@example.com', role: 'agent', password: 'Passw0rd12345' })
   assert.equal(sub.status, 200)
   const subId = (await sub.json()).id
   await call(base, 'POST', `/users/${subId}/activate`, coTok)
   const subTok = await login(base, 'counselor@example.com', 'Passw0rd12345')
-  assert.deepEqual(await modules(subTok), ['edu'], 'a user added under the company inherits it')
+  assert.deepEqual(await modules(subTok), ['property', 'hr'], 'a user added under the company inherits it')
 
-  assert.equal((await call(base, 'POST', `/platform/accounts/${subId}/modules`, boss, { modules: ['edu'] })).status, 400, 'a sub-account has no switch of its own')
+  assert.equal((await call(base, 'POST', `/platform/accounts/${subId}/modules`, boss, { modules: ['hr'] })).status, 400, 'a sub-account has no switch of its own')
 
   assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: [] })).status, 400, 'at least one module stays on')
   assert.equal((await call(base, 'POST', `/platform/accounts/${co.id}/modules`, boss, { modules: ['property'] })).status, 200)
@@ -128,8 +128,8 @@ test('the platform switches product modules on for one company at a time', async
 
   // inside a company that has the module, the permission matrix decides who sees it
   const { permissions } = await (await call(base, 'GET', '/roles', otherAdmin)).json()
-  assert.ok(permissions.edu.includes('agent') && permissions.edu.includes('admin'), 'counselors and admins get the Edu nav')
-  assert.ok(!permissions.edu.includes('inventory') && !permissions.edu.includes('platform'), 'and the roles that counsel nobody do not')
+  assert.ok(permissions.hr.includes('accounts') && permissions.hr.includes('admin'), 'accounts and admins get the HR nav')
+  assert.ok(!permissions.hr.includes('agent') && !permissions.hr.includes('platform') && !permissions.payroll.includes('sales_head'), 'agents never see HR, and only accounts, admins and owners see payroll')
 })
 
 test('a workspace backup carries one company and restoring it leaves the others alone', async t => {
@@ -170,7 +170,7 @@ test('a workspace backup carries one company and restoring it leaves the others 
   assert.equal(file.kind, 'estate-centric-workspace')
   assert.equal(file.account.email, 'alpha@example.com')
   assert.deepEqual(file.data.users.map(u => u.email).sort(), ['ali@alpha.test', 'alpha@example.com'])
-  for (const [table, n] of [['users', 2], ['contacts', 1], ['leads', 1], ['listings', 1], ['media', 1], ['properties', 0], ['allotments', 0], ['edu_students', 0]])
+  for (const [table, n] of [['users', 2], ['contacts', 1], ['leads', 1], ['listings', 1], ['media', 1], ['properties', 0], ['allotments', 0]])
     assert.equal(file.counts[table], n, table)
   const wire = JSON.stringify(file)
   assert.ok(!wire.includes('beta@example.com') && !wire.includes('Beta Buyer'), "company B is not in company A's file")

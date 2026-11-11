@@ -28,7 +28,6 @@ import {
   X,
   AlertTriangle,
   BadgeCheck,
-  Heart,
   Banknote
 } from 'lucide-react'
 
@@ -39,7 +38,6 @@ const ADMIN_TABS = [
   { key: 'paymentMethods', label: 'Payment methods', title: 'Payment methods', sub: 'Bank accounts shown to tenants on payment requests.', Icon: Landmark },
   { key: 'invoiceDetails', label: 'Invoice details', title: 'Invoice details', sub: 'Business billing identity shown on platform invoices.', Icon: FileText },
   { key: 'users', label: 'Users', title: 'All Users', sub: 'Every user across all tenant companies.', Icon: UsersIcon },
-  { key: 'therapy', label: 'Therapy usage', title: 'Special Needs Therapy usage', sub: 'Counts per organization. Child records are never shown here.', Icon: Heart },
   { key: 'backups', label: 'Backups', title: 'Backups', sub: 'Download or review database backups.', Icon: Archive },
 ]
 
@@ -164,7 +162,6 @@ export default function PlatformAdmin() {
           {tab === 'paymentMethods' && <PaymentMethodsPanel />}
           {tab === 'invoiceDetails' && <InvoiceDetailsPanel />}
           {tab === 'users' && <AllUsersPanel />}
-          {tab === 'therapy' && <TherapyOverviewPanel />}
           {tab === 'backups' && <BackupsPanel />}
         </div>
       </div>
@@ -219,10 +216,6 @@ function AdminDashboardPanel({ onNavigate }) {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: '#fff', border: '1px solid #ebebf0', fontSize: 12, fontWeight: 700, color: '#6b6b8a' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b6b8a' }} />
           {data.new_this_week || 0} sign-ups this week
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: '#fff', border: '1px solid #ebebf0', fontSize: 12, fontWeight: 700, color: '#ea580c' }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ea580c' }} />
-          {data.with_edu || 0} workspaces with Student Consultancy
         </span>
       </div>
 
@@ -565,10 +558,12 @@ function WorkspacesPanel() {
                     )}
                   </td>
                   <td style={{ padding: '14px 16px' }}>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-                      <input type="checkbox" checked={mods.includes('edu')} onChange={e => setModule(u, 'edu', e.target.checked)} />
-                      Edu Module
-                    </label>
+                    {MODULES.filter(x => x.id !== 'property').map(x => (
+                      <label key={x.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }} title={x.blurb}>
+                        <input type="checkbox" checked={mods.includes(x.id)} onChange={e => setModule(u, x.id, e.target.checked)} />
+                        {x.name}
+                      </label>
+                    ))}
                   </td>
                   <td style={{ padding: '14px 16px', fontSize: 12.5, fontWeight: 700, color: '#6b6b8a' }}>
                     {(u.subs || []).length + 1} users
@@ -886,26 +881,6 @@ function AllUsersPanel() {
 /* ─────────────────────────────────────────────────────────────────────────────
    7. BACKUPS PANEL
 ───────────────────────────────────────────────────────────────────────────── */
-function TherapyOverviewPanel() {
-  const [rows, , err] = useApi('/therapy/platform/overview')
-  if (err) return <div className="card pad error">{err}</div>
-  if (!rows) return <div className="card pad muted">Loading…</div>
-  const th = { padding: '10px 14px', fontSize: 11, fontWeight: 800, color: '#8b8ba3', textTransform: 'uppercase' }
-  const td = { padding: '12px 14px', fontSize: 13, borderTop: '1px solid #f0f0f8' }
-  return (
-    <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #ebebf0', overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: 700 }}>
-        <thead><tr style={{ background: '#fafafa' }}>{['Organization', 'Staff', 'Children', 'Parents', 'Approved goals', 'Sessions (30 days)', 'Status'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
-        <tbody>
-          {rows.map(r => <tr key={r.id}><td style={td}><b>{r.name}</b><br /><small style={{ color: '#8b8ba3' }}>{r.email}</small></td><td style={td}>{r.staff}</td><td style={td}>{r.children}</td>
-            <td style={td}>{r.parents}</td><td style={td}>{r.approved_goals}</td><td style={td}>{r.sessions_30d}</td><td style={td}>{r.active ? 'Active' : 'Inactive'}</td></tr>)}
-          {rows.length === 0 && <tr><td colSpan="7" style={{ ...td, color: '#8b8ba3' }}>No organization has the Therapy module switched on yet.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 function BackupsPanel() {
   const downloadBackup = async () => {
     try { await saveFile('/platform/backup', 'crm-backup.db') }
@@ -924,7 +899,7 @@ function BackupsPanel() {
         </div>
       </div>
       <p style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.6 }}>
-        Download a complete SQLite database dump containing all accounts, leads, students, payments, and system configurations.
+        Download a complete SQLite database dump containing all accounts, leads, payments, and system configurations.
         To take or put back a single company's own data, use <b>Backup</b> and <b>Restore</b> on its row under Workspaces — that file never touches another company.
       </p>
       <button

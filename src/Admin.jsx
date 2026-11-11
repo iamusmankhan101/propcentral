@@ -224,7 +224,7 @@ const HELP = {
 const SECTIONS = [
   ['profile', 'Profile', 'users'], ['security', 'Privacy & security', 'key'],
   ['facebook', 'Facebook & Instagram', 'inbox', 'admin'], ['website', 'Website forms & API', 'arrow', 'admin'], ['maps', 'Maps', 'map', 'admin'], ['reports', 'Email reports', 'mail', 'settings'],
-  ['leads', 'Leads & pipeline', 'leads', 'settings'], ['edu', 'Student consultancy', 'book', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
+  ['leads', 'Leads & pipeline', 'leads', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
   ['inventory', 'Inventory & listings', 'building', 'settings'], ['properties', 'Properties & leases', 'key', 'settings'], ['sales', 'Commission', 'percent', 'settings'], ['permissions', 'Roles & permissions', 'audit', 'admin'],
   ['modules', 'Company modules', 'layers', 'admin'], ['brand', 'Letterhead & receipts', 'audit', 'settings'],
 ]
@@ -232,7 +232,6 @@ const GROUPS = ['Account', 'Integrations', 'Company']
 const groupOf = k => (['profile', 'security'].includes(k) ? 'Account' : ['facebook', 'website', 'maps', 'reports'].includes(k) ? 'Integrations' : 'Company')
 const KEYS = {
   leads: ['statuses', 'closed_statuses', 'approval_statuses', 'lost_reasons', 'sources', 'activity_types', 'outcomes', 'lead_types', 'property_types', 'custom_fields', 'stale_days', 'recycle_cooldown_days', 'scoring'],
-  edu: ['edu_stages', 'edu_doc_types', 'edu_levels', 'edu_intakes', 'edu_countries', 'edu_application_statuses', 'edu_payment_types', 'edu_visa_outcomes'],
   assignment: ['assignment_rules', 'sla_minutes', 'working_hours'],
   visits: ['sites', 'visit_feedback_hours'],
   inventory: ['unit_statuses', 'listing_statuses', 'max_holds_per_agent'],
@@ -245,27 +244,22 @@ const LABELS = {
   sla_minutes: 'First-contact SLA (minutes)', working_hours: 'Working hours', sites: 'Visit sites', visit_feedback_hours: 'Visit feedback due within (hours)',
   societies: 'Societies & areas', lease_amber_days: 'Lease turns amber this many days before it ends', lease_red_days: 'Lease turns red this many days before it ends',
   unit_statuses: 'Unit statuses', listing_statuses: 'Listing statuses', max_holds_per_agent: 'Max units on hold per agent', permissions: 'Permissions',
-  edu_stages: 'Admission journey stages', edu_doc_types: 'Document types', edu_levels: 'Study levels', edu_intakes: 'Available intakes',
-  edu_countries: 'Destination countries', edu_application_statuses: 'Application lifecycle statuses', edu_payment_types: 'Payment & fee types', edu_visa_outcomes: 'Visa outcomes',
 }
 
 export function Settings({ query = '' }) {
   const m = useMeta()
   const propertyOn = (m.me.modules || []).includes('property')
-  const eduOn = (m.me.modules || []).includes('edu')
 
   // Filter sections based on active company modules
   const PROPERTY_SECTIONS = ['leads', 'assignment', 'visits', 'inventory', 'properties', 'sales', 'maps']
-  const EDU_SECTIONS = ['edu']
 
   const allowed = SECTIONS.filter(([k, , , perm]) => {
     if (!propertyOn && PROPERTY_SECTIONS.includes(k)) return false
-    if (!eduOn && EDU_SECTIONS.includes(k)) return false
     return !perm || (perm === 'admin' ? m.me.role === 'admin' : m.can(perm))
   })
 
   const want = new URLSearchParams(query).get('tab')
-  const tab = allowed.find(x => x[0] === want)?.[0] || (!propertyOn && eduOn ? 'edu' : 'profile')
+  const tab = allowed.find(x => x[0] === want)?.[0] || 'profile'
   const [s, reload] = useApi(KEYS[tab] || ['reports', 'sales'].includes(tab) ? '/settings' : null)
   const saved = () => { reload(); m.reloadMeta() }
   const title = SECTIONS.find(x => x[0] === tab)?.[1] || 'Settings'
@@ -557,9 +551,8 @@ const PERMS = [
   ['import', 'Import leads'], ['export', 'Export leads'], ['request_export', 'Request an export', 'Needs approval from someone who can export'],
   ['delete', 'Delete leads'], ['manage_inventory', 'Manage projects, units & media'], ['edit_pricing', 'Edit prices'],
   ['unit_status', 'Change unit status & allot plots'], ['payments', 'Payments, commissions & dealers'],
-  ['edu', 'Student Consultancy', 'Only shows the Edu nav when the platform has switched the module on for this company'],
-  ['therapy', 'Special Needs Therapy', 'Only shows the Therapy nav when the platform has switched the module on for this company'],
-  ['therapy_approve', 'Approve therapy plans', 'Approve assessments, goals and reviews, assign staff and invite parents'],
+  ['hr', 'HR: employees, attendance & leave', 'Only shows when the HR & Payroll module is switched on'], ['payroll', 'Payroll: salaries, payroll runs & payslips', 'Needs the HR module as well'],
+  ['accounting', 'Accounting: accounts, ledger, bills & reports', 'Only shows when the Accounting module is switched on'],
   ['settings', 'Change company settings'], ['manage_users', 'Manage users'], ['audit', 'View audit log'],
 ]
 const LOCKED = ['settings', 'manage_users'] // admins always keep these, so nobody locks themselves out

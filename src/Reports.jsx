@@ -29,9 +29,7 @@ const COLS = [
 // Daily / weekly / monthly report for every agent the viewer can see (agents see only themselves)
 export default function Reports() {
   const m = useMeta()
-  const eduOn = (m.me.modules || []).includes('edu') && m.perms.includes('edu')
   const propertyOn = (m.me.modules || []).includes('property')
-  const [tab, setTab] = useState(!propertyOn && eduOn ? 'edu' : 'agents')
   const [period, setPeriod] = useState('day')
   const [date, setDate] = useState(today())
   const [agentId, setAgentId] = useState(null)
@@ -49,17 +47,7 @@ export default function Reports() {
 
   return (
     <section>
-      {propertyOn && eduOn && (
-        <div className="row between no-print" style={{ marginBottom: 16 }}>
-          <div className="seg">
-            <button className={tab === 'agents' ? 'on' : ''} onClick={() => setTab('agents')}>Real Estate Agents</button>
-            <button className={tab === 'edu' ? 'on' : ''} onClick={() => setTab('edu')}>Student Consultancy</button>
-          </div>
-        </div>
-      )}
-
-      {tab === 'edu' || (!propertyOn && eduOn) ? <EduReports /> : (
-        <>
+      <>
           <div className="row between no-print">
             <div className="seg">{['day', 'week', 'month'].map(p => <button key={p} className={period === p ? 'on' : ''} onClick={() => setPeriod(p)}>{{ day: 'Daily', week: 'Weekly', month: 'Monthly' }[p]}</button>)}</div>
             <div className="row">
@@ -91,8 +79,7 @@ export default function Reports() {
             <small className="muted no-print">Click an agent for their {period === 'day' ? 'activity log' : 'day-by-day breakdown'}. “Open now” and “Follow-ups overdue” are as of right now.</small>
           </div>
           {agentId && <AgentDetail id={agentId} qs={qs} period={period} key={agentId + qs} />}
-        </>
-      )}
+      </>
     </section>
   )
 }
@@ -143,165 +130,6 @@ function AgentDetail({ id, qs, period }) {
           ))}
           {!d.activities.length && <li className="sys">No calls, messages or meetings logged in this period.</li>}
         </ul>
-      </div>
-    </>
-  )
-}
-
-
-function EduReports() {
-  const [days, setDays] = useState('90')
-  const from = new Date(Date.now() - Number(days) * 864e5).toISOString().slice(0, 10)
-  const to = today()
-  const [data] = useApi(`/edu/reports?from=${from}&to=${to}`)
-
-  if (!data) return <p className="muted">Loading student consultancy reports…</p>
-
-  const { counselors = [], byCountry = [], byUniversity = [], byIntake = [], payments = [] } = data
-
-  const csvCounselors = () => {
-    const csvContent = toCsv([
-      ['Counselor', 'New Students', 'Total Students', 'Applications Sent', 'Offers Received', 'Enrolled', 'Activities'],
-      ...counselors.map(c => [c.name, c.new_students, c.total, c.apps_sent, c.offers, c.enrolled, c.activities]),
-    ])
-    const a = Object.assign(document.createElement('a'), {
-      href: URL.createObjectURL(new Blob([csvContent], { type: 'text/csv' })),
-      download: `counselor-report-${days}days.csv`,
-    })
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }
-
-  return (
-    <>
-      <div className="row between no-print" style={{ marginBottom: 16 }}>
-        <div className="seg">
-          {[['30', 'Last 30 days'], ['90', 'Last 90 days'], ['180', 'Last 6 months'], ['365', 'Last 1 year']].map(([val, lbl]) => (
-            <button key={val} className={days === val ? 'on' : ''} onClick={() => setDays(val)}>{lbl}</button>
-          ))}
-        </div>
-        <div className="row">
-          <button className="ghost" onClick={csvCounselors} disabled={!counselors.length}>Download CSV</button>
-          <button className="ghost" onClick={() => print()}>Print</button>
-        </div>
-      </div>
-
-      <div className="card scroll">
-        <h3>Counselor Leaderboard</h3>
-        <table className="report">
-          <thead>
-            <tr>
-              <th>Counselor</th>
-              <th>New Students</th>
-              <th>Total Students</th>
-              <th>Applications Sent</th>
-              <th>Offers Received</th>
-              <th>Enrolled</th>
-              <th>Activities Logged</th>
-            </tr>
-          </thead>
-          <tbody>
-            {counselors.map(c => (
-              <tr key={c.id}>
-                <td><b>{c.name}</b></td>
-                <td>{c.new_students}</td>
-                <td>{c.total}</td>
-                <td>{c.apps_sent}</td>
-                <td className={c.offers ? 'ok' : ''}>{c.offers}</td>
-                <td><b>{c.enrolled}</b></td>
-                <td>{c.activities}</td>
-              </tr>
-            ))}
-            {!counselors.length && <tr><td colSpan="7" className="muted">No counselors with active students found.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="cols" style={{ marginTop: 16 }}>
-        <div className="card scroll">
-          <h3>Country-wise Applications & Offers</h3>
-          <table>
-            <thead>
-              <tr><th>Country</th><th>Students</th><th>Applications</th><th>Offers</th><th>Accepted</th><th>Rejected</th></tr>
-            </thead>
-            <tbody>
-              {byCountry.map(c => (
-                <tr key={c.country}>
-                  <td><b>{c.country}</b></td>
-                  <td>{c.students}</td>
-                  <td>{c.applications}</td>
-                  <td className="ok">{c.offers || 0}</td>
-                  <td>{c.accepted || 0}</td>
-                  <td className={c.rejected ? 'error' : ''}>{c.rejected || 0}</td>
-                </tr>
-              ))}
-              {!byCountry.length && <tr><td colSpan="6" className="muted">No country data in this period.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card scroll">
-          <h3>University Performance</h3>
-          <table>
-            <thead>
-              <tr><th>University</th><th>Country</th><th>Applications</th><th>Offers</th><th>Acceptance Rate</th></tr>
-            </thead>
-            <tbody>
-              {byUniversity.slice(0, 15).map(u => (
-                <tr key={u.university}>
-                  <td><b>{u.university}</b></td>
-                  <td>{u.country}</td>
-                  <td>{u.applications}</td>
-                  <td>{u.offers || 0}</td>
-                  <td>{u.acceptance_rate != null ? `${u.acceptance_rate}%` : '—'}</td>
-                </tr>
-              ))}
-              {!byUniversity.length && <tr><td colSpan="5" className="muted">No university application data.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="cols" style={{ marginTop: 16 }}>
-        <div className="card scroll">
-          <h3>Intake Pipeline</h3>
-          <table>
-            <thead>
-              <tr><th>Intake</th><th>Students</th><th>In Progress</th><th>Enrolled</th><th>Applications</th></tr>
-            </thead>
-            <tbody>
-              {byIntake.map(i => (
-                <tr key={i.intake}>
-                  <td><b>{i.intake}</b></td>
-                  <td>{i.students}</td>
-                  <td>{i.in_progress}</td>
-                  <td className="ok"><b>{i.enrolled}</b></td>
-                  <td>{i.applications}</td>
-                </tr>
-              ))}
-              {!byIntake.length && <tr><td colSpan="5" className="muted">No intake pipeline data.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card scroll">
-          <h3>Fee & Payment Breakdown</h3>
-          <table>
-            <thead>
-              <tr><th>Payment Type</th><th>Count</th><th>Total Amount</th></tr>
-            </thead>
-            <tbody>
-              {payments.map(p => (
-                <tr key={p.type + p.currency}>
-                  <td><b>{p.type.replace(/_/g, ' ')}</b></td>
-                  <td>{p.count}</td>
-                  <td className="nowrap">{p.currency || 'PKR'} {Number(p.total).toLocaleString('en-PK')}</td>
-                </tr>
-              ))}
-              {!payments.length && <tr><td colSpan="3" className="muted">No payments logged in this period.</td></tr>}
-            </tbody>
-          </table>
-        </div>
       </div>
     </>
   )

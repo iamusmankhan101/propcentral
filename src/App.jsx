@@ -13,17 +13,12 @@ import Listings from './Listings.jsx'
 import Reports from './Reports.jsx'
 import Campaigns from './Campaigns.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
-import Students, { Student, EduPayments } from './Edu.jsx'
-import Universities, { University } from './EduCatalogue.jsx'
-import Courses from './EduCourses.jsx'
-import Applications from './EduApplications.jsx'
-import Therapy, { TherapyChild, TherapyChildren, ParentPortal, TherapyLibrary, TherapyOrg, TherapyKnowledge } from './Therapy.jsx'
 import { HrOverview, Employees, Attendance, Leave, Payroll, PayrollRun, Payslip } from './Hr.jsx'
 import { AccOverview, AccLedger, AccBills, AccAccounts } from './Accounting.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
-import { PLANS, MODULES, plansFor, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
+import { PLANS, plansFor, planName, PLAN_LIMITS, limitLabel, SUPPORT_WHATSAPP } from '../shared/plans.js'
 import logoImg from './assets/logo.png'
 import markImg from './assets/mark.png'
 
@@ -41,15 +36,13 @@ function Login() {
   const [resending, setResending] = useState(false)
   const [resendError, setResendError] = useState('')
   const signup = mode === 'signup', forgot = mode === 'forgot'
-  // sign-up is three steps; its fields live in state because each step renders only its own inputs
+  // sign-up is two steps; its fields live in state because each step renders only its own inputs
   const [step, setStep] = useState(0)
   const [su, setSu] = useState({ name: '', email: '', phone: '', password: '', website: '', module: 'property', plan: 'solo' })
   const setF = k => e => setSu({ ...su, [k]: e.target.value })
-  // each product has its own plans: picking a module switches the plan to that product's default
-  const setModule = e => { const module = e.target.value; setSu({ ...su, module, plan: plansFor(module)[0].id }) }
   const switchTo = m => { setStep(0); setMode(m); setError(''); setNotice(''); setNeedCode(false); setTwoFactorInfo(null); setTrial(null); setNeedVerify(''); setResendError('') }
   const submit = e => {
-    if (signup && step < 2) { e.preventDefault(); setError(''); setStep(step + 1); return } // native validation already passed for this step's fields
+    if (signup && step < 1) { e.preventDefault(); setError(''); setStep(step + 1); return } // native validation already passed for this step's fields
     const body = signup ? (e.preventDefault(), su) : formData(e)
     run(async () => {
       if (forgot) {
@@ -101,9 +94,9 @@ function Login() {
       <div className="login-side">
         <form className="login" onSubmit={submit}>
           <h1>{forgot ? 'Reset your password' : signup ? 'Create an account' : 'Welcome back'}</h1>
-          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Three quick steps. Every plan starts with a 7-day free trial.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
+          <p className="muted">{forgot ? 'Tell us your email. An admin will send you a one-time reset link.' : signup ? 'Two quick steps. Every plan starts with a 7-day free trial.' : 'Enter your credentials to access your Estate Centric dashboard.'}</p>
           {signup && <>
-            <ol className="steps" aria-label="Sign-up progress">{['Your details', 'Product', 'Plan'].map((t, i) => <li key={t} className={i === step ? 'on' : i < step ? 'done' : ''}><span>{i < step ? '✓' : i + 1}</span>{t}</li>)}</ol>
+            <ol className="steps" aria-label="Sign-up progress">{['Your details', 'Plan'].map((t, i) => <li key={t} className={i === step ? 'on' : i < step ? 'done' : ''}><span>{i < step ? '✓' : i + 1}</span>{t}</li>)}</ol>
             {step === 0 && <>
               <input className="hp" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={su.website} onChange={setF('website')} />
               <label>Full name<span className="field"><Icon name="users" size={16} /><input name="name" autoComplete="name" placeholder="Full name" maxLength={80} required autoFocus value={su.name} onChange={setF('name')} /></span></label>
@@ -111,21 +104,10 @@ function Login() {
               <label>Phone (optional)<span className="field"><Icon name="phone" size={16} /><input name="phone" type="tel" autoComplete="tel" placeholder="03xx xxxxxxx" maxLength={30} value={su.phone} onChange={setF('phone')} /></span></label>
               <label>Password<span className="field"><Icon name="lock" size={16} /><input name="password" type="password" autoComplete="new-password" placeholder="10+ characters, letters and numbers" minLength={10} maxLength={200} required value={su.password} onChange={setF('password')} /></span></label>
             </>}
-            {step === 1 && <fieldset className="plan-picker module-picker">
-              <legend>What will you use Estate Centric for?</legend>
-              {MODULES.filter(x => !x.addon).map(x => (
-                <label key={x.id}>
-                  <span className="mod-icon"><Icon name={{ property: 'building', edu: 'cap', therapy: 'heart' }[x.id] || 'layers'} size={22} /></span>
-                  <span className="mod-text"><b>{x.name}</b><small>{x.blurb}</small></span>
-                  <input type="radio" name="module" value={x.id} checked={su.module === x.id} onChange={setModule} />
-                </label>
-              ))}
-              <small className="muted">Pick one. You can change it later in Settings.</small>
-            </fieldset>}
-            {step === 2 && <>
+            {step === 1 && <>
               <fieldset className="plan-picker">
                 <legend>Choose your plan</legend>
-                {plansFor(su.module).map(p => (
+                {plansFor().map(p => (
                   <label key={p.id}>
                     <input type="radio" name="plan" value={p.id} checked={su.plan === p.id} onChange={setF('plan')} />
                     <b>{p.name}</b>{p.popular && <em className="tag">Most popular</em>}
@@ -134,7 +116,7 @@ function Login() {
                   </label>
                 ))}
               </fieldset>
-              <p className="muted">{MODULES.find(x => x.id === su.module)?.name} · {PLANS.find(x => x.id === su.plan)?.name} plan · 7-day free trial, no card.</p>
+              <p className="muted">{PLANS.find(x => x.id === su.plan)?.name} plan · 7-day free trial, no card.</p>
             </>}
           </>}
           {!signup && <label>Email<span className="field"><Icon name="mail" size={16} /><input key={mode + email} name="email" type="email" placeholder="mail@example.com" maxLength={254} defaultValue={email} required autoFocus /></span></label>}
@@ -171,7 +153,7 @@ function Login() {
           </div>}
           {signup ? <div className="row step-nav">
             {step > 0 && <button type="button" className="ghost" onClick={() => { setError(''); setStep(step - 1) }}>Back</button>}
-            <button disabled={busy}>{step < 2 ? 'Continue' : busy ? 'Creating…' : 'Create account'}</button>
+            <button disabled={busy}>{step < 1 ? 'Continue' : busy ? 'Creating…' : 'Create account'}</button>
           </div> : <button disabled={busy}>{forgot ? 'Request reset link' : 'Continue'}</button>}
           {!signup && !forgot && <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('forgot') }}>Forgot password?</a></p>}
           {forgot ? <p className="auth-switch muted"><a href="#" onClick={e => { e.preventDefault(); switchTo('signin') }}>Back to sign in</a></p> : (
@@ -405,13 +387,6 @@ const NAV = [
   ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more'],
 ]
 
-// Student Consultancy pages. Shown only when the platform switched the module on for this company *and*
-// the role's permission matrix includes edu — the API refuses the same way, so hiding is tidiness, not security.
-const EDU_NAV = [
-  ['/students', 'Students', 'cap', 'edu', 'all'], ['/applications', 'Applications', 'send', 'edu', 'all'],
-  ['/universities', 'Universities', 'book', 'edu', 'wide'], ['/courses', 'Courses', 'layers', 'edu', 'wide'],
-]
-
 // HR & Payroll: shown when the platform switched the module on for the company and the role holds `hr`.
 // Payroll pages need the stricter `payroll` permission, so salaries stay with accounts/admin/owner.
 const HR_NAV = [['/hr', 'HR', 'users', 'hr', 'wide'], ['/hr/employees', 'Employees', 'cap', 'hr', 'more'], ['/hr/attendance', 'Attendance', 'calendar', 'hr', 'more'],
@@ -420,9 +395,6 @@ const HR_NAV = [['/hr', 'HR', 'users', 'hr', 'wide'], ['/hr/employees', 'Employe
 // Accounting add-on: module switched on for the company and the role holds `accounting`.
 const ACC_NAV = [['/accounting', 'Accounting', 'wallet', 'accounting', 'wide'], ['/accounting/ledger', 'Ledger', 'receipt', 'accounting', 'more'],
   ['/accounting/bills', 'Bills', 'inbox', 'accounting', 'more'], ['/accounting/accounts', 'Bank & cash', 'key', 'accounting', 'more']]
-
-const THERAPY_NAV = [['/therapy', 'Therapy', 'heart', 'therapy', 'all'], ['/therapy/children', 'Children', 'users', 'therapy', 'wide'],
-  ['/therapy/library', 'Skills', 'book', 'therapy', 'wide'], ['/therapy/knowledge', 'Knowledge', 'layers', 'therapy', 'wide'], ['/therapy/org', 'Organization', 'settings', 'therapy', 'more']]
 
 // The platform owner manages sign-ups only, so their whole app is the Users page
 const PLATFORM_NAV = [['/users', 'Accounts', 'users', null, 'all']]
@@ -514,49 +486,20 @@ export default function App() {
   const formId = path.match(/^\/booking-form\/(\d+)/)?.[1]
   const propertyId = path.match(/^\/properties\/(\d+)/)?.[1]
   const rentReceiptId = path.match(/^\/rent-receipts\/(\d+)/)?.[1]
-  const eduOn = (meta.me.modules || []).includes('edu') && meta.perms.includes('edu')
-  const isParent = meta.me.role === 'parent'
-  const propertyOn = !isParent && (meta.me.modules || []).includes('property')
-  const therapyOn = (meta.me.modules || []).includes('therapy') && meta.perms.includes('therapy')
+  const propertyOn = (meta.me.modules || []).includes('property')
   const accOn = (meta.me.modules || []).includes('accounting') && meta.perms.includes('accounting')
   const hrOn = (meta.me.modules || []).includes('hr') && meta.perms.includes('hr')
   const payrollRunId = hrOn ? path.match(/^\/hr\/payroll\/(\d+)/)?.[1] : null
   const payslipId = hrOn ? path.match(/^\/hr\/payslip\/(\d+)/)?.[1] : null
-  const therapyId = therapyOn ? path.match(/^\/therapy\/(\d+)/)?.[1] : null
-  const studentId = eduOn ? path.match(/^\/students\/(\d+)/)?.[1] : null
-  const universityId = eduOn ? path.match(/^\/universities\/(\d+)/)?.[1] : null
 
-  // If company only has edu, show ONLY edu nav items and common admin/settings (no real estate items)
   const nav = isPlatform ? PLATFORM_NAV
-    : isParent ? [['/', 'My child', 'heart', null, 'all']]
-    : !propertyOn && eduOn
-      ? [
-          ['/', 'Dashboard', 'dashboard', null, 'all'],
-          ['/students', 'Students', 'cap', null, 'all'],
-          ['/applications', 'Applications', 'send', null, 'all'],
-          ['/payments', 'Payments', 'receipt', null, 'all'],
-          ['/universities', 'Universities', 'book', null, 'wide'],
-          ['/courses', 'Courses', 'layers', null, 'wide'],
-          ['/reports', 'Reports', 'calendar', null, 'wide'],
-          ['/commissions', 'Commissions', 'percent', null, 'more'],
-          ...(therapyOn ? THERAPY_NAV : []),
-          ['/users', 'Users', 'users', 'manage_users', 'more'],
-          ['/settings', 'Settings', 'settings', null, 'more'],
-          ['/audit', 'Audit', 'audit', 'audit', 'more'],
-        ]
-      : !propertyOn && therapyOn
-        ? [['/', 'Dashboard', 'dashboard', null, 'all'], ['/therapy/children', 'Children', 'users', null, 'all'], ['/therapy/library', 'Skills', 'book', null, 'all'], ['/therapy/knowledge', 'Knowledge', 'layers', null, 'all'], ['/therapy/org', 'Organization', 'settings', null, 'wide'], ['/users', 'Users', 'users', 'manage_users', 'more'], ['/settings', 'Settings', 'settings', null, 'more'], ['/audit', 'Audit', 'audit', 'audit', 'more']]
-        : [...NAV, ...(eduOn ? EDU_NAV : []), ...(hrOn ? HR_NAV : []), ...(accOn ? ACC_NAV : []), ...(therapyOn ? THERAPY_NAV : [])]
+    : [...NAV, ...(hrOn ? HR_NAV : []), ...(accOn ? ACC_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
-    : isParent ? <ParentPortal />
     : leadId && propertyOn ? <Lead id={leadId} key={leadId} />
     : payrollRunId ? <PayrollRun id={payrollRunId} key={payrollRunId} />
     : payslipId ? <Payslip id={payslipId} key={payslipId} />
-    : therapyId ? <TherapyChild id={therapyId} key={therapyId} />
-    : studentId ? <Student id={studentId} key={studentId} />
-    : universityId ? <University id={universityId} key={universityId} />
     : propertyId && propertyOn ? <PropertyPage id={propertyId} key={propertyId} />
     : rentReceiptId && propertyOn ? <RentReceipt id={rentReceiptId} key={rentReceiptId} />
     : formId && propertyOn ? <BookingForm id={formId} key={formId} />
@@ -565,7 +508,7 @@ export default function App() {
     : projectId && propertyOn ? <Project id={projectId} key={projectId} />
     : allotmentId && propertyOn ? <AllotmentLetter id={allotmentId} key={allotmentId} />
     : {
-        '/': !propertyOn && !eduOn && therapyOn ? <Therapy /> : <Dashboard />,
+        '/': <Dashboard />,
         '/reports': <Reports />,
         '/commissions': <Commissions />,
         '/users': <Users />,
@@ -583,17 +526,9 @@ export default function App() {
         } : {}),
         ...(hrOn ? { '/hr': <HrOverview />, '/hr/employees': <Employees />, '/hr/attendance': <Attendance />, '/hr/leave': <Leave />, '/hr/payroll': <Payroll /> } : {}),
         ...(accOn ? { '/accounting': <AccOverview />, '/accounting/ledger': <AccLedger />, '/accounting/bills': <AccBills />, '/accounting/accounts': <AccAccounts /> } : {}),
-        ...(therapyOn ? { '/therapy': <Therapy />, '/therapy/children': <TherapyChildren query={query} key={query} />, '/therapy/library': <TherapyLibrary />, '/therapy/org': <TherapyOrg />, '/therapy/knowledge': <TherapyKnowledge /> } : {}),
-        ...(eduOn ? {
-          '/students': <Students query={query} key={query} />,
-          '/applications': <Applications query={query} key={query} />,
-          '/payments': <EduPayments query={query} key={query} />,
-          '/universities': <Universities query={query} key={query} />,
-          '/courses': <Courses query={query} key={query} />,
-        } : {})
       }[path]
     ?? <p>Not found</p>
-  const title = isPlatform ? 'Accounts' : payrollRunId || payslipId ? 'Payroll' : leadId ? 'Lead' : studentId ? 'Student' : universityId ? 'University' : therapyId ? 'Child' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
+  const title = isPlatform ? 'Accounts' : payrollRunId || payslipId ? 'Payroll' : leadId ? 'Lead' : projectId ? 'Projects' : allotmentId ? 'Allotment' : ledgerId ? 'Ledger' : receiptId ? 'Receipt' : formId ? 'Booking form' : propertyId ? 'Properties' : rentReceiptId ? 'Rent receipt' : nav.find(n => n[0] === path)?.[1] ?? ''
   const homePath = isPlatform ? '/users' : '/'
   const home = path === homePath
 
@@ -601,9 +536,7 @@ export default function App() {
   const toggleAvailable = async () => { await api('/me/available', { body: { available: !meta.me.available } }); reloadMeta() }
   const search = e => {
     const { q } = formData(e)
-    if (!propertyOn && eduOn) go('/students?q=' + encodeURIComponent(q))
-    else if (!propertyOn && therapyOn) go('/')
-    else go('/leads?q=' + encodeURIComponent(q))
+    go('/leads?q=' + encodeURIComponent(q))
   }
 
   if (isPlatform) return <PlatformAdmin />
@@ -635,18 +568,17 @@ export default function App() {
               <MobileAccount me={meta.me} onLogout={logout} />
               {!isPlatform && <form className="glass search" onSubmit={search}>
                 <Icon name="search" size={16} />
-                <input ref={searchInput} name="q" placeholder={!propertyOn && eduOn ? 'Search students…' : 'Search leads…'} defaultValue={new URLSearchParams(query).get('q') || ''} key={query} aria-label={!propertyOn && eduOn ? 'Search students' : 'Search leads'} />
+                <input ref={searchInput} name="q" placeholder="Search leads…" defaultValue={new URLSearchParams(query).get('q') || ''} key={query} aria-label="Search leads" />
                 <kbd className="search-kbd" title="Press ⌘K or / to search">⌘K</kbd>
               </form>}
               {meta.me.role === 'agent' && (
-                <button className={'avail glass' + (meta.me.available ? '' : ' paused')} onClick={toggleAvailable} title={!propertyOn && eduOn ? 'Toggle receiving new student inquiries' : 'Toggle receiving new leads'}>
+                <button className={'avail glass' + (meta.me.available ? '' : ' paused')} onClick={toggleAvailable} title="Toggle receiving new leads">
                   {meta.me.available ? '● Available' : '○ Paused'}
                 </button>
               )}
               {!isPlatform && <Bell />}
               <InstallPrompt />
               {!isPlatform && propertyOn && <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>}
-              {!isPlatform && !propertyOn && eduOn && <a className="glass button" href="#/students?new=1"><Icon name="plus" size={16} /><span className="label">Add student</span></a>}
             </div>
             {!home && <h1 className="page-title">{title}</h1>}
           </div>
