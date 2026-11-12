@@ -9,6 +9,7 @@ import * as L from './lib.js'
 import registerHr, { HR_SCHEMA } from './hr.js'
 import registerAccounting, { ACC_SCHEMA } from './accounting.js'
 import registerWhatsapp, { registerWhatsappWebhook, WA_SCHEMA } from './whatsapp.js'
+import registerTelephony, { registerTelephonyIngest, TEL_SCHEMA } from './telephony.js'
 import { newSecret, checkTotp } from './totp.js'
 import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, plansFor, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
@@ -47,7 +48,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '21' // 21: WhatsApp incoming calls and recordings; 20: company_id on leads, dealers, listings, branches, teams (tenant isolation); 19: company letterhead column (users.brand); 18: repair the seeded workspace owner role
+const SCHEMA_VERSION = '22' // 22: users.extension for the phone-exchange call log; 21: WhatsApp incoming calls and recordings; 20: company_id on leads, dealers, listings, branches, teams (tenant isolation); 19: company letterhead column (users.brand); 18: repair the seeded workspace owner role
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
   db.exec(HR_SCHEMA) // HR & Payroll module tables (server/hr.js)
   db.exec(ACC_SCHEMA) // Accounting module tables (server/accounting.js)
   db.exec(WA_SCHEMA) // WhatsApp inbox and calling tables (server/whatsapp.js)
+  db.exec(TEL_SCHEMA) // phone-exchange call log (server/telephony.js)
 
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
@@ -217,6 +219,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       // whatever is still unclaimed belongs to the original company, the oldest main account
       if (dflt) for (const t of ['leads', 'dealers', 'listings', 'branches', 'teams']) db.prepare(`UPDATE ${t} SET company_id=? WHERE company_id IS NULL`).run(dflt)
     }
+    addColumn('users', 'extension', 'TEXT') // the agent's extension on the company's phone exchange
     addColumn('wa_calls', 'sdp_offer', 'TEXT')
     addColumn('wa_config', 'record_calls', 'INTEGER NOT NULL DEFAULT 0')
     addColumn('users', 'brand', 'TEXT') // JSON letterhead for this company (set on the main account): name, logo data URL, address, phone…
@@ -922,6 +925,8 @@ app.post('/api/webhooks/facebook', async (req, res) => {
 })
 // WhatsApp Business Cloud API webhook (messages, delivery status, calls). Public like the Facebook one: Meta signs each delivery.
 registerWhatsappWebhook({ app, crypto, one, all, run, tx, now, safeEqual, addActivity, createLead, notify, normalizePhone: L.normalizePhone, err })
+// The company's phone exchange reports each finished call here (key per company, no login).
+registerTelephonyIngest({ app, crypto, one, run, now, safeEqual, createLead, addActivity, notify, normalizePhone: L.normalizePhone, err })
 
 async function importFbLead(id) {
   planCap(systemAccount(), 'leads')
@@ -1531,13 +1536,16 @@ app.get('/api/notifications', (req, res) => res.json({
 app.post('/api/notifications/read', (req, res) => { run('UPDATE notifications SET read=1 WHERE user_id=?', req.user.id); res.json({ ok: true }) })
 
 // ---- users & org (M22) ----
-const USER_FIELDS = ['name', 'email', 'phone', 'role', 'team_id', 'branch_id', 'max_open', 'available', 'commission_rate']
+const USER_FIELDS = ['name', 'email', 'phone', 'role', 'team_id', 'branch_id', 'max_open', 'available', 'commission_rate', 'extension']
 const checkRole = (f, actor) => {
   if (!('role' in f)) return
   if (!roles().some(r => r.key === f.role)) throw err(400, 'Unknown role')
   if (f.role === 'platform' && actor?.role !== 'platform') throw err(403, 'Only a platform owner can assign the platform role')
 }
-const checkRate = f => { if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%') }
+const checkRate = f => {
+  if (f.commission_rate != null && !(+f.commission_rate >= 0 && +f.commission_rate <= 20)) throw err(400, 'Commission must be 0–20%')
+  if (f.extension != null) { f.extension = String(f.extension).trim(); if (f.extension.length > 20) throw err(400, 'Extension is too long') }
+}
 const userInAccount = (id, actor) => {
   const root = actor.role === 'platform' ? null : actor.owner_id ?? actor.id
   return root == null
@@ -3611,6 +3619,7 @@ app.get('/sw.js', (_req, res) => res.sendFile(path.join(dist, 'sw.js'), { header
 // ---- HR & Payroll module: must be registered before the static/404 handlers below ----
 registerHr({ app, one, all, run, tx, err, log, can, modulesOf, today, now, brandOfId })
 registerAccounting({ app, one, all, run, tx, err, log, can, modulesOf, today, now })
+registerTelephony({ app, crypto, one, all, run, err, can, now, scopedLead })
 const wa = registerWhatsapp({ app, crypto, one, all, run, err, log, can, now, addActivity, notify, scope, scopedLead })
 waState = wa.state
 waTick = wa.tick

@@ -327,6 +327,17 @@ steps('22. Chat and call customers (agents)', [
 ], imgs=[('wa-inbox','WhatsApp inbox: one row per conversation.'),('wa-lead-after','Lead page: thread, call controls and the logged call.'),('wa-incoming','A customer calling in: Answer or Decline from any page.'),('wa-calls-history','Calls list on the lead, with a recording to play back.')])
 story += [PageBreak()]
 
+story += section('Step-by-step: phone calls and recordings from your exchange', 'If your main number is a phone exchange or cloud PBX that rings the agents and records calls, the CRM can show every call and its recording on the lead. The exchange records; the CRM only keeps the call details and a link.')
+steps('23. Connect the exchange and use call history', [
+    ('Ask your exchange provider (Jazz, Zong, Ufone, 3CX, FreePBX or other) two things: is call recording on our plan, and can the system send call details to a web address when a call ends (a webhook) or give a list through an API.', 'You know what the exchange can send.'),
+    ('Open Settings > Phone calls. Copy the web address and the key and give them to the provider or your IT person. The page also shows an example request and the fields accepted.', 'The exchange has the address and key.'),
+    ('Open Users and type each agent\'s extension in the Ext column, so calls go to the right agent. Agents are also matched by email or mobile number if the exchange sends those.', 'Every agent has an extension.'),
+    ('Make a test call. It appears under Recent calls in Settings > Phone calls and on the customer\'s lead in the Phone calls card, with Play recording if the exchange sent a link.', 'The test call is on the lead.'),
+    ('Day to day: an unknown number that phones in becomes a lead assigned to the agent who answered. Missed calls notify the lead\'s owner. Calls you dial from the exchange appear on the lead too.', 'Missed calls are returned.'),
+    ('If a call shows "unknown" agent, add or fix that extension in Users. If a recording will not play, open it with the Open link: some exchanges need a login or expire links.', 'Calls and recordings are linked.'),
+], imgs=[('tel-settings','Settings > Phone calls: web address, key and recent calls.'),('tel-lead','Lead page: calls from the exchange with a recording player.'),('tel-users','Users: the Ext column maps calls to agents.')])
+story += [PageBreak()]
+
 # Screen tour
 story += section('Screen tour', 'These screens show where the main workflows live. Your workspace may show additional modules depending on your role, plan, and enabled products.')
 screen_rows = [

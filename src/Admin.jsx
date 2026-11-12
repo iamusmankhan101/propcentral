@@ -5,6 +5,7 @@ import { PLANS, MODULES, parseModules, limitLine } from '../shared/plans.js'
 import Icon from './Icon.jsx'
 import { BrandSettings } from './Brand.jsx'
 import { WaSettings } from './WhatsApp.jsx'
+import { PhoneCallsSettings } from './PhoneCalls.jsx'
 
 
 export function Users() {
@@ -86,7 +87,7 @@ export function Users() {
       </div>}
       <div className="card scroll">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Plan</th>{isPlatform && <th>Modules</th>}<th>Open leads</th><th>Max open</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Branch</th><th>Plan</th>{isPlatform && <th>Modules</th>}<th>Open leads</th><th>Max open</th><th title="The agent's extension on your phone exchange, so recorded calls reach the right person (Settings › Phone calls)">Ext</th><th title="Empty = default from Settings › commission">Commission %</th><th>Available</th><th></th></tr></thead>
           <tbody>{users?.map(u => (
             <tr key={u.id} className={u.active ? '' : 'muted'}>
               <td>{u.name}<small><br />{u.phone}</small></td><td>{u.email}</td>
@@ -109,6 +110,7 @@ export function Users() {
                 : <small className="muted" title="Set on the main account this user belongs to">inherits</small>}</td>}
               <td>{u.open_leads}</td>
               <td><input type="number" className="narrow" defaultValue={u.max_open} onBlur={e => +e.target.value !== u.max_open && patch(u, { max_open: +e.target.value })} /></td>
+              <td><input className="narrow" defaultValue={u.extension ?? ''} maxLength={20} placeholder="—" onBlur={e => e.target.value.trim() !== (u.extension ?? '') && patch(u, { extension: e.target.value.trim() })} aria-label={`Extension for ${u.name}`} /></td>
               <td><input type="number" className="narrow" min="0" max="20" step="0.1" placeholder={`${m.settings.commission?.agent_pct ?? 1} (default)`} defaultValue={u.commission_rate ?? ''}
                 onBlur={e => e.target.value !== String(u.commission_rate ?? '') && patch(u, { commission_rate: e.target.value })} aria-label={`Commission % for ${u.name}`} /></td>
               <td><input type="checkbox" checked={!!u.available} onChange={e => patch(u, { available: e.target.checked ? 1 : 0 })} /></td>
@@ -227,7 +229,7 @@ const SECTIONS = [
   ['facebook', 'Facebook & Instagram', 'inbox', 'admin'], ['website', 'Website forms & API', 'arrow', 'admin'], ['maps', 'Maps', 'map', 'admin'], ['reports', 'Email reports', 'mail', 'settings'],
   ['leads', 'Leads & pipeline', 'leads', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
   ['inventory', 'Inventory & listings', 'building', 'settings'], ['properties', 'Properties & leases', 'key', 'settings'], ['sales', 'Commission', 'percent', 'settings'], ['permissions', 'Roles & permissions', 'audit', 'admin'],
-  ['modules', 'Company modules', 'layers', 'admin'], ['brand', 'Letterhead & receipts', 'audit', 'settings'], ['whatsapp', 'WhatsApp', 'inbox', 'settings'],
+  ['modules', 'Company modules', 'layers', 'admin'], ['brand', 'Letterhead & receipts', 'audit', 'settings'], ['whatsapp', 'WhatsApp', 'inbox', 'settings'], ['phonecalls', 'Phone calls', 'visits', 'settings'],
 ]
 const GROUPS = ['Account', 'Integrations', 'Company']
 const groupOf = k => (['profile', 'security'].includes(k) ? 'Account' : ['facebook', 'website', 'maps', 'reports'].includes(k) ? 'Integrations' : 'Company')
@@ -289,6 +291,7 @@ export function Settings({ query = '' }) {
         {tab === 'modules' && <CompanyModules />}
         {tab === 'brand' && <BrandSettings />}
         {tab === 'whatsapp' && <WaSettings />}
+        {tab === 'phonecalls' && <PhoneCallsSettings />}
         {KEYS[tab] && s && <>
           <p className="muted">Changes apply immediately and are recorded in the audit log.</p>
           {KEYS[tab].map(k => <SettingField key={k} k={k} v={s[k]} onSaved={saved} />)}
