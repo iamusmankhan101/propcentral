@@ -310,6 +310,23 @@ steps('20. Vendor bills and reports', [
 ], imgs=[('acc-bills','Bills: vendor, due date, paid, status and Pay.'),('acc-overview','Overview: profit and loss by category, balances and payables.')])
 story += [PageBreak()]
 
+story += section('Step-by-step: WhatsApp inbox and calling', 'Your company\'s one main WhatsApp number is connected once by an admin. Agents then message and call customers on WhatsApp from the CRM, and every conversation and call is saved on the lead.')
+steps('21. Connect the number (admin, once)', [
+    ('Create a Meta developer app with the WhatsApp product, add your business number, and note the Phone number ID and WhatsApp Business Account ID from WhatsApp Manager. Create a permanent access token for a system user.', 'You have the IDs and token.'),
+    ('Open Settings > WhatsApp. Enter the Phone number ID, Business Account ID, access token and the app secret. Tick Calling if it is switched on for the number in WhatsApp Manager. Save, then press Test connection.', 'It shows Connected with your number.'),
+    ('In your Meta app > WhatsApp > Configuration, paste the Callback URL and Verify token shown on the page and subscribe to the messages and calls fields.', 'Meta accepts the webhook.'),
+], imgs=[('wa-settings','Settings > WhatsApp: connection details, test and the webhook values for Meta.')])
+steps('22. Chat and call customers (agents)', [
+    ('Customers who message your number appear in the WhatsApp inbox and on their lead (a new lead is created and assigned if they are new). Unread conversations show a count.', 'Every new message is answered.'),
+    ('Open the lead. In the WhatsApp card read the thread and reply. Free-form replies work within 24 hours of the customer\'s last message; after that choose an approved template.', 'The reply shows as sent, then delivered or read.'),
+    ('To call, press Ask permission to call. The customer gets a request in WhatsApp and must accept. This is a WhatsApp rule and works only while they have written in the last 24 hours.', 'The button changes to Call on WhatsApp once they accept.'),
+    ('Press Call on WhatsApp and allow the microphone. The call rings on the customer\'s WhatsApp; End call hangs up. Use Chrome, Edge or Safari over https.', 'The timer runs while connected.'),
+    ('When the call ends it is added to the lead timeline with its length. Then log the outcome and set the next follow-up as usual.', 'The lead has a next action.'),
+    ('When a customer calls your WhatsApp number, a banner appears on any page for the lead\'s agent: press Answer (allow the microphone) or Decline. If nobody answers within 45 seconds it is logged as a missed call and the agent is notified.', 'Missed calls are called back.'),
+    ('If an admin switched on Record calls, the call is recorded in your browser and saved when it ends. Play it later from Calls on the lead. Tell customers calls may be recorded.', 'Recording shows on the lead.'),
+], imgs=[('wa-inbox','WhatsApp inbox: one row per conversation.'),('wa-lead-after','Lead page: thread, call controls and the logged call.'),('wa-incoming','A customer calling in: Answer or Decline from any page.'),('wa-calls-history','Calls list on the lead, with a recording to play back.')])
+story += [PageBreak()]
+
 # Screen tour
 story += section('Screen tour', 'These screens show where the main workflows live. Your workspace may show additional modules depending on your role, plan, and enabled products.')
 screen_rows = [

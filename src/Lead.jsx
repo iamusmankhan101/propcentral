@@ -1,3 +1,4 @@
+import { WaPanel } from './WhatsApp.jsx'
 import { useState } from 'react'
 import { api, useApi, useMeta, useAction, formData, fmt, toIso, pkr, phone, go } from './api.js'
 import { Select, Status, LeadFields, packCustom } from './Leads.jsx'
@@ -65,6 +66,7 @@ export default function Lead({ id }) {
           </ul>
         </div>
         <div>
+          {m.wa?.connected && <WaPanel leadId={lead.id} onActivity={reload} />}
           <ChangeStatus lead={lead} reload={reload} />
           {!closed && <RecordOffer lead={lead} units={units} reload={reload} />}
           {m.can('reassign') && <Reassign lead={lead} reload={reload} />}

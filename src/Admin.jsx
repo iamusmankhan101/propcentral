@@ -4,6 +4,7 @@ import { Select, When } from './Leads.jsx'
 import { PLANS, MODULES, parseModules, limitLine } from '../shared/plans.js'
 import Icon from './Icon.jsx'
 import { BrandSettings } from './Brand.jsx'
+import { WaSettings } from './WhatsApp.jsx'
 
 
 export function Users() {
@@ -226,7 +227,7 @@ const SECTIONS = [
   ['facebook', 'Facebook & Instagram', 'inbox', 'admin'], ['website', 'Website forms & API', 'arrow', 'admin'], ['maps', 'Maps', 'map', 'admin'], ['reports', 'Email reports', 'mail', 'settings'],
   ['leads', 'Leads & pipeline', 'leads', 'settings'], ['assignment', 'Assignment & SLA', 'clock', 'settings'], ['visits', 'Site visits', 'visits', 'settings'],
   ['inventory', 'Inventory & listings', 'building', 'settings'], ['properties', 'Properties & leases', 'key', 'settings'], ['sales', 'Commission', 'percent', 'settings'], ['permissions', 'Roles & permissions', 'audit', 'admin'],
-  ['modules', 'Company modules', 'layers', 'admin'], ['brand', 'Letterhead & receipts', 'audit', 'settings'],
+  ['modules', 'Company modules', 'layers', 'admin'], ['brand', 'Letterhead & receipts', 'audit', 'settings'], ['whatsapp', 'WhatsApp', 'inbox', 'settings'],
 ]
 const GROUPS = ['Account', 'Integrations', 'Company']
 const groupOf = k => (['profile', 'security'].includes(k) ? 'Account' : ['facebook', 'website', 'maps', 'reports'].includes(k) ? 'Integrations' : 'Company')
@@ -287,6 +288,7 @@ export function Settings({ query = '' }) {
         {tab === 'permissions' && <RolesPermissions />}
         {tab === 'modules' && <CompanyModules />}
         {tab === 'brand' && <BrandSettings />}
+        {tab === 'whatsapp' && <WaSettings />}
         {KEYS[tab] && s && <>
           <p className="muted">Changes apply immediately and are recorded in the audit log.</p>
           {KEYS[tab].map(k => <SettingField key={k} k={k} v={s[k]} onSaved={saved} />)}

@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx'
 import * as L from './lib.js'
 import registerHr, { HR_SCHEMA } from './hr.js'
 import registerAccounting, { ACC_SCHEMA } from './accounting.js'
+import registerWhatsapp, { registerWhatsappWebhook, WA_SCHEMA } from './whatsapp.js'
 import { newSecret, checkTotp } from './totp.js'
 import { PLANS, MODULES, parseModules, planOf, planName, limitLabel, plansFor, SUPPORT_WHATSAPP } from '../shared/plans.js'
 
@@ -46,7 +47,7 @@ const dbToken = clean(process.env.CRM_DATABASE_TOKEN) || clean(process.env.TURSO
 const remote = /^(libsql|https?):/i.test(dbUrl)
 // /api/health may report where a remote database lives, but only the hostname: never the token or path
 const dbHost = remote ? (() => { try { return new URL(dbUrl.replace(/^libsql:/, 'https:')).hostname || null } catch { return null } })() : null
-const SCHEMA_VERSION = '19' // 19: company letterhead column (users.brand); 18: repair the seeded workspace owner role
+const SCHEMA_VERSION = '21' // 21: WhatsApp incoming calls and recordings; 20: company_id on leads, dealers, listings, branches, teams (tenant isolation); 19: company letterhead column (users.brand); 18: repair the seeded workspace owner role
 // Every plan starts with a free trial. TRIAL_DAYS=0 is how the tests (and a demo) force the lock immediately.
 const TRIAL_DAYS = Number.isFinite(+process.env.TRIAL_DAYS) && process.env.TRIAL_DAYS !== '' ? +process.env.TRIAL_DAYS : 7
 const trialEndsAt = () => new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()
@@ -153,6 +154,7 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
 
   db.exec(HR_SCHEMA) // HR & Payroll module tables (server/hr.js)
   db.exec(ACC_SCHEMA) // Accounting module tables (server/accounting.js)
+  db.exec(WA_SCHEMA) // WhatsApp inbox and calling tables (server/whatsapp.js)
 
   // columns added after first release: run the migration once per schema version, not on every cold start
   const schemaVersion = tablesReady && db.prepare(`SELECT value FROM settings WHERE key='schema_version'`).get()?.value
@@ -201,6 +203,22 @@ CREATE TABLE IF NOT EXISTS unit_photos(id INTEGER PRIMARY KEY, unit_id INTEGER N
       used_at TEXT,
       created_at TEXT NOT NULL)`)
     db.exec('CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id)')
+    // Tenant isolation: every lead, dealer, listing, branch and team belongs to one company (its main account).
+    for (const t of ['leads', 'dealers', 'listings', 'branches', 'teams']) addColumn(t, 'company_id', 'INTEGER')
+    db.exec('CREATE INDEX IF NOT EXISTS leads_company ON leads(company_id)')
+    {
+      const dflt = db.prepare(`SELECT id FROM users WHERE owner_id IS NULL AND role!='platform' ORDER BY id LIMIT 1`).get()?.id ?? null
+      const co = 'SELECT COALESCE(owner_id,id) FROM users'
+      db.exec(`UPDATE leads SET company_id=(${co} WHERE id=leads.agent_id) WHERE company_id IS NULL AND agent_id IS NOT NULL`)
+      db.exec(`UPDATE leads SET company_id=(SELECT COALESCE(u.owner_id,u.id) FROM activities a JOIN users u ON u.id=a.user_id WHERE a.lead_id=leads.id ORDER BY a.id LIMIT 1) WHERE company_id IS NULL`)
+      db.exec(`UPDATE listings SET company_id=(${co} WHERE id=COALESCE(listings.agent_id, listings.created_by)) WHERE company_id IS NULL`)
+      db.exec(`UPDATE branches SET company_id=(SELECT COALESCE(owner_id,id) FROM users WHERE branch_id=branches.id LIMIT 1) WHERE company_id IS NULL`)
+      db.exec(`UPDATE teams SET company_id=(SELECT COALESCE(owner_id,id) FROM users WHERE team_id=teams.id LIMIT 1) WHERE company_id IS NULL`)
+      // whatever is still unclaimed belongs to the original company, the oldest main account
+      if (dflt) for (const t of ['leads', 'dealers', 'listings', 'branches', 'teams']) db.prepare(`UPDATE ${t} SET company_id=? WHERE company_id IS NULL`).run(dflt)
+    }
+    addColumn('wa_calls', 'sdp_offer', 'TEXT')
+    addColumn('wa_config', 'record_calls', 'INTEGER NOT NULL DEFAULT 0')
     addColumn('users', 'brand', 'TEXT') // JSON letterhead for this company (set on the main account): name, logo data URL, address, phone…
     addColumn('users', 'email_verified', 'INTEGER DEFAULT 0')
     addColumn('users', 'created_at', 'TEXT') // when the account was created; NULL for accounts that predate the column
@@ -319,7 +337,8 @@ const systemAccount = () => one(`SELECT plan FROM users WHERE role='admin' AND a
   ORDER BY (paid_at IS NOT NULL) DESC, id LIMIT 1`) || {}
 // A refused capture must not be silent: the webhook still answers Meta with 200, so tell someone who can upgrade
 function notifyPlanBlock(message, where) {
-  for (const u of all('SELECT * FROM users WHERE active=1').filter(u => can(u, 'manage_users')))
+  const dc = defaultCompanyId()
+  for (const u of all('SELECT * FROM users WHERE active=1 AND (id=? OR owner_id=?)', dc, dc).filter(u => can(u, 'manage_users')))
     notify(u.id, `Plan limit hit (${where}): ${message}`, null)
 }
 
@@ -329,6 +348,8 @@ function notifyPlanBlock(message, where) {
 // Property CRM is the base product and is always on, so a NULL column (every account predating modules)
 // resolves to it alone. the permission matrix then decides which staff inside see it.
 const MODULE_IDS = MODULES.map(m => m.id)
+let waState = () => ({ connected: false, calling: false }) // replaced once the WhatsApp routes are registered
+let waTick = () => {}
 const modulesOf = u => {
   const main = u.owner_id ? one('SELECT modules FROM users WHERE id=?', u.owner_id) : u
   const list = parseModules(main?.modules).filter(id => MODULE_IDS.includes(id))
@@ -450,8 +471,11 @@ function notify(userId, text, leadId, { sms = false } = {}) {
 const notifyTeamLeads = (agentId, text, leadId) =>
   all(`SELECT id FROM users WHERE role='team_lead' AND active=1 AND team_id=(SELECT team_id FROM users WHERE id=?)`, agentId)
     .forEach(u => notify(u.id, text, leadId))
-const notifyRole = (roles, text, leadId) =>
-  all(`SELECT id FROM users WHERE active=1 AND role IN (SELECT value FROM json_each(?))`, JSON.stringify(roles)).forEach(u => notify(u.id, text, leadId))
+// only people in the lead's own company hear about it
+const notifyRole = (roles, text, leadId) => {
+  const c = leadId ? one('SELECT company_id FROM leads WHERE id=?', leadId)?.company_id : null
+  all(`SELECT id FROM users WHERE active=1 AND role IN (SELECT value FROM json_each(?)) AND (? IS NULL OR id=? OR owner_id=?)`, JSON.stringify(roles), c, c, c).forEach(u => notify(u.id, text, leadId))
+}
 
 const CONTACT_TYPES = ['call', 'whatsapp', 'sms', 'email', 'meeting', 'site_visit', 'office_visit']
 function addActivity(leadId, userId, type, notes, x = {}) {
@@ -472,13 +496,13 @@ function rescore(leadId) {
 }
 
 // ---------- assignment (M3) ----------
-function eligibleAgents({ team_id = null, branch_id = null } = {}, exclude = null) {
+function eligibleAgents({ team_id = null, branch_id = null } = {}, exclude = null, company = null) {
   return all(`SELECT u.id, u.last_assigned_at, u.max_open,
       (SELECT count(*) FROM leads l WHERE l.agent_id=u.id AND ${OPEN}) open,
       (SELECT avg(l.status='Booked') FROM leads l WHERE l.agent_id=u.id AND l.deleted=0) conversion
     FROM users u WHERE u.role='agent' AND u.active=1 AND u.available=1
-      AND (? IS NULL OR u.team_id=?) AND (? IS NULL OR u.branch_id=?) AND u.id IS NOT ?`,
-    closedJson(), team_id, team_id, branch_id, branch_id, exclude).filter(a => a.open < a.max_open)
+      AND (? IS NULL OR u.team_id=?) AND (? IS NULL OR u.branch_id=?) AND u.id IS NOT ? AND (u.id=? OR u.owner_id=?)`,
+    closedJson(), team_id, team_id, branch_id, branch_id, exclude, company, company).filter(a => a.open < a.max_open)
 }
 
 function setAgent(leadId, agentId, reason, actorId) {
@@ -494,12 +518,12 @@ function autoAssign(leadId, { exclude = null, reason = 'Auto-assigned', quiet = 
   const lead = one('SELECT * FROM leads WHERE id=?', leadId)
   // M3.5: returning contact goes back to previous owner if still active
   const prev = one(`SELECT l.agent_id FROM leads l JOIN users u ON u.id=l.agent_id
-    WHERE l.contact_id=? AND l.id<>? AND u.active=1 AND u.available=1 AND u.id IS NOT ? ORDER BY l.id DESC`, lead.contact_id, lead.id, exclude)
+    WHERE l.contact_id=? AND l.id<>? AND u.active=1 AND u.available=1 AND u.id IS NOT ? AND (u.id=? OR u.owner_id=?) ORDER BY l.id DESC`, lead.contact_id, lead.id, exclude, lead.company_id, lead.company_id)
   if (prev) return setAgent(leadId, prev.agent_id, 'Returning contact, previous owner.', null), prev.agent_id
   const hour = new Date(Date.now() + 5 * 3600e3).getUTCHours()
   for (const r of [...S('assignment_rules')].sort((a, b) => a.priority - b.priority)) {
     if (!L.ruleMatches(r, lead, hour)) continue
-    const pool = eligibleAgents(r, exclude)
+    const pool = eligibleAgents(r, exclude, lead.company_id)
     const id = r.method === 'agent' ? pool.find(a => a.id === r.agent_id)?.id : L.pickAgent(pool, r.method)
     if (id) return setAgent(leadId, id, `${reason} by rule "${r.name}".`, null), id
   }
@@ -526,10 +550,11 @@ const findContact = (phone, email) => one('SELECT * FROM contacts WHERE phone=? 
 const createLead = tx((input, actorId = null, agentId = null) => {
   const { phone, email } = checkLeadInput(input)
   if (input.ext_id && one('SELECT 1 FROM leads WHERE ext_id=?', input.ext_id)) return { duplicate: true }
+  const company = input.company_id ?? companyOfUserId(actorId) ?? companyOfUserId(agentId) ?? defaultCompanyId()
   let contact = findContact(phone, email)
   if (contact) {
-    const open = one(`SELECT * FROM leads l WHERE contact_id=? AND COALESCE(lead_type,'buyer')=? AND ${OPEN} ORDER BY id DESC`,
-      contact.id, input.lead_type || 'buyer', closedJson())
+    const open = one(`SELECT * FROM leads l WHERE contact_id=? AND COALESCE(lead_type,'buyer')=? AND l.company_id IS ? AND ${OPEN} ORDER BY id DESC`,
+      contact.id, input.lead_type || 'buyer', company, closedJson())
     if (open) {
       addActivity(open.id, actorId, 'system', `Repeat inquiry via ${input.source}${input.campaign ? ' / ' + input.campaign : ''}${input.remarks ? ': ' + input.remarks : ''}`)
       notify(open.agent_id, `Existing lead ${contact.name} inquired again via ${input.source}`, open.id)
@@ -541,8 +566,8 @@ const createLead = tx((input, actorId = null, agentId = null) => {
     contact = { id }
   }
   const f = pick(input, LEAD_FIELDS)
-  const cols = ['contact_id', 'ext_id', 'created_at', ...Object.keys(f)]
-  const leadId = run(`INSERT INTO leads(${cols}) VALUES(${cols.map(() => '?')})`, contact.id, input.ext_id ?? null, input.created_at ?? now(), ...Object.values(f)).lastInsertRowid
+  const cols = ['contact_id', 'ext_id', 'created_at', 'company_id', ...Object.keys(f)]
+  const leadId = run(`INSERT INTO leads(${cols}) VALUES(${cols.map(() => '?')})`, contact.id, input.ext_id ?? null, input.created_at ?? now(), company, ...Object.values(f)).lastInsertRowid
   addActivity(leadId, actorId, 'system', `Lead created from ${input.source}`)
   if (agentId) setAgent(leadId, agentId, 'Manual entry.', actorId)
   else autoAssign(leadId)
@@ -551,12 +576,17 @@ const createLead = tx((input, actorId = null, agentId = null) => {
 })
 
 // ---------- scoping (who sees which leads) ----------
+// The company a user belongs to is its main account: the account itself, or the owner of a sub-account.
+const coOf = u => u.owner_id ?? u.id
+const companyOfUserId = id => (id ? one('SELECT COALESCE(owner_id,id) c FROM users WHERE id=?', id)?.c ?? null : null)
+const defaultCompanyId = () => one(`SELECT id FROM users WHERE owner_id IS NULL AND role!='platform' ORDER BY id LIMIT 1`)?.id ?? null
+// Leads are filtered by company first, then by what the role may see inside it.
 function scope(u) {
-  const a = accessOf(u.role)
-  if (a === 'all') return ['1=1', []]
-  if (a === 'branch') return ['l.branch_id=?', [u.branch_id]]
-  if (a === 'team') return ['l.agent_id IN (SELECT id FROM users WHERE team_id=?)', [u.team_id]]
-  if (a === 'own') return ['l.agent_id=?', [u.id]]
+  const a = accessOf(u.role), c = coOf(u)
+  if (a === 'all') return ['l.company_id=?', [c]]
+  if (a === 'branch') return ['l.company_id=? AND l.branch_id=?', [c, u.branch_id]]
+  if (a === 'team') return ['l.company_id=? AND l.agent_id IN (SELECT id FROM users WHERE team_id=?)', [c, u.team_id]]
+  if (a === 'own') return ['l.company_id=? AND l.agent_id=?', [c, u.id]]
   return ['0', []]
 }
 function scopedLead(u, id) {
@@ -599,7 +629,7 @@ app.use((req, res, next) => {
 // giant payload cannot be used to burn memory or CPU on the API.
 const jsonParser = limit => express.json({ limit, verify: (req, _res, buf) => { req.rawBody = buf } })
 const smallJson = jsonParser('2mb'), bigJson = jsonParser('24mb')
-const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\/|^\/api\/platform\/accounts\/\d+\/restore$/
+const BIG_BODY = /^\/api\/(media|overlays|leads\/import)(\/|$)|^\/api\/projects\/\d+\/map$|^\/api\/units\/\d+\/photos$|^\/api\/allotments\/\d+\/docs\/|^\/api\/platform\/accounts\/\d+\/restore$|^\/api\/wa\/calls\/\d+\/recording$/
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next()
   const parse = BIG_BODY.test(req.path) ? bigJson : smallJson
@@ -890,6 +920,9 @@ app.post('/api/webhooks/facebook', async (req, res) => {
     })))
   res.sendStatus(200)
 })
+// WhatsApp Business Cloud API webhook (messages, delivery status, calls). Public like the Facebook one: Meta signs each delivery.
+registerWhatsappWebhook({ app, crypto, one, all, run, tx, now, safeEqual, addActivity, createLead, notify, normalizePhone: L.normalizePhone, err })
+
 async function importFbLead(id) {
   planCap(systemAccount(), 'leads')
   const fields = 'field_data,campaign_id,campaign_name,adset_name,ad_name,form_id,platform,created_time'
@@ -982,6 +1015,25 @@ app.use('/api', (req, _res, next) => {
   req.token = token
   next()
 })
+// Tenant isolation for anything addressed by id: a row of another company is a 404, whatever the role or verb.
+// Rows that do not exist fall through to the route's own 404. Leads are also filtered by scope(), this covers the rest.
+const companyOfRow = {
+  leads: id => one('SELECT company_id c FROM leads WHERE id=?', id)?.c,
+  visits: id => one('SELECT l.company_id c FROM visits v JOIN leads l ON l.id=v.lead_id WHERE v.id=?', id)?.c,
+  allotments: id => one('SELECT l.company_id c FROM allotments a JOIN leads l ON l.id=a.lead_id WHERE a.id=?', id)?.c,
+  payments: id => one('SELECT l.company_id c FROM payments p JOIN leads l ON l.id=p.lead_id WHERE p.id=?', id)?.c,
+  commissions: id => one('SELECT l.company_id c FROM commissions m JOIN allotments a ON a.id=m.allotment_id JOIN leads l ON l.id=a.lead_id WHERE m.id=?', id)?.c,
+  dealers: id => one('SELECT company_id c FROM dealers WHERE id=?', id)?.c,
+  listings: id => one('SELECT company_id c FROM listings WHERE id=?', id)?.c,
+  exports: id => companyOfUserId(one('SELECT user_id FROM export_requests WHERE id=?', id)?.user_id),
+}
+app.use('/api/:entity/:id', (req, _res, next) => {
+  const of = companyOfRow[req.params.entity]
+  if (!of || !/^\d+$/.test(req.params.id) || req.user.role === 'platform') return next()
+  const c = of(+req.params.id)
+  if (c != null && c !== coOf(req.user)) return next(err(404, 'Not found'))
+  next()
+})
 const guard = perm => (req, _res, next) => (can(req.user, perm) ? next() : next(err(403, 'You do not have permission for this')))
 const log = (req, action, entity, id, data) => audit(req.user.id, action, entity, id, data, req.ip)
 
@@ -1072,10 +1124,11 @@ app.get('/api/meta', (req, res) => {
       plan: u.plan, paid_at: u.paid_at, trial_ends_at: u.trial_ends_at, modules: modulesOf(u),
       trial_days_left: u.trial_ends_at && !u.paid_at ? trialDaysLeft(u) : null },
     perms: Object.keys({ ...DEFAULTS.permissions, ...S('permissions') }).filter(p => can(u, p)),
+    wa: waState(u),
     settings: { ...Object.fromEntries(keys.map(k => [k, S(k)])), projects: all('SELECT name FROM projects ORDER BY name').map(p => p.name) },
     users: all("SELECT id, name, role, team_id, branch_id, active, available FROM users WHERE role!='platform' AND (id=? OR owner_id=?) ORDER BY name", u.owner_id ?? u.id, u.owner_id ?? u.id),
-    branches: all('SELECT * FROM branches'), teams: all('SELECT * FROM teams'),
-    dealers: all('SELECT id, name, company, active FROM dealers ORDER BY name'),
+    branches: all('SELECT * FROM branches WHERE company_id=?', coOf(u)), teams: all('SELECT * FROM teams WHERE company_id=?', coOf(u)),
+    dealers: all('SELECT id, name, company, active FROM dealers WHERE company_id=? ORDER BY name', coOf(u)),
     roles: roles().map(r => ({ key: r.key, label: r.label })),
     maptiler_key: S('maptiler_key') || null,
   })
@@ -1185,7 +1238,7 @@ app.post('/api/exports', guard('request_export'), (req, res) => {
 app.get('/api/exports', (req, res) => {
   const mine = 'r.user_id=?', approver = can(req.user, 'export')
   res.json(all(`SELECT r.*, u.name user_name, d.name decided_name FROM export_requests r JOIN users u ON u.id=r.user_id LEFT JOIN users d ON d.id=r.decided_by
-    WHERE ${approver ? `(${mine} OR r.status='pending')` : mine} ORDER BY r.id DESC LIMIT 30`, req.user.id).map(r => ({ ...r, query: JSON.parse(r.query) })))
+    WHERE (u.id=? OR u.owner_id=?) AND ${approver ? `(${mine} OR r.status='pending')` : mine} ORDER BY r.id DESC LIMIT 30`, coOf(req.user), coOf(req.user), req.user.id).map(r => ({ ...r, query: JSON.parse(r.query) })))
 })
 app.post('/api/exports/:id/decide', guard('export'), (req, res) => {
   const r = one(`SELECT * FROM export_requests WHERE id=? AND status='pending'`, req.params.id)
@@ -1237,7 +1290,7 @@ app.get('/api/leads/:id', (req, res) => {
     lead,
     activities: all('SELECT a.*, u.name user_name FROM activities a LEFT JOIN users u ON u.id=a.user_id WHERE lead_id=? ORDER BY a.id DESC', lead.id),
     visits: all('SELECT v.id, v.site, v.scheduled_at, v.status, v.distance_m, v.verified_at, v.feedback, u.name agent_name FROM visits v LEFT JOIN users u ON u.id=v.agent_id WHERE lead_id=? ORDER BY v.id DESC', lead.id),
-    other_leads: all('SELECT id, lead_type, status, project, created_at FROM leads WHERE contact_id=? AND id<>? AND deleted=0', lead.contact_id, lead.id),
+    other_leads: all('SELECT id, lead_type, status, project, created_at FROM leads WHERE contact_id=? AND id<>? AND deleted=0 AND company_id=?', lead.contact_id, lead.id, lead.company_id),
     units: all(`SELECT un.id, un.project_id, p.name project, un.block, un.unit_no, un.status, un.hold_until, a.id allotment_id, a.allotment_no
       FROM units un JOIN projects p ON p.id=un.project_id LEFT JOIN allotments a ON a.unit_id=un.id AND a.status='active' WHERE un.lead_id=?`, lead.id),
   })
@@ -1869,6 +1922,7 @@ app.post('/api/platform/accounts/:id/restore', platformOnly, (req, res) => {
         insert(table, Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined)))
       }
     }
+    run('UPDATE leads SET company_id=? WHERE company_id IS NULL', id) // files written before tenant isolation carry no company on their leads
     return Object.fromEntries(WS_ORDER.filter(k => tables.includes(k))
       .map(k => [k, (rows[k] || []).filter(r => !keep[k]?.has(r.id)).length]))
   })()
@@ -1951,11 +2005,11 @@ app.post('/api/users/:id/activate', guard('manage_users'), (req, res) => {
 app.post('/api/branches', guard('manage_users'), (req, res) => {
   if (!req.body.name) throw err(400, 'Name required')
   planCap(req.user, 'branches')
-  res.json({ id: run('INSERT INTO branches(name,city) VALUES(?,?)', req.body.name, req.body.city ?? null).lastInsertRowid })
+  res.json({ id: run('INSERT INTO branches(name,city,company_id) VALUES(?,?,?)', req.body.name, req.body.city ?? null, coOf(req.user)).lastInsertRowid })
 })
 app.post('/api/teams', guard('manage_users'), (req, res) => {
   if (!req.body.name) throw err(400, 'Name required')
-  res.json({ id: run('INSERT INTO teams(name,branch_id) VALUES(?,?)', req.body.name, req.body.branch_id || null).lastInsertRowid })
+  res.json({ id: run('INSERT INTO teams(name,branch_id,company_id) VALUES(?,?,?)', req.body.name, req.body.branch_id || null, coOf(req.user)).lastInsertRowid })
 })
 
 // ---- settings & audit ----
@@ -1995,8 +2049,8 @@ app.put('/api/settings/:key', guard('settings'), (req, res) => {
   res.json({ ok: true })
 })
 app.get('/api/audit', guard('audit'), (req, res) => res.json(all(`SELECT a.*, u.name user_name FROM audit a LEFT JOIN users u ON u.id=a.user_id
-  WHERE (? IS NULL OR a.entity=?) AND (? IS NULL OR a.user_id=?) ORDER BY a.id DESC LIMIT 300`,
-  req.query.entity || null, req.query.entity || null, req.query.user_id || null, req.query.user_id || null)))
+  WHERE (u.id=? OR u.owner_id=?) AND (? IS NULL OR a.entity=?) AND (? IS NULL OR a.user_id=?) ORDER BY a.id DESC LIMIT 300`,
+  coOf(req.user), coOf(req.user), req.query.entity || null, req.query.entity || null, req.query.user_id || null, req.query.user_id || null)))
 
 // ---- projects & inventory (M10) ----
 const UNIT_FIELDS = ['phase', 'block', 'street', 'unit_no', 'unit_type', 'category', 'size', 'uom', 'dimensions', 'facing', 'features', 'premiums', 'map_ref']
@@ -2255,7 +2309,7 @@ app.post('/api/units/:id/status', guard('unit_status'), (req, res) => {
   const leadId = NEEDS_LEAD.includes(status) ? req.body.lead_id || un.lead_id : status === 'Cancelled' ? un.lead_id : null
   if (NEEDS_LEAD.includes(status) && !leadId) throw err(400, `${status} needs a customer lead`)
   // unit_status holders (accounts, inventory) record bookings for any customer, even leads outside their view
-  const lead = leadId ? one('SELECT * FROM leads WHERE id=? AND deleted=0', leadId) : null
+  const lead = leadId ? one('SELECT * FROM leads WHERE id=? AND deleted=0 AND company_id=?', leadId, coOf(req.user)) : null
   if (leadId && !lead) throw err(404, 'Lead not found')
   if (!run(`UPDATE units SET status=?, lead_id=?, hold_by=NULL, hold_until=NULL, updated_at=? WHERE id=? AND status=?`,
     status, leadId, now(), un.id, un.status).changes) throw err(409, 'Unit changed meanwhile. Reload and check.')
@@ -2379,7 +2433,7 @@ app.post('/api/units/:id/allot', guard('unit_status'), (req, res) => {
       const c = req.body.client || {}
       leadId = createLead({ name: c.name, phone: c.phone, cnic: c.cnic, email: c.email, source: 'Walk-in', project: p.name, remarks: 'Created at plot allotment' }, req.user.id).lead_id
     }
-    const lead = one('SELECT * FROM leads WHERE id=? AND deleted=0', leadId)
+    const lead = one('SELECT * FROM leads WHERE id=? AND deleted=0 AND company_id=?', leadId, coOf(req.user))
     if (!lead) throw err(404, 'Client not found')
     const listPrice = pricedUnits(p, 'un.id=?', un.id)[0].price?.total ?? null
     const price = Math.round(+req.body.price || listPrice || 0)
@@ -2545,7 +2599,7 @@ app.post('/api/allotments/:id/transfer', guard('payments'), (req, res) => {
     const p = projectRow(a.project_id, req.user), un = unitFor(a.unit_id, req.user)
     const leadId = +b.lead_id || createLead({ ...b.client, source: 'Walk-in', project: p.name, remarks: `Transfer of ${a.allotment_no}` }, req.user.id).lead_id
     if (leadId === a.lead_id) throw err(400, 'Pick a different client')
-    const lead = one('SELECT * FROM leads WHERE id=? AND deleted=0', leadId)
+    const lead = one('SELECT * FROM leads WHERE id=? AND deleted=0 AND company_id=?', leadId, coOf(req.user))
     if (!lead) throw err(404, 'Client not found')
     const from = one('SELECT c.name FROM leads l JOIN contacts c ON c.id=l.contact_id WHERE l.id=?', a.lead_id).name
     const to = one('SELECT name FROM contacts WHERE id=?', lead.contact_id).name
@@ -2572,7 +2626,7 @@ app.get('/api/collections', guard('payments'), (req, res) => {
       (SELECT min(due_date) FROM installments WHERE allotment_id=a.id AND due_date>=?) next_due,
       (SELECT ${PAID_SUM} FROM payments WHERE allotment_id=a.id AND voided_at IS NULL) paid
     FROM allotments a JOIN units un ON un.id=a.unit_id JOIN projects p ON p.id=a.project_id JOIN leads l ON l.id=a.lead_id JOIN contacts c ON c.id=l.contact_id
-    WHERE a.status='active' ORDER BY p.name, a.id`, t, t)
+    WHERE a.status='active' AND l.company_id=? ORDER BY p.name, a.id`, t, t, coOf(req.user))
     .map(r => maskAllot(req.user, { ...r, overdue: Math.max(0, r.due - r.paid), balance: r.price - r.paid })))
 })
 
@@ -2641,7 +2695,7 @@ function listingFields(b) {
   return f
 }
 app.get('/api/listings', (req, res) => {
-  const q = req.query, where = ['1=1'], p = []
+  const q = req.query, where = ['li.company_id=?'], p = [coOf(req.user)]
   const add = (sql, ...v) => { where.push(sql); p.push(...v) }
   if (q.purpose) add('li.purpose=?', q.purpose)
   if (q.status) add('li.status=?', q.status)
@@ -2659,9 +2713,10 @@ app.post('/api/listings', (req, res) => {
   if (!f.purpose || !f.property_type || !f.price) throw err(400, 'Purpose, property type and price are required')
   const id = tx(() => {
     let ownerId = +req.body.owner_lead_id || null
+    if (ownerId && !one('SELECT 1 FROM leads WHERE id=? AND company_id=?', ownerId, coOf(req.user))) throw err(404, 'Owner lead not found')
     if (!ownerId && req.body.owner?.phone) ownerId = createLead({ ...req.body.owner, source: 'Walk-in', lead_type: f.purpose === 'Rent' ? 'landlord' : 'seller', remarks: 'Listed a property' }, req.user.id, req.user.role === 'agent' ? req.user.id : null).lead_id
-    const cols = [...Object.keys(f), 'owner_lead_id', 'agent_id', 'created_by', 'created_at', 'updated_at'].filter((k, i, a) => a.indexOf(k) === i)
-    const vals = { ...f, owner_lead_id: ownerId, agent_id: f.agent_id || req.user.id, created_by: req.user.id, created_at: now(), updated_at: now() }
+    const cols = [...Object.keys(f), 'owner_lead_id', 'agent_id', 'created_by', 'company_id', 'created_at', 'updated_at'].filter((k, i, a) => a.indexOf(k) === i)
+    const vals = { ...f, owner_lead_id: ownerId, agent_id: f.agent_id || req.user.id, created_by: req.user.id, company_id: coOf(req.user), created_at: now(), updated_at: now() }
     return run(`INSERT INTO listings(${cols}) VALUES(${cols.map(() => '?')})`, ...cols.map(k => vals[k])).lastInsertRowid
   })()
   log(req, 'create', 'listing', id, f)
@@ -2715,7 +2770,11 @@ app.delete('/api/media/:id', (req, res) => {
 // ---- Settings › Facebook: connect a Page's Lead Ads in one step ----
 const adminOnly = (req, _res, next) => (req.user.role === 'admin' ? next() : next(err(403, 'Only admins can change integrations')))
 const mask = s => (s ? '••••' + s.slice(-4) : null)
-app.get('/api/facebook', adminOnly, (_req, res) => {
+// Facebook and the website-form key are single, deployment-wide credentials (env or settings), so only the original company's admins
+// (and the platform owner) may read or change them. Per-company integrations need per-company credentials.
+const ownCompanyIntegration = (req, _res, next) => (req.user.role === 'platform' || coOf(req.user) === defaultCompanyId() ? next()
+  : next(err(403, 'This integration is set up by the platform owner for your account')))
+app.get('/api/facebook', adminOnly, ownCompanyIntegration, (_req, res) => {
   const c = fbConf()
   res.json({
     page_id: c.page_id ?? null, page_name: c.page_name ?? null, connected_at: c.connected_at ?? null, callback_url: c.callback_url ?? null,
@@ -2724,7 +2783,7 @@ app.get('/api/facebook', adminOnly, (_req, res) => {
     recent: (S('fb_log') || []).slice(-8).reverse(),
   })
 })
-app.post('/api/facebook/connect', adminOnly, async (req, res) => {
+app.post('/api/facebook/connect', adminOnly, ownCompanyIntegration, async (req, res) => {
   const b = req.body, secret = String(b.app_secret || '').trim() || fbConf().app_secret, token = String(b.token || '').trim()
   const base = String(b.public_url || '').trim().replace(/\/+$/, '')
   if (!secret || !token) throw err(400, 'Paste the App secret and an access token')
@@ -2761,7 +2820,7 @@ app.post('/api/facebook/connect', adminOnly, async (req, res) => {
   log(req, 'facebook_connect', 'setting', null, { page_id: page.id, page_name: page.name, app_id: appId })
   res.json({ ok: true, page_name: page.name })
 })
-app.post('/api/facebook/disconnect', adminOnly, async (req, res) => {
+app.post('/api/facebook/disconnect', adminOnly, ownCompanyIntegration, async (req, res) => {
   const c = fbConf()
   if (c.page_id) await graph(`${c.page_id}/subscribed_apps`, { access_token: c.page_token }, 'DELETE').catch(() => {}) // best effort: token may already be revoked
   run(`DELETE FROM settings WHERE key='facebook'`)
@@ -2876,9 +2935,9 @@ app.post('/api/assistant', async (req, res) => {
 })
 
 // ---- Settings › Website forms: the key for POST /api/inbound ----
-app.get('/api/integrations/inbound', adminOnly, (_req, res) =>
+app.get('/api/integrations/inbound', adminOnly, ownCompanyIntegration, (_req, res) =>
   res.json({ key: inboundKey() || null, from_env: !S('inbound_key') && !!process.env.INBOUND_API_KEY, website_leads_30d: one(`SELECT count(*) n FROM leads WHERE source='Website' AND created_at>?`, new Date(Date.now() - 30 * 864e5).toISOString()).n }))
-app.post('/api/integrations/inbound/rotate', adminOnly, (req, res) => {
+app.post('/api/integrations/inbound/rotate', adminOnly, ownCompanyIntegration, (req, res) => {
   run(`INSERT INTO settings VALUES('inbound_key',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(crypto.randomBytes(24).toString('hex')))
   log(req, 'rotate_inbound_key', 'setting', null)
   res.json({ key: inboundKey() })
@@ -2999,20 +3058,20 @@ app.delete('/api/roles/:key', adminOnly, (req, res) => {
 })
 
 // ---- weekly email report ----
-function weeklyReport() {
+function weeklyReport(company = defaultCompanyId()) {
   const to = today(), from = new Date(Date.parse(to) - 7 * 864e5).toISOString().slice(0, 10), fromTs = from + 'T00:00:00'
   const n = (sql, ...p) => one(sql, ...p).n
-  const leads = n('SELECT count(*) n FROM leads WHERE deleted=0 AND created_at>=?', fromTs)
-  const sales = one(`SELECT count(*) n, COALESCE(sum(price),0) v FROM allotments WHERE status='active' AND sale_date>=?`, from)
-  const collected = n(`SELECT ${PAID_SUM} n FROM payments WHERE voided_at IS NULL AND paid_on>=?`, from)
+  const leads = n('SELECT count(*) n FROM leads WHERE deleted=0 AND created_at>=? AND company_id=?', fromTs, company)
+  const sales = one(`SELECT count(*) n, COALESCE(sum(a.price),0) v FROM allotments a JOIN leads l ON l.id=a.lead_id WHERE a.status='active' AND a.sale_date>=? AND l.company_id=?`, from, company)
+  const collected = n(`SELECT ${PAID_SUM} n FROM payments WHERE voided_at IS NULL AND paid_on>=? AND lead_id IN (SELECT id FROM leads WHERE company_id=?)`, from, company)
   const overdue = all(`SELECT a.id, a.price, (SELECT COALESCE(sum(amount),0) FROM installments WHERE allotment_id=a.id AND due_date<?) due,
-    (SELECT ${PAID_SUM} FROM payments WHERE allotment_id=a.id AND voided_at IS NULL) paid FROM allotments a WHERE a.status='active'`, to)
+    (SELECT ${PAID_SUM} FROM payments WHERE allotment_id=a.id AND voided_at IS NULL) paid FROM allotments a JOIN leads l ON l.id=a.lead_id WHERE a.status='active' AND l.company_id=?`, to, company)
     .reduce((s, r) => s + Math.max(0, r.due - r.paid), 0)
-  const sources = all('SELECT source, count(*) n FROM leads WHERE deleted=0 AND created_at>=? GROUP BY source ORDER BY n DESC LIMIT 5', fromTs)
-  const agents = all(`SELECT u.name, count(a.id) n, COALESCE(sum(a.price),0) v FROM allotments a JOIN users u ON u.id=a.agent_id
-    WHERE a.status='active' AND a.sale_date>=? GROUP BY u.id ORDER BY v DESC LIMIT 5`, from)
-  const breaches = n('SELECT count(*) n FROM sla_breaches WHERE created_at>=?', fromTs)
-  const pendingComm = n(`SELECT COALESCE(sum(amount),0) n FROM commissions WHERE status='pending'`)
+  const sources = all('SELECT source, count(*) n FROM leads WHERE deleted=0 AND created_at>=? AND company_id=? GROUP BY source ORDER BY n DESC LIMIT 5', fromTs, company)
+  const agents = all(`SELECT u.name, count(a.id) n, COALESCE(sum(a.price),0) v FROM allotments a JOIN users u ON u.id=a.agent_id JOIN leads l ON l.id=a.lead_id
+    WHERE a.status='active' AND a.sale_date>=? AND l.company_id=? GROUP BY u.id ORDER BY v DESC LIMIT 5`, from, company)
+  const breaches = n('SELECT count(*) n FROM sla_breaches WHERE created_at>=? AND lead_id IN (SELECT id FROM leads WHERE company_id=?)', fromTs, company)
+  const pendingComm = n(`SELECT COALESCE(sum(m.amount),0) n FROM commissions m JOIN allotments a ON a.id=m.allotment_id JOIN leads l ON l.id=a.lead_id WHERE m.status='pending' AND l.company_id=?`, company)
   const rs = v => 'PKR ' + Math.round(v).toLocaleString('en-PK')
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
   const row = (k, v) => `<tr><td style="padding:6px 12px;color:#666">${k}</td><td style="padding:6px 12px;font-weight:700">${v}</td></tr>`
@@ -3024,10 +3083,10 @@ ${row('Collected', rs(collected))}${row('Overdue now', rs(overdue))}${row('Commi
 <h3>Top agents by sales</h3><p>${agents.map(a => `${esc(a.name)}: ${a.n} (${rs(a.v)})`).join('<br>') || 'No sales this week'}</p></div>`
   return { subject: `Weekly report ${from} – ${to}: ${sales.n} sales, ${rs(collected)} collected`, html }
 }
-async function sendWeeklyReport() {
+async function sendWeeklyReport(company = defaultCompanyId()) {
   const to = S('weekly_report').recipients || []
   if (!to.length) return { ok: false, error: 'no recipients' }
-  const r = weeklyReport()
+  const r = weeklyReport(company)
   const sent = await sendEmail(to, r.subject, r.html)
   if (sent.ok) run(`INSERT INTO settings VALUES('weekly_report_sent',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(today()))
   return sent
@@ -3042,9 +3101,9 @@ function reportTick() { // runs every minute; sends once on the configured weekd
     run(`INSERT INTO settings(key,value) VALUES('weekly_report_retry_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, JSON.stringify(Date.now() + 30 * 60e3))
   }, e => console.error('[weekly report]', e))
 }
-app.get('/api/reports/weekly', guard('settings'), (_req, res) => res.type('html').send(weeklyReport().html))
+app.get('/api/reports/weekly', guard('settings'), (req, res) => res.type('html').send(weeklyReport(coOf(req.user)).html))
 app.post('/api/reports/weekly/send', guard('settings'), async (req, res) => {
-  const sent = await sendWeeklyReport()
+  const sent = await sendWeeklyReport(coOf(req.user))
   if (!sent.ok) throw err(503, sent.error === 'no recipients' ? 'Add recipients to the weekly_report setting first' : 'The report could not be emailed. Try again shortly.')
   log(req, 'send_report', 'report', null)
   res.json({ ok: true })
@@ -3442,7 +3501,7 @@ app.delete('/api/units/:id/photos/:photo', guard('manage_inventory'), (req, res)
 // ---- dealers, commissions, targets (Phase 2) ----
 // Commission is earned at allotment: the lead's agent and (if any) the dealer who brought the client, % of the sale price
 function addCommissions(allotmentId, price, lead) {
-  const c = S('commission'), dealer = lead.dealer_id && one('SELECT * FROM dealers WHERE id=?', lead.dealer_id)
+  const c = S('commission'), dealer = lead.dealer_id && one('SELECT * FROM dealers WHERE id=? AND company_id=?', lead.dealer_id, lead.company_id)
   run('UPDATE allotments SET agent_id=?, dealer_id=? WHERE id=?', lead.agent_id, dealer?.id ?? null, allotmentId)
   const add = (userId, dealerId, rate) => rate > 0 && run('INSERT INTO commissions(allotment_id,user_id,dealer_id,rate,amount,created_at) VALUES(?,?,?,?,?,?)',
     allotmentId, userId, dealerId, rate, Math.round(price * rate / 100), now())
@@ -3463,7 +3522,7 @@ const DEALER_STATS = `(SELECT COALESCE(sum(c.amount),0) FROM commissions c JOIN 
   (SELECT COALESCE(sum(amount),0) FROM commissions WHERE dealer_id=d.id AND status='paid') paid,
   (SELECT count(*) FROM leads WHERE dealer_id=d.id AND deleted=0) leads,
   (SELECT count(*) FROM allotments WHERE dealer_id=d.id AND status='active') sales`
-app.get('/api/dealers', guard('payments'), (_req, res) => res.json(all(`SELECT d.*, ${DEALER_STATS} FROM dealers d ORDER BY d.active DESC, d.name`)))
+app.get('/api/dealers', guard('payments'), (req, res) => res.json(all(`SELECT d.*, ${DEALER_STATS} FROM dealers d WHERE d.company_id=? ORDER BY d.active DESC, d.name`, coOf(req.user))))
 const dealerFields = b => {
   const f = pick(b, ['name', 'company', 'phone', 'rate', 'active'])
   if ('name' in f && !String(f.name || '').trim()) throw err(400, 'Name is required')
@@ -3474,7 +3533,7 @@ const dealerFields = b => {
 app.post('/api/dealers', guard('payments'), (req, res) => {
   const f = dealerFields(req.body)
   if (!f.name) throw err(400, 'Name is required')
-  const id = run(`INSERT INTO dealers(${Object.keys(f)},created_at) VALUES(${Object.keys(f).map(() => '?')},?)`, ...Object.values(f), now()).lastInsertRowid
+  const id = run(`INSERT INTO dealers(${Object.keys(f)},company_id,created_at) VALUES(${Object.keys(f).map(() => '?')},?,?)`, ...Object.values(f), coOf(req.user), now()).lastInsertRowid
   log(req, 'create', 'dealer', id, f)
   res.json({ id })
 })
@@ -3491,7 +3550,7 @@ app.get('/api/commissions', (req, res) => {
       COALESCE(u.name, d.name) party, CASE WHEN c.dealer_id IS NULL THEN 'Agent' ELSE 'Dealer' END party_type
     FROM commissions c JOIN allotments a ON a.id=c.allotment_id JOIN projects pr ON pr.id=a.project_id JOIN units un ON un.id=a.unit_id
     JOIN leads l ON l.id=a.lead_id JOIN contacts cl ON cl.id=l.contact_id LEFT JOIN users u ON u.id=c.user_id LEFT JOIN dealers d ON d.id=c.dealer_id
-    WHERE (c.user_id IS NOT NULL AND ${w}) OR (c.dealer_id IS NOT NULL AND ?) ORDER BY c.id DESC`, ...p, dealers ? 1 : 0))
+    WHERE l.company_id=? AND ((c.user_id IS NOT NULL AND ${w}) OR (c.dealer_id IS NOT NULL AND ?)) ORDER BY c.id DESC`, coOf(req.user), ...p, dealers ? 1 : 0))
 })
 app.post('/api/commissions/:id/pay', guard('payments'), (req, res) => {
   if (!isDate(req.body.paid_on) || req.body.paid_on > today()) throw err(400, 'Payment date is required and cannot be in the future')
@@ -3552,6 +3611,9 @@ app.get('/sw.js', (_req, res) => res.sendFile(path.join(dist, 'sw.js'), { header
 // ---- HR & Payroll module: must be registered before the static/404 handlers below ----
 registerHr({ app, one, all, run, tx, err, log, can, modulesOf, today, now, brandOfId })
 registerAccounting({ app, one, all, run, tx, err, log, can, modulesOf, today, now })
+const wa = registerWhatsapp({ app, crypto, one, all, run, err, log, can, now, addActivity, notify, scope, scopedLead })
+waState = wa.state
+waTick = wa.tick
 
 app.use(express.static(dist))
 app.use((req, res, next) => (req.path.startsWith('/api') ? next(err(404, 'Not found')) : res.sendFile(path.join(dist, 'index.html'))))
@@ -3613,6 +3675,8 @@ if (db && !one('SELECT 1 FROM users')) {
   const b = run(`INSERT INTO branches(name,city) VALUES('Lahore HQ','Lahore')`).lastInsertRowid
   const tm = run(`INSERT INTO teams(name,branch_id) VALUES('Sales Team A',?)`, b).lastInsertRowid
   const owner = run('INSERT INTO users(name,email,role,phone,team_id,branch_id,pass,owner_id) VALUES(?,?,?,?,?,?,?,NULL)', 'Admin', 'admin@propcentral.local', 'admin', null, null, b, hash('password123')).lastInsertRowid
+  run('UPDATE branches SET company_id=? WHERE id=?', owner, b)
+  run('UPDATE teams SET company_id=? WHERE id=?', owner, tm)
   const add = (name, email, role, phone, team = null) =>
     run('INSERT INTO users(name,email,role,phone,team_id,branch_id,pass,owner_id) VALUES(?,?,?,?,?,?,?,?)', name, email, role, phone, team, b, hash('password123'), owner)
   add('Sales Head', 'head@propcentral.local', 'sales_head', null)
@@ -3650,6 +3714,7 @@ if (!serverless && isMain) {
     setInterval(slaTick, 60e3)
     setInterval(reportTick, 60e3)
     setInterval(leaseTick, 60e3)
+    setInterval(() => waTick(), 15e3) // customers' unanswered WhatsApp calls become missed calls
     leaseTick()
     slaTick()
   }

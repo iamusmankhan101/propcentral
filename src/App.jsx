@@ -15,6 +15,7 @@ import Campaigns from './Campaigns.jsx'
 import Properties, { PropertyPage, RentReceipt } from './Properties.jsx'
 import { HrOverview, Employees, Attendance, Leave, Payroll, PayrollRun, Payslip } from './Hr.jsx'
 import { AccOverview, AccLedger, AccBills, AccAccounts } from './Accounting.jsx'
+import { WaInbox, IncomingCalls } from './WhatsApp.jsx'
 import BookingForm from './BookingForm.jsx'
 import Portal from './Portal.jsx'
 import Icon from './Icon.jsx'
@@ -389,11 +390,14 @@ const NAV = [
 
 // HR & Payroll: shown when the platform switched the module on for the company and the role holds `hr`.
 // Payroll pages need the stricter `payroll` permission, so salaries stay with accounts/admin/owner.
-const HR_NAV = [['/hr', 'HR', 'users', 'hr', 'wide'], ['/hr/employees', 'Employees', 'cap', 'hr', 'more'], ['/hr/attendance', 'Attendance', 'calendar', 'hr', 'more'],
+const HR_NAV = [['/hr', 'HR', 'users', 'hr', 'more'], ['/hr/employees', 'Employees', 'cap', 'hr', 'more'], ['/hr/attendance', 'Attendance', 'calendar', 'hr', 'more'],
   ['/hr/leave', 'Leave', 'visits', 'hr', 'more'], ['/hr/payroll', 'Payroll', 'wallet', 'payroll', 'more']]
 
+// WhatsApp inbox: shown once an admin has connected the company's number (Settings › WhatsApp)
+const WA_NAV = ['/whatsapp', 'WhatsApp', 'inbox', null, 'more']
+
 // Accounting add-on: module switched on for the company and the role holds `accounting`.
-const ACC_NAV = [['/accounting', 'Accounting', 'wallet', 'accounting', 'wide'], ['/accounting/ledger', 'Ledger', 'receipt', 'accounting', 'more'],
+const ACC_NAV = [['/accounting', 'Accounting', 'wallet', 'accounting', 'more'], ['/accounting/ledger', 'Ledger', 'receipt', 'accounting', 'more'],
   ['/accounting/bills', 'Bills', 'inbox', 'accounting', 'more'], ['/accounting/accounts', 'Bank & cash', 'key', 'accounting', 'more']]
 
 // The platform owner manages sign-ups only, so their whole app is the Users page
@@ -493,7 +497,7 @@ export default function App() {
   const payslipId = hrOn ? path.match(/^\/hr\/payslip\/(\d+)/)?.[1] : null
 
   const nav = isPlatform ? PLATFORM_NAV
-    : [...NAV, ...(hrOn ? HR_NAV : []), ...(accOn ? ACC_NAV : [])]
+    : [...NAV, ...(meta.wa?.connected ? [WA_NAV] : []), ...(hrOn ? HR_NAV : []), ...(accOn ? ACC_NAV : [])]
 
   const moreItems = nav.filter(n => (!n[3] || meta.perms.includes(n[3])) && n[4] === 'more')
   const page = isPlatform ? <Users />
@@ -524,6 +528,7 @@ export default function App() {
           '/campaigns': <Campaigns />,
           '/import': <Import />,
         } : {}),
+        ...(meta.wa?.connected ? { '/whatsapp': <WaInbox /> } : {}),
         ...(hrOn ? { '/hr': <HrOverview />, '/hr/employees': <Employees />, '/hr/attendance': <Attendance />, '/hr/leave': <Leave />, '/hr/payroll': <Payroll /> } : {}),
         ...(accOn ? { '/accounting': <AccOverview />, '/accounting/ledger': <AccLedger />, '/accounting/bills': <AccBills />, '/accounting/accounts': <AccAccounts /> } : {}),
       }[path]
@@ -577,6 +582,7 @@ export default function App() {
                 </button>
               )}
               {!isPlatform && <Bell />}
+              {!isPlatform && meta.wa?.calling && <IncomingCalls />}
               <InstallPrompt />
               {!isPlatform && propertyOn && <a className="glass button" href="#/leads?new=1"><Icon name="plus" size={16} /><span className="label">Add lead</span></a>}
             </div>
